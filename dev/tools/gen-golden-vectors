@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Generate testdata/golden/envelope.json with an independent JOSE
+implementation, and check Go-made envelopes with it.
+
+ULP envelopes are JWS (RFC 7515, flattened JSON serialization) signed with
+Ed25519 (JOSE alg "Ed25519", RFC 9864); see docs/DESIGN.md section A.4.
+This script makes the vectors with joserfc, an off-the-shelf Python JOSE
+library, so they show what any conforming implementation produces and
+accepts, not what the Go code under test does.
+
+Usage (joserfc is fetched by uv; no install needed):
+  uv run --no-project --with joserfc dev/tools/gen-golden-vectors
+  uv run --no-project --with joserfc dev/tools/gen-golden-vectors verify-go F
+
+F is written by the Go test TestGoSealedEnvelopesForPython when
+SUPERCARGO_GO_SIGNED_OUT=F is set. Neither mode runs in dev/tools/ci: both
+need Python.
+
+Regenerating produces fresh keys, so every vector changes. That is a
+deliberate act: the vectors are the contract, and they are never edited to
+make a test pass. Private keys live only in this process.
+"""
+
+import base64
+import json
+import sys
+import uuid
+from pathlib import Path
+
+try:
+    from joserfc import jws
+    from joserfc.jwk import OctKey, OKPKey
+except ImportError:
+    sys.exit(
+        "gen-golden-vectors: needs joserfc; run\n"
+        "  uv run --no-project --with joserfc dev/tools/gen-golden-vectors"
+    )
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+OUT = REPO_ROOT / "testdata" / "golden" / "envelope.json"
+TYP = "ulp-envelope+jws"
+ALG = "Ed25519"
+KID, OTHER_KID = "cy-2026-1", "cy-2026-2"
+
+
+def b64(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+
+def b64json(obj) -> str:
+    return b64(json.dumps(obj, separators=(",", ":")).encode("utf-8"))
+
+
+def public_jwk(key, kid):
+    d = key.as_dict(private=False)
+    d.update({"kid": kid, "alg": ALG, "use": "sig"})
+    return d
+
+
+def seal(payload: bytes, key, alg=ALG, kid=KID, typ=TYP):
+    """A flattened JWS made by joserfc."""
+    protected = {"alg": alg, "kid": kid, "typ": typ}
+    return jws.serialize_json({"protected": protected}, payload, key, algorithms=[alg])
+
+
+def header(intent, sender, receiver, booking_ref=None, in_reply_to=None, correlation_id=None):
+    mid = str(uuid.uuid4())
+    return {
+        "ulpVersion": "0.2-demo",
+        "intent": intent,
+        "messageId": mid,
+        "correlationId": correlation_id or mid,
+        "inReplyTo": in_reply_to,
+        "sentAt": "2026-10-09T14:03:11Z",
+        "sender": sender,
+        "receiver": receiver,
+        "bookingRef": booking_ref,
+    }
+
+
+def payloads():
+    cy, ob = "cymbal-shoes.example", "ocean-blue.example"
+    request = {
+        "header": header("ulp.booking.request", cy, ob),
+        "body": {
+            "shipperRef": "CY-PO-55120",
+            "origin": {"unLocode": "NLRTM", "name": "Rotterdam"},
+            "equipment": [{"isoType": "45G1", "label": "40HC", "count": 1}],
+            "earliestDeparture": "2026-10-06",
+            "subscription": {"endpoint": "https://cymbal-shoes.example/a2a",
+                             "intents": ["ulp.tnt.event", "ulp.tnt.alert"]},
+        },
+        "attachments": {"delegation": None},
+    }
+    confirmation = {
+        "header": header("ulp.booking.confirmation", ob, cy, booking_ref="OB-BKG-1042",
+                         in_reply_to=request["header"]["messageId"],
+                         correlation_id=request["header"]["correlationId"]),
+        "body": {"bookingRef": "OB-BKG-1042", "status": "confirmed", "count": 3,
+                 "weightTonnes": 17.0, "big": 1e16, "small": 1e-05, "empty": {}, "nothing": None},
+        "attachments": {"delegation": None},
+    }
+    inquiry = {
+        "header": header("ulp.tnt.inquiry", cy, ob, booking_ref="OB-BKG-1042"),
+        "body": {"question": "Café 東京 \U0001F600 <&> \"quoted\"\n\ttab \u007f\u0001 — ETA?"},
+        "attachments": {"delegation": {"protected": "e30", "payload": "e30", "signature": "AA"}},
+    }
+    return request, confirmation, inquiry
+
+
+def vectors(key, other):
+    request, confirmation, inquiry = payloads()
+    out = []
+
+    def add(name, wire_obj, payload_text, error):
+        wire_text = wire_obj if isinstance(wire_obj, str) else json.dumps(wire_obj)
+        out.append({"name": name, "wire": wire_text, "payload": payload_text, "error": error})
+
+    # Valid: assorted payload formatting, all as the signer chose to write it.
+    for name, obj, dump in [
+        ("booking_request_compact", request, lambda o: json.dumps(o, separators=(",", ":"))),
+        ("confirmation_numbers", confirmation, lambda o: json.dumps(o)),
+        ("inquiry_unicode_raw_utf8_indented", inquiry, lambda o: json.dumps(o, ensure_ascii=False, indent=2)),
+        ("inquiry_escaped_ascii", inquiry, lambda o: json.dumps(o, ensure_ascii=True)),
+    ]:
+        text = dump(obj)
+        add(name, seal(text.encode("utf-8"), key), text, None)
+
+    req_text = json.dumps(request, separators=(",", ":"))
+    good = seal(req_text.encode("utf-8"), key)
+
+    # Signature failures: well formed, but not signed by the named key.
+    tampered = dict(good, payload=b64(req_text.replace('"count":1', '"count":2').encode("utf-8")))
+    add("tampered_payload", tampered, None, "signature")
+    add("tampered_kid", dict(good, protected=b64json({"alg": ALG, "kid": OTHER_KID, "typ": TYP})), None, "signature")
+    add("signed_by_other_key", seal(req_text.encode("utf-8"), other), None, "signature")
+    add("alg_eddsa_deprecated_name", seal(req_text.encode("utf-8"), key, alg="EdDSA"), None, "signature")
+    hmac_key = OctKey.import_key(key.as_dict(private=False)["x"].encode("ascii"))
+    add("alg_hs256_keyed_with_public_key", seal(req_text.encode("utf-8"), hmac_key, alg="HS256"), None, "signature")
+
+    # Malformed: rejected before any key is consulted.
+    add("alg_none", {"protected": b64json({"alg": "none", "kid": KID, "typ": TYP}),
+                     "payload": good["payload"], "signature": ""}, None, "malformed")
+    add("typ_jwt", seal(req_text.encode("utf-8"), key, typ="JWT"), None, "malformed")
+    general = jws.serialize_json([{"protected": {"alg": ALG, "kid": KID, "typ": TYP}}],
+                                 req_text.encode("utf-8"), key, algorithms=[ALG])
+    add("general_serialization", general, None, "malformed")
+    add("unprotected_header", dict(good, header={"kid": OTHER_KID}), None, "malformed")
+    add("compact_serialization", jws.serialize_compact({"alg": ALG, "kid": KID, "typ": TYP},
+                                                       req_text.encode("utf-8"), key, algorithms=[ALG]),
+        None, "malformed")
+    add("padded_base64", dict(good, signature=good["signature"] + "=="), None, "malformed")
+    extra = json.loads(req_text)
+    extra["header"]["priority"] = "high"
+    add("signed_unknown_header_member", seal(json.dumps(extra).encode("utf-8"), key), None, "malformed")
+    # A second "body" member, signed: parsers disagree on which one wins.
+    dup = req_text.replace('"attachments":', '"body":{},"attachments":', 1)
+    add("signed_duplicate_member", seal(dup.encode("utf-8"), key), None, "malformed")
+    old_style = json.loads(req_text)
+    old_style["header"]["kid"] = KID
+    add("signed_kid_in_payload_header", seal(json.dumps(old_style).encode("utf-8"), key), None, "malformed")
+    return out
+
+
+def generate():
+    key = OKPKey.generate_key("Ed25519")
+    other = OKPKey.generate_key("Ed25519")
+    doc = {
+        "note": "Generated by dev/tools/gen-golden-vectors with joserfc. Regenerate, never edit.",
+        "keys": [public_jwk(key, KID), public_jwk(other, OTHER_KID)],
+        "vectors": vectors(key, other),
+    }
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"wrote {OUT.relative_to(REPO_ROOT)} ({len(doc['vectors'])} vectors)")
+
+
+def verify_go(path):
+    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    key = OKPKey.import_key(doc["jwk"])
+    failures = 0
+    for v in doc["envelopes"]:
+        try:
+            obj = jws.deserialize_json(json.loads(v["wire"]), key, algorithms=[ALG])
+            hdr = obj.headers()
+            assert hdr == {"alg": ALG, "kid": doc["jwk"]["kid"], "typ": TYP}, hdr
+            assert obj.payload.decode("utf-8") == v["payload"], "payload differs from what Go signed"
+            json.loads(obj.payload)
+            print(f"ok   {v['name']}")
+        except Exception as e:  # report every failure, then exit non-zero
+            failures += 1
+            print(f"FAIL {v['name']}: {type(e).__name__}: {e}")
+    if failures:
+        sys.exit(f"{failures} Go-sealed envelope(s) failed in joserfc")
+    print(f"all {len(doc['envelopes'])} Go-sealed envelopes verify in joserfc")
+
+
+def main(argv):
+    if len(argv) == 1:
+        generate()
+    elif len(argv) == 3 and argv[1] == "verify-go":
+        verify_go(argv[2])
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main(sys.argv)
