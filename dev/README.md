@@ -25,6 +25,7 @@ needed beyond a Go toolchain.
 ```
 dev/
 ├── api-breaks.txt         # acknowledged incompatible API changes
+├── coverage-floors.txt    # per-package statement-coverage floors
 ├── claude/                # opt-in Claude Code config sample (not live config)
 ├── tools/                 # entry points you run locally
 │   ├── ci                 # aggregator — runs every check below
@@ -36,9 +37,11 @@ dev/
 │   ├── verify-mod-tidy    # `go mod tidy` clean check
 │   ├── verify-apidiff     # exported-API diff vs the last release tag
 │   ├── test-unit          # go test -race -coverprofile
+│   ├── verify-coverage    # per-package floors vs coverage.out
 │   ├── verify-vuln        # govulncheck ./...
 │   ├── verify-no-agent-attribution # no agent credit in commits/PR text
 │   ├── add-license-headers # bulk-applier for the Apache 2.0 header
+│   ├── gen-golden-vectors # Python: regenerate testdata/golden (not in ci)
 │   ├── common.sh          # shared bash helpers (ensure_tool, run_step)
 │   └── .golangci.yml      # linter config
 └── ci/
@@ -51,6 +54,7 @@ dev/
         ├── verify-apidiff
         ├── verify-vuln
         ├── verify-no-agent-attribution
+        ├── verify-coverage
         └── test-unit
 ```
 
@@ -104,11 +108,24 @@ commits not yet on `origin/main`. Ported from
 post-merge backstop on `main`; add that here if a commit ever lands on `main`
 without passing the PR check.
 
+## Coverage floors
+
+`dev/tools/verify-coverage` holds every package in `coverage.out` to its
+floor in `dev/coverage-floors.txt` (ported from purser). A package with no
+entry fails, so nothing arrives unmeasured; lowering a floor is a reviewable
+diff hunk. It regenerates a stale profile itself.
+
+## Golden vectors
+
+`dev/tools/gen-golden-vectors` (Python; run it with
+`uv run --no-project --with joserfc`) regenerates
+`testdata/golden/envelope.json` with an independent JOSE library. Its
+`verify-go` mode checks Go-sealed envelopes with that library. Neither runs
+in `dev/tools/ci`, whose default run needs no Python.
+See [`testdata/golden/README.md`](../testdata/golden/README.md).
+
 ## Deferred until there is code to hold
 
-- **`verify-coverage`** (per-package floors in `dev/coverage-floors.txt`)
-  joins `dev/tools/ci` with the first package; a profile with no packages has
-  nothing to hold to a floor.
 - **An end-to-end smoke step** (the demo's nodes talking over real sockets)
   joins once the node binary exists.
 

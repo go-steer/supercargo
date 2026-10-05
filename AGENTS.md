@@ -42,10 +42,16 @@ A Go module, `github.com/go-steer/supercargo`, with two layers:
 - **Shipper-private context never leaves the shipper.** Business constraints
   (delivery deadlines, warehouse slots) are used by the shipper's own LLM and
   are never put in an envelope.
-- **Canonical form is the signature.** Envelope signing uses the
-  Python-compatible canonical JSON in `pkg/internal/pyjson`. Any change to
-  canonicalization or signed fields is a protocol change: golden vectors must
-  be regenerated deliberately, never edited to make a test pass.
+- **Verify the bytes you process.** Envelopes are JWS (`docs/DESIGN.md`
+  §A.4): the signature covers the exact payload bytes, and handlers act on
+  those same verified bytes. Never re-serialize before verifying or between
+  verifying and acting. Unverified content stays behind `envelope.Parse`'s
+  unverified type.
+- **The key decides the algorithm.** A message's `alg` must equal the
+  resolved key's `alg`; never let the sender choose. New algorithms plug in
+  through `pkg/sig` (`Signer`/`Verifier` plus a JWK type). Any change to the
+  JWS profile, the signed fields or an algorithm is a protocol change: golden
+  vectors are regenerated deliberately, never edited to make a test pass.
 
 ## Build & test
 
@@ -118,8 +124,14 @@ Conventions worth knowing at agent prompt time:
 
 ## Current state
 
-Scaffolding only: repository, tooling, CI and the design of record. Next is
-milestone 1 in [`docs/DESIGN.md`](./docs/DESIGN.md#a14-build-milestones):
-`pkg/internal/{sig,pyjson}` and `pkg/envelope`, tested against golden vectors
-from the Python reference implementation. Per-package coverage floors
-(`verify-coverage`) join the sweep with that first package.
+Milestone 1 of [`docs/DESIGN.md`](./docs/DESIGN.md#a14-build-milestones) is
+in:
+- `pkg/envelope`: JWS envelopes; `Seal`, then `Parse` and `Unverified.Verify`.
+- `pkg/sig`: pluggable signers and verifiers; Ed25519; JWK keys.
+- `pkg/internal/strictjson`: strict decoding of unauthenticated JSON.
+
+They are checked against `testdata/golden/envelope.json`, which joserfc
+makes through `dev/tools/gen-golden-vectors`. Regenerate it, never edit it.
+The same script's `verify-go` mode checks Go-sealed envelopes with joserfc
+(see `TestGoSealedEnvelopesForPython`). Next is milestone 2: discovery (JWK
+key sets), the node pipeline and the REST transport.

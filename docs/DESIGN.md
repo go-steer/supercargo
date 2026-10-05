@@ -255,8 +255,10 @@ Every company runs the same **ULP node** binary with role-specific modules. This
 The specs leave these open; the demo decides:
 
 - **Identity = DNS domain.** `sender` and `receiver` in the envelope are domains (`cymbal-shoes.example`).
-- **Keys are published in the profile**, under `keys`, each with a `kid`. To verify a message, a node fetches `https://{sender}/.well-known/ulp` over HTTPS and caches the keys (TTL plus refetch on unknown `kid`). TLS ties the key to the domain. This is lightweight onboarding: no CA beyond TLS, and no pre-exchanged certificates.
-- **Signature algorithm:** RSA-2048 PSS / SHA-256 / max salt length, hex-encoded, over **Python-compatible canonical JSON** of the envelope minus its `signature` field. This matches the signing scheme of the existing Python ULP reference code, so its signature helpers can verify these envelopes too. The algorithm identifier is `ulp-rsa-pss-sha256-maxsalt`. (It's deliberately **not** called `PS256`, because JWA's PS256 requires salt = hash length. Switching to Ed25519 + RFC 8785 JCS later would be a versioned change.)
+- **Keys are published in the profile**, under `keys`, as JWKs (RFC 7517), each with a `kid` and exactly one `alg`. To verify a message, a node fetches `https://{sender}/.well-known/ulp` over HTTPS and caches the keys (TTL plus refetch on unknown `kid`). TLS ties the key to the domain. This is lightweight onboarding: no CA beyond TLS, and no pre-exchanged certificates.
+- **Signature format: JWS** (RFC 7515), flattened JSON serialization, with the envelope content as the payload. The signature covers the exact bytes sent, so there is no canonical form for implementations to reproduce: any language with a JOSE library interoperates. (Earlier drafts signed Python-`json.dumps`-compatible canonical JSON, copying an incidental choice of the Python prototype; a protocol must not depend on one runtime's serializer.)
+- **Signature algorithm: Ed25519**, JOSE `alg` `"Ed25519"` (the fully-specified identifier of RFC 9864, which deprecates the polymorphic `"EdDSA"`). It is approved under FIPS 186-5, so it can run inside a FIPS 140-3 validated module (Go's included: `crypto/ed25519` allows pure Ed25519 in FIPS-only mode); it is in the Go standard library; and it has no parameters to get wrong.
+- **Algorithms are pluggable, and the key decides.** Every published key names one `alg`; a verifier accepts a message only if the JWS header's `alg` equals the resolved key's `alg`, so the sender never chooses how it is verified (no `alg: none`, no algorithm confusion). Adding an algorithm means a new signer/verifier implementation and a JWK type, with no change to the envelope. The planned next one is **ML-DSA-65** (FIPS 204, post-quantum), once Go exposes it publicly (it exists today only inside Go's FIPS module, `crypto/internal/fips140/mldsa`), which keeps every algorithm inside a validated module. Quantum risk to signatures is forgery once a large quantum computer exists, not harvest-now-decrypt-later; envelopes live ±5 minutes, and transport confidentiality is already post-quantum (Go's TLS defaults to hybrid `X25519MLKEM768`).
 - **Replay protection:** `messageId` (UUID) must be unique per sender (a seen-ID store with a 24 h retention), and `sentAt` must be within ±5 minutes of the receiver's clock.
 - **Authorization** is separate from authentication. See [A.6](#a6-authorization-rules).
 
@@ -280,18 +282,43 @@ For local runs, `docker compose` gives each company a hostname. TLS can be off i
     "rest": "https://ocean-blue.example/ulp"
   },
   "keys": [{
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
     "kid": "ob-2026-1",
-    "alg": "ulp-rsa-pss-sha256-maxsalt",
-    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\n…\n-----END PUBLIC KEY-----\n"
+    "alg": "Ed25519",
+    "use": "sig"
   }]
 }
 ```
+
+Each entry in `keys` is a public JWK: `kty`, `crv` and `x` per RFC 8037 for Ed25519, plus a `kid` unique within the document and a required `alg`. A key that carries private material (`d`) or no `alg` is rejected.
 
 Shipper and receiver nodes publish the same document (with `roles: ["shipper"]` and only the intents they accept, e.g. `ulp.tnt.event` and `ulp.tnt.alert`), so operators can verify *their* signatures and push to them.
 
 **`GET /.well-known/agent-card.json`:** a standard A2A agent card (name, description, URL, skills). One skill per supported intent. Check the exact path and fields against the A2A spec version you target.
 
 ### A.4 Envelope
+
+On the wire, an envelope is a JWS in the flattened JSON serialization (RFC 7515 §7.2.2):
+
+```json
+{
+  "protected": "eyJhbGciOiJFZDI1NTE5Iiwia2lkIjoiY3ktMjAyNi0xIiwidHlwIjoidWxwLWVudmVsb3BlK2p3cyJ9",
+  "payload":   "eyJoZWFkZXIiOnsidWxwVmVyc2lvbiI6IjAuMi1kZW1vIiwiaW50ZW50Ijoi…",
+  "signature": "kV8x…"
+}
+```
+
+The **protected header** (base64url JSON) is exactly:
+
+```json
+{ "alg": "Ed25519", "kid": "cy-2026-1", "typ": "ulp-envelope+jws" }
+```
+
+`kid` names a key in the sender's profile; `typ` keeps an envelope from being confused with any other JWS (a delegation token carries `ulp-delegation+jws`). No other header parameters (`crit`, `jku`, `x5u`, unprotected headers) are accepted. ULP is deliberately stricter than RFC 7515 here: `typ` must be exactly `ulp-envelope+jws` (not `application/ulp-envelope+jws`, not another case), and every base64url value must be the canonical unpadded encoding. A serialized envelope is at most 128 KiB; transports enforce that limit while reading.
+
+The **payload** (base64url JSON) is the envelope content:
 
 ```json
 {
@@ -304,13 +331,10 @@ Shipper and receiver nodes publish the same document (with `roles: ["shipper"]` 
     "sentAt": "2026-10-09T14:03:11Z",
     "sender": "cymbal-shoes.example",
     "receiver": "ocean-blue.example",
-    "bookingRef": "OB-BKG-1042",
-    "kid": "cy-2026-1",
-    "alg": "ulp-rsa-pss-sha256-maxsalt"
+    "bookingRef": "OB-BKG-1042"
   },
   "body": { "question": "What caused the delay…?" },
-  "attachments": { "delegation": null },
-  "signature": "3a9f…"
+  "attachments": { "delegation": null }
 }
 ```
 
@@ -323,34 +347,39 @@ Shipper and receiver nodes publish the same document (with `roles: ["shipper"]` 
 | `sentAt` | RFC 3339 UTC, ±5 min skew |
 | `sender` / `receiver` | Domains. `receiver` must equal the receiving node's domain (prevents forwarding a message to a different node) |
 | `bookingRef` | Present for every intent except `booking.request` |
-| `signature` | Covers `header`, `body` and `attachments` (canonical JSON of the envelope minus `signature`) |
 
-Go sketch:
+The **signature** is the JWS signature over `ASCII(protected || "." || payload)`, so it covers the header, body and attachments exactly as sent. Receiving, in order:
+
+1. Parse the JWS strictly (exactly the three members, strict unpadded base64url) and the protected header (exactly `alg`, `kid`, `typ`).
+2. Parse the payload strictly (valid UTF-8, no duplicate or unknown members, bounded nesting) and validate the header, so `sender` is a well-formed domain before anything uses it.
+3. Resolve the key for (`sender`, `kid`) from the sender's profile, and require the key's `alg` to equal the header's.
+4. Verify the signature. Only now is the envelope available to the rest of the pipeline (replay, skew, body validation, authorization).
+
+In Go, `envelope.Parse` returns an unverified message that exposes `Sender`, `KID` and `Alg` for step 3, plus `ClaimedHeader` for logging a rejection (never for deciding anything). The body and the `Envelope` are returned by `Verify` alone, so unverified content cannot reach a handler.
+
+Published Ed25519 keys must be canonically encoded points of large order: a small-order key (the identity point, say) would let anyone forge that sender's messages under cofactorless verification, so key parsing refuses it.
 
 ```go
 type Envelope struct {
 	Header      Header          `json:"header"`
-	Body        json.RawMessage `json:"body"`        // decoded per intent; keep raw for canonicalization
+	Body        json.RawMessage `json:"body"` // the verified bytes, decoded per intent
 	Attachments Attachments     `json:"attachments"`
-	Signature   string          `json:"signature,omitempty"`
 }
 
 type Header struct {
-	ULPVersion    string    `json:"ulpVersion"`
-	Intent        string    `json:"intent"`
-	MessageID     string    `json:"messageId"`
-	CorrelationID string    `json:"correlationId"`
-	InReplyTo     *string   `json:"inReplyTo"`
-	SentAt        string    `json:"sentAt"`
-	Sender        string    `json:"sender"`
-	Receiver      string    `json:"receiver"`
-	BookingRef    *string   `json:"bookingRef"`
-	KID           string    `json:"kid"`
-	Alg           string    `json:"alg"`
+	ULPVersion    string  `json:"ulpVersion"`
+	Intent        string  `json:"intent"`
+	MessageID     string  `json:"messageId"`
+	CorrelationID string  `json:"correlationId"`
+	InReplyTo     *string `json:"inReplyTo"`
+	SentAt        string  `json:"sentAt"`
+	Sender        string  `json:"sender"`
+	Receiver      string  `json:"receiver"`
+	BookingRef    *string `json:"bookingRef"`
 }
 ```
 
-The body is canonicalized from its raw JSON (decoded with `UseNumber`). Body fields avoid floats where possible (counts are ints, times are strings), which sidesteps the float-formatting issues.
+Handlers act on the verified payload bytes, so there is no canonicalization and no float-versus-int ambiguity between what was signed and what is processed. Typed body decoding must still match member names exactly (encoding/json folds case), and bodies should keep numbers within I-JSON (RFC 7493) so every JSON parser reads the same value.
 
 ### A.5 Intents and bodies
 
@@ -445,7 +474,7 @@ The shipper's required delivery date is **deliberately not sent**. It's private 
 }
 ```
 
-**Delegation** (attachment on an inquiry from a receiver). A signed object in the style of the ZeroG passport, adding the fields the docs list as missing:
+**Delegation** (attachment on an inquiry from a receiver). A JWS in the same flattened JSON form as the envelope, signed by the issuer with protected header `{"alg": …, "kid": …, "typ": "ulp-delegation+jws"}`, adding the fields the docs list as missing. Its payload:
 ```json
 {
   "issuer": "cymbal-shoes.example",
@@ -454,11 +483,10 @@ The shipper's required delivery date is **deliberately not sent**. It's private 
   "scope": ["tnt:read"],
   "bookingRef": "OB-BKG-1042",
   "issuedAt": "2026-10-09T15:00:00Z",
-  "expiresAt": "2026-11-08T15:00:00Z",
-  "kid": "cy-2026-1",
-  "signature": "…"
+  "expiresAt": "2026-11-08T15:00:00Z"
 }
 ```
+The `kid` resolves against the issuer's profile. The distinct `typ` means a delegation can never be accepted as an envelope, or the reverse.
 
 **`ulp.error`**
 ```json
@@ -552,13 +580,14 @@ ulp-demo/
 │   ├── ulpchat/          # shipper chat CLI
 │   └── ulpctl/           # presenter console: disrupt, attack, reset, show
 ├── pkg/                  # reusable protocol pieces (candidates for a real ULP Go SDK)
-│   ├── envelope/         # types, canonical form, sign, verify
+│   ├── envelope/         # JWS envelope: types, parse, sign, verify
 │   ├── intents/          # body types per intent + validation
 │   ├── discovery/        # profile types, fetch, key cache
 │   ├── delegation/       # delegation token sign/verify/check
 │   ├── transport/a2a/    # A2A client/server binding
 │   ├── transport/rest/   # REST binding (tests, debugging)
-│   └── internal/{sig,pyjson}/   # RSA-PSS + Python-compatible canonical JSON
+│   ├── sig/              # pluggable Signer/Verifier, Ed25519, JWK keys
+│   └── internal/strictjson/  # strict JSON decoding for unauthenticated input
 ├── internal/
 │   ├── node/             # pipeline: verify → replay → validate → authorize → route
 │   ├── operator/         # bookings, simulator, events, publisher, inquiry responder
@@ -569,7 +598,7 @@ ulp-demo/
 │   ├── docker-compose.yml   # cymbal-shoes, ocean-blue, cymbal-footwear, mallory
 │   └── config/*.yaml        # per-company: domain, role, keys, LLM provider, clock speed
 └── testdata/
-    └── golden/              # signing vectors from the Python reference, plus envelope vectors
+    └── golden/              # JWS envelope vectors made with a standard Python JOSE library
 ```
 
 ### A.12 Configuration (per company)
@@ -597,7 +626,7 @@ security:
 
 | Level | What |
 |---|---|
-| Unit | Canonical JSON and signatures against the golden vectors; envelope sign/verify round trip; body validation; delegation checks; authorization table ([A.6](#a6-authorization-rules)) as table tests |
+| Unit | Envelope JWS against the golden vectors from an independent JOSE implementation; envelope sign/verify round trip; body validation; delegation checks; authorization table ([A.6](#a6-authorization-rules)) as table tests |
 | Integration | Two or more nodes in one test process (`httptest` servers with fake domains), running scenes 1–8 with the **fake model**; asserts on envelopes exchanged and log decisions |
 | Security | Tampered body/header, wrong `kid`, unknown sender, replayed `messageId`, stale `sentAt`, wrong `receiver`, subscription endpoint on a foreign domain, expired or mis-scoped delegation, prompt-injection inquiries from authorized senders (the answer must still cite only that booking's events) |
 | LLM evals (manual / nightly) | A fixed set of inquiries and alerts with expected facts; check citations are valid and no data from other bookings appears |
@@ -607,7 +636,7 @@ security:
 
 | # | Milestone | Done when |
 |---|---|---|
-| 1 | `pkg/envelope` + `pkg/internal/{sig,pyjson}` | Golden vectors pass; envelope round trip |
+| 1 | `pkg/envelope` + `pkg/sig` + `pkg/internal/strictjson` | Golden vectors pass; envelope round trip |
 | 2 | Discovery + node pipeline + REST transport | Two nodes exchange a verified `booking.request` / `confirmation` |
 | 3 | A2A transport | Same, over A2A `message/send` |
 | 4 | Operator simulator + subscriptions + push | Scene 3 runs with a scripted shipper (**"hello ULP", no LLM**) |
@@ -626,5 +655,6 @@ security:
 | Alternative voyage proposals | `booking.confirmation.status = alternative_proposed` |
 | Local MCP server | Expose the shipper's internal API as MCP tools (stdio) so any MCP-capable assistant can drive it |
 | Signed acknowledgements (B2B MDN equivalent) | Signed `ulp.ack` for pushes |
-| Production key management | Key rotation via multiple `kid`s in the profile; HSM/KMS-backed signing |
+| Production key management | Key rotation via multiple `kid`s in the profile; HSM/KMS-backed signing (a `sig.Signer` implementation) |
+| Post-quantum signatures | ML-DSA-65 (FIPS 204) as a second `alg` once Go exposes it publicly; see [A.2](#a2-identity-keys-and-trust-design-decisions) |
 | Persistence | Replace in-memory stores |

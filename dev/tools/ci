@@ -57,8 +57,10 @@ STEPS=(
   # uncommitted edits — which is the point of running it before you push.
   "apidiff   dev/tools/verify-apidiff"
   "test      dev/tools/test-unit"
-  # verify-coverage (per-package floors) and an end-to-end smoke step join
-  # this list with the first packages and binaries; see dev/README.md.
+  # Reads the coverage.out the test step just wrote.
+  "coverage  dev/tools/verify-coverage"
+  # An end-to-end smoke step joins this list with the node binary; see
+  # dev/README.md.
   "vuln      dev/tools/verify-vuln"
 )
 
