@@ -8,7 +8,7 @@ Protocol: agent-to-agent booking and track & trace between companies that
 share no infrastructure. It has two parts:
 
 - **A protocol SDK** (`pkg/`): signed, intent-named envelopes, discovery and
-  published keys, A2A transport, and delegation.
+  published keys, REST and A2A bindings, and delegation.
 - **A cross-company demo:** a shipper (Cymbal Shoes) and an ocean carrier
   (Ocean Blue), each running its own ULP node, with an LLM on each side in the
   roles where one helps. The shipper's assistant turns requests into protocol
@@ -23,7 +23,7 @@ authorized for.
 
 Early. The design of record is [`docs/DESIGN.md`](./docs/DESIGN.md): the
 demo scenario scene by scene, plus the technical design (envelope, intents,
-trust and authorization, A2A mapping, LLM integration) and the build
+trust and authorization, transport bindings, LLM integration) and the build
 milestones. Nothing is implemented yet beyond the repository scaffolding.
 
 ## Development

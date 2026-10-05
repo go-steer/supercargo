@@ -2,7 +2,7 @@
 
 A demo that shows the **basics of the protocol** (discovery, signed messages, booking, track & trace) between **two independent companies**, plus **an LLM on each side** in the roles where one makes sense.
 
-It follows the direction of the ULP draft material: **A2A between organizations, intent-named messages, a header/body envelope, and Track & Trace first**. The ULP drafts name intents but don't define payloads, subscriptions, key discovery or authorization, so this document makes those design decisions explicitly.
+It follows the direction of the ULP draft material: **intent-named messages in a signed header/body envelope, Track & Trace first, and A2A where agents talk to agents**. The protocol is transport-neutral: structured exchanges travel over plain REST and webhooks, and A2A carries the agentic conversations ([A.7](#a7-transport-bindings)). The ULP drafts name intents but don't define payloads, subscriptions, key discovery or authorization, so this document makes those design decisions explicitly.
 
 > **Status:** design of record, nothing implemented yet. Build order is [A.14](#a14-build-milestones). Keep this document current in the same PR as any change it describes.
 
@@ -57,7 +57,7 @@ The node logs are what make the demo convincing: each envelope shows `intent`, `
 
 **What happens:**
 1. The shipper assistant calls the tool `get_operator_profile("ocean-blue.example")`.
-2. The Cymbal node fetches `https://ocean-blue.example/.well-known/ulp` and gets Ocean Blue's services, supported intents, A2A endpoint and **public signing keys**. It caches the keys.
+2. The Cymbal node fetches `https://ocean-blue.example/.well-known/ulp` and gets Ocean Blue's services, supported intents, REST and A2A endpoints, and **public signing keys**. It caches the keys.
 3. The assistant summarizes in plain language.
 
 **Assistant:**
@@ -87,7 +87,7 @@ The node logs are what make the demo convincing: each envelope shows `intent`, `
 Send this booking request? [y/N] y
 ```
 
-4. The Cymbal node builds a `ulp.booking.request` envelope, **signs it** and sends it over A2A.
+4. The Cymbal node builds a `ulp.booking.request` envelope, **signs it** and posts it to Ocean Blue's ULP endpoint (the REST binding: booking is a structured exchange between systems, so no agent is involved on the receiving side).
 5. Ocean Blue's node verifies the signature with Cymbal's key (fetched from `cymbal-shoes.example/.well-known/ulp`), checks for replay, validates the body, creates the booking, registers the **subscription**, and replies with a signed `ulp.booking.confirmation`.
 
 **Assistant:**
@@ -144,7 +144,7 @@ $ ulpctl disrupt --booking OB-BKG-1042 --delay 72h --reason "engine repair, unsc
 
 **What happens:**
 1. The assistant calls `ask_operator("OB-BKG-1042", "What caused the delay on this shipment, and how firm is the new ETA of the 16th?")`.
-2. Cymbal's node sends a signed **`ulp.tnt.inquiry`** to Ocean Blue.
+2. Cymbal's node sends a signed **`ulp.tnt.inquiry`** to Ocean Blue's **shipment-inquiry skill over A2A**: this is the one exchange where the receiving side is an agent that reasons.
 3. Ocean Blue's node, step by step (visible in its log):
    - verifies the signature → `VERIFIED (kid cy-2026-1)`
    - checks authorization: sender `cymbal-shoes.example` **is the shipper of OB-BKG-1042** → `ALLOWED`
@@ -161,6 +161,7 @@ $ ulpctl disrupt --booking OB-BKG-1042 --delay 72h --reason "engine repair, unsc
 - This is the canonical ULP hello world: an agent asking another company's agent about a shipment ("Why is container ABCD123 stuck at location X?").
 - The operator's LLM **only ever saw this one shipment's data**. Authorization happened before the model was involved.
 - Answers cite event IDs, so they can be checked against signed events the shipper already holds.
+- Scenes 2–4 ran over plain REST and webhooks. A2A appears exactly here, where one company's agent delegates an open-ended question to another company's agent.
 
 ### Scene 6: Trust failures (≈1 min)
 
@@ -202,6 +203,7 @@ The presenter shows that verification is real:
 
 - **Protocol basics shown:** discovery, published keys, a signed header/body envelope, `booking.request`, a subscription, `tnt.event`, `tnt.alert`, `tnt.inquiry`, replay protection, authorization, delegation.
 - **LLM roles shown:** intent → protocol (shipper), events → business impact (shipper), free-text inquiry → grounded answer (operator).
+- **Transport shown:** the plumbing (booking, events, alerts) over plain REST and webhooks; A2A only for the agent-to-agent inquiry.
 - **Neither LLM ever:** held a key, signed a message, chose a counterparty on its own, saw data it wasn't authorized for, or sent a booking without human approval.
 - **Mapped to ULP's themes:** the inquiry "hello world" (Scene 5), the proactive watcher (Scene 4), the receiver as a participant (Scene 8), and subscribing to a shipment (Scene 2).
 
@@ -219,15 +221,15 @@ The presenter shows that verification is real:
 
 ### A.1 Architecture
 
-Every company runs the same **ULP node** binary with role-specific modules. This is the "B2B gateway" from the earlier discussion: one process handling discovery, transport, signing, verification and routing for its company.
+Every company runs the same **ULP node** binary with role-specific modules. This is the "B2B gateway" from the earlier discussion: one process handling discovery, transport, signing, verification and routing for its company. It exposes the same core operations through several bindings ([A.7](#a7-transport-bindings)): REST for systems, A2A skills for other agents, and later MCP tools for LLM clients.
 
 ```
                     ┌──────────────────────── ULP node ─────────────────────────┐
   HTTPS             │                                                            │
  ─────────►  /.well-known/ulp        (profile + public keys)                     │
  ─────────►  /.well-known/agent-card.json  (A2A agent card)                      │
- ─────────►  /a2a   (A2A JSON-RPC) ─┐                                            │
- ─────────►  /ulp   (REST, optional)┤                                            │
+ ─────────►  /ulp   (REST) ─────────┐                                            │
+ ─────────►  /a2a   (A2A skills) ───┤                                            │
                     │               ▼                                            │
                     │   Envelope pipeline:                                       │
                     │     parse → resolve sender key → verify signature          │
@@ -240,7 +242,7 @@ Every company runs the same **ULP node** binary with role-specific modules. This
                     │                    seen message IDs, partner keys)         │
                     │                         │                                  │
                     │                    LLM adapter (behind interface)          │
-                    │   Outbound: build envelope → sign → A2A client → partner   │
+                    │   Outbound: build envelope → sign → REST or A2A → partner  │
                     └────────────────────────────────────────────────────────────┘
 ```
 
@@ -296,7 +298,7 @@ Each entry in `keys` is a public JWK: `kty`, `crv` and `x` per RFC 8037 for Ed25
 
 Shipper and receiver nodes publish the same document (with `roles: ["shipper"]` and only the intents they accept, e.g. `ulp.tnt.event` and `ulp.tnt.alert`), so operators can verify *their* signatures and push to them.
 
-**`GET /.well-known/agent-card.json`:** a standard A2A agent card (name, description, URL, skills). One skill per supported intent. Check the exact path and fields against the A2A spec version you target.
+**`GET /.well-known/agent-card.json`:** a standard A2A agent card (name, description, URL, skills). It lists only the **agentic** skills, the ones where a caller delegates an open-ended task to this company's agent: for the demo operator that's `shipment-inquiry` (later `rebooking-negotiation`). Structured intents such as `booking.request` aren't skills; they're served by the REST binding. Check the exact path and fields against the A2A spec version you target.
 
 ### A.4 Envelope
 
@@ -385,14 +387,16 @@ Handlers act on the verified payload bytes, so there is no canonicalization and 
 
 All payloads are **demo designs**, loosely modeled on DCSA where noted. None are defined by the ULP documents.
 
-| Intent | Direction | Sync/async | Response intent |
-|---|---|---|---|
-| `ulp.booking.request` | shipper → operator | sync | `ulp.booking.confirmation` |
-| `ulp.tnt.event` | operator → subscriber | async push | (A2A ack only) |
-| `ulp.tnt.alert` | operator → subscriber | async push | (A2A ack only) |
-| `ulp.tnt.inquiry` | shipper/receiver → operator | sync | `ulp.tnt.inquiry.response` |
-| `ulp.delegation.grant` | shipper → operator (optional pre-notify) | sync | ack |
-| `ulp.error` | any | as a response | n/a |
+| Intent | Direction | Binding | Sync/async | Response intent |
+|---|---|---|---|---|
+| `ulp.booking.request` | shipper → operator | REST | sync | `ulp.booking.confirmation` |
+| `ulp.tnt.event` | operator → subscriber | REST webhook | async push | (HTTP 2xx ack only) |
+| `ulp.tnt.alert` | operator → subscriber | REST webhook | async push | (HTTP 2xx ack only) |
+| `ulp.tnt.inquiry` | shipper/receiver → operator | **A2A** (`shipment-inquiry` skill) | sync | `ulp.tnt.inquiry.response` |
+| `ulp.delegation.grant` | shipper → operator (optional pre-notify) | REST | sync | ack |
+| `ulp.error` | any | same as the request | as a response | n/a |
+
+The binding column is the **default**. Every intent is a signed envelope, so any binding can carry any intent ([A.7](#a7-transport-bindings)); a node must accept structured intents over REST and may also accept them over A2A.
 
 **`ulp.booking.request`**
 ```json
@@ -405,7 +409,7 @@ All payloads are **demo designs**, loosely modeled on DCSA where noted. None are
   "earliestDeparture": "2026-10-06",
   "consignee":   { "name": "Cymbal Footwear", "domain": "cymbal-footwear.example" },
   "subscription": {
-    "endpoint": "https://cymbal-shoes.example/a2a",
+    "endpoint": "https://cymbal-shoes.example/ulp",
     "intents":  ["ulp.tnt.event", "ulp.tnt.alert"]
   }
 }
@@ -496,7 +500,7 @@ Codes: `bad_signature`, `unknown_key`, `replay`, `stale`, `invalid_body`, `forbi
 
 ### A.6 Authorization rules
 
-These are evaluated after signature, replay and body validation, and **before** any data is loaded or any LLM is called.
+These are evaluated after signature, replay and body validation, and **before** any data is loaded or any LLM is called. They're the same whichever binding the envelope arrived on.
 
 | Intent | Allowed if |
 |---|---|
@@ -505,13 +509,37 @@ These are evaluated after signature, replay and body validation, and **before** 
 | `tnt.event` / `tnt.alert` (inbound at the shipper) | `sender == booking.operator` and an active subscription exists |
 | Subscription endpoint | Must be on the sender's own domain (prevents using the operator to push data to third parties) |
 
-### A.7 A2A mapping
+### A.7 Transport bindings
 
-- Requests use JSON-RPC **`message/send`**. The message carries **one data part containing the full signed envelope**, and optionally a text part with a human-readable rendering (e.g. the inquiry question) for generic A2A clients.
-- Sync responses (`booking.confirmation`, `inquiry.response`, `ulp.error`) come back as the A2A response message, with the signed response envelope in a data part.
-- Async pushes (`tnt.event`, `tnt.alert`) are `message/send` calls **from the operator to the subscriber's A2A endpoint**. Both companies run an A2A server, so each side can both send and receive.
-- Long-running A2A tasks aren't needed for the demo. Everything is a single request/response or a one-way push.
-- Implementation: evaluate the official A2A Go SDK first; otherwise write a small JSON-RPC client and server, keeping the envelope independent of the transport. A REST binding (`POST /ulp` with the envelope as the body) is a few lines on the same pipeline and helps testing.
+ULP's semantics (intents, envelope, trust rules) are separate from how messages travel, the way EDI never required AS2. The **signed envelope** is what makes that safe: identity, replay protection and authorization are all checked on the envelope itself, so the same verified message can arrive over REST or A2A, and nothing about trust depends on the hop it came over.
+
+**Which binding for what:**
+
+| Need | Binding | Why |
+|---|---|---|
+| A system calls an operation (book, confirm) | **REST** | Request/response between systems; cheapest for carriers' existing software |
+| A system notifies another system (events, alerts) | **REST webhooks** | One-way push; no agent on either end has to reason |
+| An agent delegates an open-ended task to another company's agent (inquiry; later negotiation) | **A2A skills** | Free text in, reasoning, a grounded answer out; A2A's opaque agents, task lifecycle and `input-required` fit this |
+| An LLM uses operations directly | **MCP tools** (later) | Tools map one-to-one onto operations |
+
+**Don't use A2A for messages that don't need an agentic loop on the receiving side.** Requiring A2A for booking or event push would force every carrier to run an "agent" just to expose an endpoint. A2A is an optional extra carrier for structured intents (a node may accept them inside an A2A data part), never the required one.
+
+**A2A exposes skills, not tools.** MCP tools are individual operations a model calls; A2A skills are capabilities another agent delegates a task to, and the remote agent decides how to carry it out without exposing its tools. Behind the scenes the same core operations serve all three: when the inquiry responder looks up a booking's events, it calls the same operation the REST binding uses, after the same authorization check.
+
+**Converse over A2A, commit with intents.** An agentic conversation can end in a decision, for example a negotiation settling on a different voyage. That decision is never left as prose in a transcript: it's executed as an ordinary signed intent (a booking request or amendment), verified and authorized like any other, carried either inside the same A2A task as a data part or separately over REST. The binding record of what was agreed is a signed, structured message.
+
+**REST binding:**
+- `POST /ulp` with the serialized envelope as the JSON request body. Sync responses (`booking.confirmation`, `ulp.error`) come back as the response body, also signed envelopes.
+- Webhooks: the operator `POST`s signed `tnt.event`/`tnt.alert` envelopes to the subscriber's registered endpoint (its own `/ulp`). A 2xx response is the ack; the publisher retries with backoff otherwise.
+- HTTP status codes report transport-level outcomes; protocol outcomes are in the signed response envelope, so a proxy can't forge a protocol decision.
+
+**A2A binding:**
+- Each skill in the agent card is served by an agent. A request is a JSON-RPC **`message/send`** whose message carries **one data part with the full signed envelope**, plus optionally a text part with a human-readable rendering of the question for generic A2A clients.
+- The reply carries the signed response envelope (`tnt.inquiry.response` or `ulp.error`) in a data part.
+- The demo's inquiry is a single request/response. Longer conversations (negotiation, exception workflows) map onto A2A **tasks**, with `input-required` for steps that wait on a person.
+- Implementation: evaluate the official A2A Go SDK first; otherwise a small JSON-RPC client and server. The envelope stays independent of the binding.
+
+**MCP binding (later):** the shipper's internal operations as MCP tools (stdio) so any MCP-capable assistant can drive the shipper node, and possibly an operator-side MCP server for third-party LLM clients. The tools call the node's operations; anything sent to a partner is still built and signed by the node, never by the model, and an operator-side server applies the same authorization rules ([A.6](#a6-authorization-rules)).
 
 ### A.8 Operator internals
 
@@ -522,7 +550,7 @@ These are evaluated after signature, replay and body validation, and **before** 
 | Shipment simulator | Timeline per booking (GTIN → LOAD → DEPA → ARRI EST updates → ARRI → DISC → GTOT) on an accelerated clock; `disrupt` inserts delay events, recomputes ETA and raises an alert |
 | Event store | Append-only events per booking (the operator's "knowledge graph" for the demo) |
 | Publisher | Signs and pushes events and alerts to subscribers; retries with backoff; per-subscription ordering |
-| Inquiry responder | Authorized data → LLM → output validation → response ([A.10](#a10-llm-integration)) |
+| Inquiry responder | Serves the A2A `shipment-inquiry` skill: authorized data (fetched through the same core operations as the REST binding) → LLM → output validation → response ([A.10](#a10-llm-integration)) |
 
 ### A.9 Shipper internals
 
@@ -584,8 +612,8 @@ ulp-demo/
 │   ├── intents/          # body types per intent + validation
 │   ├── discovery/        # profile types, fetch, key cache
 │   ├── delegation/       # delegation token sign/verify/check
-│   ├── transport/a2a/    # A2A client/server binding
-│   ├── transport/rest/   # REST binding (tests, debugging)
+│   ├── transport/rest/   # REST binding: intents + webhooks (primary)
+│   ├── transport/a2a/    # A2A binding: agent skills (inquiry; later negotiation)
 │   ├── sig/              # pluggable Signer/Verifier, Ed25519, JWK keys
 │   └── internal/strictjson/  # strict JSON decoding for unauthenticated input
 ├── internal/
@@ -637,14 +665,13 @@ security:
 | # | Milestone | Done when |
 |---|---|---|
 | 1 | `pkg/envelope` + `pkg/sig` + `pkg/internal/strictjson` | Golden vectors pass; envelope round trip |
-| 2 | Discovery + node pipeline + REST transport | Two nodes exchange a verified `booking.request` / `confirmation` |
-| 3 | A2A transport | Same, over A2A `message/send` |
-| 4 | Operator simulator + subscriptions + push | Scene 3 runs with a scripted shipper (**"hello ULP", no LLM**) |
-| 5 | Inquiry responder (fake model first, then real) | Scenes 5 and 7 |
-| 6 | `ulpchat` with tools + alert summarizer | Scenes 1, 2, 4 |
-| 7 | `ulpctl` attacks + reset | Scene 6; acceptance criteria 4–5 |
-| 8 | Delegation | Scene 8 |
-| 9 | Polish: compose setup, local CA, log formatting, rehearsal with the fake model | Acceptance criteria 1–5 |
+| 2 | Discovery + node pipeline + REST binding | Two nodes exchange a verified `booking.request` / `confirmation` over REST |
+| 3 | Operator simulator + subscriptions + webhook push | Scene 3 runs with a scripted shipper (**"hello ULP": REST only, no LLM, no A2A**) |
+| 4 | A2A binding + inquiry responder (fake model first, then real) | `shipment-inquiry` skill in the agent card; Scenes 5 and 7 |
+| 5 | `ulpchat` with tools + alert summarizer | Scenes 1, 2, 4 |
+| 6 | `ulpctl` attacks + reset | Scene 6; acceptance criteria 4–5 |
+| 7 | Delegation | Scene 8 |
+| 8 | Polish: compose setup, local CA, log formatting, rehearsal with the fake model | Acceptance criteria 1–5 |
 
 ### A.15 Out of scope (and where each would go next)
 
@@ -653,7 +680,8 @@ security:
 | Payments | `ulp.doc.invoice` after delivery with a 3-way match, using AP2-style signed invoices |
 | Spot procurement (multiple operators) | `ulp.booking.procurement` broadcast + shipper LLM comparing offers |
 | Alternative voyage proposals | `booking.confirmation.status = alternative_proposed` |
-| Local MCP server | Expose the shipper's internal API as MCP tools (stdio) so any MCP-capable assistant can drive it |
+| Rebooking negotiation | A2A `rebooking-negotiation` skill as a multi-turn task (`input-required` when a person must decide), committed as a signed booking amendment ([A.7](#a7-transport-bindings): converse over A2A, commit with intents) |
+| Local MCP server | The MCP binding ([A.7](#a7-transport-bindings)): the shipper's internal API as MCP tools (stdio) so any MCP-capable assistant can drive it |
 | Signed acknowledgements (B2B MDN equivalent) | Signed `ulp.ack` for pushes |
 | Production key management | Key rotation via multiple `kid`s in the profile; HSM/KMS-backed signing (a `sig.Signer` implementation) |
 | Post-quantum signatures | ML-DSA-65 (FIPS 204) as a second `alg` once Go exposes it publicly; see [A.2](#a2-identity-keys-and-trust-design-decisions) |
