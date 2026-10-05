@@ -24,7 +24,12 @@ authorized for.
 Early. The design of record is [`docs/DESIGN.md`](./docs/DESIGN.md): the
 demo scenario scene by scene, plus the technical design (envelope, intents,
 trust and authorization, transport bindings, LLM integration) and the build
-milestones. Nothing is implemented yet beyond the repository scaffolding.
+milestones.
+
+Milestone 1 is in: signed JWS envelopes (`pkg/envelope`), pluggable
+signatures with Ed25519 first (`pkg/sig`), and strict JSON decoding for
+unauthenticated input. Next is milestone 2: discovery, the node pipeline and
+the REST binding.
 
 ## Development
 
