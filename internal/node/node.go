@@ -43,6 +43,7 @@ import (
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/sig"
+	"github.com/go-steer/supercargo/pkg/transport/a2a"
 	"github.com/go-steer/supercargo/pkg/transport/rest"
 )
 
@@ -58,6 +59,13 @@ type KeyResolver interface {
 type Poster interface {
 	Post(ctx context.Context, receiver string, msg []byte) ([]byte, error)
 	PostTo(ctx context.Context, receiver, endpoint string, msg []byte) ([]byte, error)
+}
+
+// A2APoster sends a serialized envelope over the A2A binding.
+// *a2a.Client implements it, and returns a2a.ErrNoEndpoint for a receiver
+// without an A2A endpoint.
+type A2APoster interface {
+	Post(ctx context.Context, receiver string, msg []byte) ([]byte, error)
 }
 
 // Config configures a Node.
@@ -77,6 +85,10 @@ type Config struct {
 	RESTURL string
 	// AllowHTTP permits an http RESTURL (insecure development mode only).
 	AllowHTTP bool
+	// A2AURL is this node's A2A endpoint as published; empty means none.
+	// A node with agentic skills (a handler for ulp.tnt.inquiry) serves
+	// them there, and lists them in its agent card.
+	A2AURL string
 
 	// Keys resolves partners' keys; Replay records verified message IDs.
 	Keys   KeyResolver
@@ -91,6 +103,9 @@ type Config struct {
 	// Poster sends outbound envelopes (Exchange). Nil means this node
 	// only receives.
 	Poster Poster
+	// A2A sends outbound envelopes for the agentic intents (ExchangeA2A).
+	// Nil sends them over Poster.
+	A2A A2APoster
 	// Observer receives every event. Nil discards them.
 	Observer Observer
 	// Now replaces time.Now (tests).
@@ -131,6 +146,11 @@ func New(cfg Config) (*Node, error) {
 	if u, err := url.Parse(cfg.RESTURL); err != nil || u.Path != "/ulp" {
 		return nil, fmt.Errorf("node: RESTURL %q must have the path /ulp, where Handler serves the REST binding", cfg.RESTURL)
 	}
+	if cfg.A2AURL != "" {
+		if u, err := url.Parse(cfg.A2AURL); err != nil || u.Path != "/a2a" {
+			return nil, fmt.Errorf("node: A2AURL %q must have the path /a2a, where Handler serves the A2A binding", cfg.A2AURL)
+		}
+	}
 	if cfg.Observer == nil {
 		cfg.Observer = func(Event) {}
 	}
@@ -161,7 +181,7 @@ func (n *Node) buildProfile() ([]byte, error) {
 		ProtocolVersion: envelope.Version,
 		Party:           discovery.Party{Domain: n.cfg.Domain, Name: n.cfg.Name, Roles: n.cfg.Roles},
 		Services:        []discovery.Service{{Name: "ulp.freight", Intents: accepted, Extensions: []string{}}},
-		Transports:      discovery.Transports{REST: n.cfg.RESTURL},
+		Transports:      discovery.Transports{REST: n.cfg.RESTURL, A2A: n.cfg.A2AURL},
 		Keys:            []json.RawMessage{n.cfg.PublicJWK},
 	}
 	b, err := json.Marshal(p)
@@ -186,7 +206,8 @@ func (n *Node) buildProfile() ([]byte, error) {
 }
 
 // Handler serves the node's HTTP surface: its profile at
-// /.well-known/ulp, and the REST binding at /ulp.
+// /.well-known/ulp, the REST binding at /ulp, and, with an A2AURL, the A2A
+// binding at /a2a and the agent card at /.well-known/agent-card.json.
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+discovery.Path, func(w http.ResponseWriter, _ *http.Request) {
@@ -194,5 +215,41 @@ func (n *Node) Handler() http.Handler {
 		_, _ = w.Write(n.profile)
 	})
 	mux.Handle("/ulp", rest.Handler(n))
+	if n.cfg.A2AURL != "" {
+		mux.Handle("/a2a", a2a.Handler(n))
+		mux.Handle("GET "+a2a.WellKnownCardPath, a2a.CardHandler(n.Card()))
+	}
 	return mux
+}
+
+// agenticSkills are the A2A skills behind the intents that take one: a
+// free-text task for this company's agent (docs/DESIGN.md, A.3).
+var agenticSkills = map[string]func(name string) a2a.AgentSkill{
+	intents.TnTInquiry: func(name string) a2a.AgentSkill {
+		return a2a.AgentSkill{
+			ID:   "shipment-inquiry",
+			Name: "Shipment inquiry",
+			Description: "Ask " + name + " a free-text question about one of your bookings. Send a signed ulp.tnt.inquiry " +
+				"envelope in a data part; the answer, grounded in the booking's records and citing them, comes back as a " +
+				"signed ulp.tnt.inquiry.response (or ulp.error) in a data part.",
+			Tags:       []string{"ulp", "track-and-trace"},
+			InputModes: []string{"application/json"}, OutputModes: []string{"application/json"},
+		}
+	},
+}
+
+// Card is the node's A2A agent card: its agentic skills only.
+func (n *Node) Card() a2a.AgentCard {
+	skills := []a2a.AgentSkill{}
+	for _, intent := range slices.Sorted(maps.Keys(n.cfg.Handlers)) {
+		if skill, ok := agenticSkills[intent]; ok {
+			skills = append(skills, skill(n.cfg.Name))
+		}
+	}
+	return a2a.AgentCard{
+		Name: n.cfg.Name, Description: "The ULP agent of " + n.cfg.Name + " (" + n.cfg.Domain + ").",
+		URL: n.cfg.A2AURL, ProtocolVersion: a2a.ProtocolVersion,
+		PreferredTransport: a2a.TransportJSONRPC, DefaultInputModes: []string{"application/json"},
+		DefaultOutputModes: []string{"application/json"}, Skills: skills,
+	}
 }

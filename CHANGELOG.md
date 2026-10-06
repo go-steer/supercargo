@@ -14,6 +14,7 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- The A2A binding (milestone 4, part 2), `pkg/transport/a2a`: JSON-RPC `message/send` carrying the signed envelope in a data part, and the agent card at `/.well-known/agent-card.json`. Operators publish `transports.a2a` and the `shipment-inquiry` skill, and the shipper's inquiries go over A2A, falling back to REST for a receiver without an endpoint. Refusals before verification come back as JSON-RPC errors carrying the bare status. Node log lines name the binding (`via`).
 - The inquiry, Scene 5 over REST (milestone 4, part 1):
   - `ulp.tnt.inquiry` and `ulp.tnt.inquiry.response` bodies in `pkg/intents`.
   - `internal/llm`: a small provider-neutral `Model` interface, and a fake model with adversarial replies.

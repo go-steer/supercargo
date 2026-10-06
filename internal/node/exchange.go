@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
+	"github.com/go-steer/supercargo/pkg/transport/a2a"
 	"github.com/go-steer/supercargo/pkg/transport/rest"
 )
 
@@ -56,8 +57,30 @@ func (n *Node) Exchange(ctx context.Context, h envelope.Header, body intents.Bod
 	if n.cfg.Poster == nil {
 		return nil, errors.New("node: no Poster configured")
 	}
-	return n.exchange(ctx, h, body, expect, func(msg []byte) ([]byte, error) {
-		return n.cfg.Poster.Post(ctx, h.Receiver, msg)
+	return n.exchange(ctx, h, body, expect, func(msg []byte) ([]byte, string, error) {
+		resp, err := n.cfg.Poster.Post(ctx, h.Receiver, msg)
+		return resp, "rest", err
+	})
+}
+
+// ExchangeA2A is Exchange over the A2A binding, for the agentic intents
+// (an inquiry): the receiver's agent takes the task. A receiver that
+// publishes no A2A endpoint gets the same message over REST, so the
+// binding never decides whether a message can be sent.
+func (n *Node) ExchangeA2A(ctx context.Context, h envelope.Header, body intents.Body, expect ...string) (*Request, error) {
+	if n.cfg.A2A == nil {
+		return n.Exchange(ctx, h, body, expect...)
+	}
+	if n.cfg.Poster == nil {
+		return nil, errors.New("node: no Poster configured")
+	}
+	return n.exchange(ctx, h, body, expect, func(msg []byte) ([]byte, string, error) {
+		resp, err := n.cfg.A2A.Post(ctx, h.Receiver, msg)
+		if !errors.Is(err, a2a.ErrNoEndpoint) {
+			return resp, "a2a", err
+		}
+		resp, err = n.cfg.Poster.Post(ctx, h.Receiver, msg)
+		return resp, "rest", err
 	})
 }
 
@@ -70,13 +93,14 @@ func (n *Node) Push(ctx context.Context, h envelope.Header, body intents.Body, e
 	if n.cfg.Poster == nil {
 		return errors.New("node: no Poster configured")
 	}
-	_, err := n.exchange(ctx, h, body, nil, func(msg []byte) ([]byte, error) {
-		return n.cfg.Poster.PostTo(ctx, h.Receiver, endpoint, msg)
+	_, err := n.exchange(ctx, h, body, nil, func(msg []byte) ([]byte, string, error) {
+		resp, err := n.cfg.Poster.PostTo(ctx, h.Receiver, endpoint, msg)
+		return resp, "rest", err
 	})
 	return err
 }
 
-func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Body, expect []string, post func([]byte) ([]byte, error)) (*Request, error) {
+func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Body, expect []string, post func([]byte) ([]byte, string, error)) (*Request, error) {
 	if h.Sender != n.cfg.Domain || h.Intent != body.Intent() {
 		return nil, fmt.Errorf("node: header sender %q / intent %q don't match this node and the body", h.Sender, h.Intent)
 	}
@@ -93,7 +117,8 @@ func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Bod
 		return nil, err
 	}
 	ev := Event{Direction: "out", Intent: h.Intent, Sender: h.Sender, Receiver: h.Receiver, MessageID: h.MessageID, KID: n.cfg.KID, Verified: true}
-	resp, err := post(msg)
+	resp, via, err := post(msg)
+	ev.Via = via
 	if errors.Is(err, rest.ErrNoResponse) && len(expect) == 0 {
 		ev.Outcome, ev.Time = "sent", n.cfg.Now()
 		n.cfg.Observer(ev)
@@ -106,11 +131,11 @@ func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Bod
 	}
 	ev.Outcome, ev.Time = "sent", n.cfg.Now()
 	n.cfg.Observer(ev)
-	return n.checkResponse(ctx, h, resp, expect)
+	return n.checkResponse(ctx, h, resp, expect, via)
 }
 
-func (n *Node) checkResponse(ctx context.Context, req envelope.Header, resp []byte, expect []string) (*Request, error) {
-	ev := Event{Direction: "in", Outcome: "rejected"}
+func (n *Node) checkResponse(ctx context.Context, req envelope.Header, resp []byte, expect []string, via string) (*Request, error) {
+	ev := Event{Direction: "in", Via: via, Outcome: "rejected"}
 	fail := func(reason string) (*Request, error) {
 		ev.Reason, ev.Time = reason, n.cfg.Now()
 		n.cfg.Observer(ev)

@@ -40,7 +40,9 @@ import (
 	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/discovery"
+	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/sig"
+	"github.com/go-steer/supercargo/pkg/transport/a2a"
 	"github.com/go-steer/supercargo/pkg/transport/rest"
 )
 
@@ -198,11 +200,19 @@ func (nw *network) clients(t *testing.T) (*discovery.Cache, *rest.Client) {
 func (nw *network) wire(t *testing.T, c *company, name, role string, handlers map[string]node.Handler) {
 	t.Helper()
 	cache, client := nw.clients(t)
+	a2aClient, err := a2a.NewClient(cache, rest.ClientOptions{Peers: nw.peers, TLSConfig: &tls.Config{RootCAs: nw.ca.pool}, Resolver: noDNS{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2aURL := ""
+	if _, agentic := handlers[intents.TnTInquiry]; agentic {
+		a2aURL = "https://" + c.domain + "/a2a"
+	}
 	n, err := node.New(node.Config{
 		Domain: c.domain, Name: name, Roles: []string{role},
-		KID: c.kid, Signer: c.signer, PublicJWK: c.jwk,
+		KID: c.kid, Signer: c.signer, PublicJWK: c.jwk, A2AURL: a2aURL,
 		Keys: cache, Replay: store.NewReplay(store.ReplayOptions{}),
-		Handlers: handlers, Poster: client, Observer: c.observe, Now: nw.now,
+		Handlers: handlers, Poster: client, A2A: a2aClient, Observer: c.observe, Now: nw.now,
 	})
 	if err != nil {
 		t.Fatal(err)

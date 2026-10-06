@@ -40,6 +40,7 @@ import (
 	"github.com/go-steer/supercargo/pkg/discovery"
 	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/sig"
+	"github.com/go-steer/supercargo/pkg/transport/a2a"
 	"github.com/go-steer/supercargo/pkg/transport/rest"
 )
 
@@ -106,7 +107,12 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	}
 	// Exchanges get 10s unless their context says otherwise; an inquiry,
 	// waiting on the operator's model, sets a longer deadline (shipper.AskTimeout).
-	client, err := rest.NewClient(cache, rest.ClientOptions{Peers: cfg.Peers, AllowHTTP: insecure, TLSConfig: clientTLS, MaxTimeout: time.Minute})
+	clientOpts := rest.ClientOptions{Peers: cfg.Peers, AllowHTTP: insecure, TLSConfig: clientTLS, MaxTimeout: time.Minute}
+	client, err := rest.NewClient(cache, clientOpts)
+	if err != nil {
+		return nil, err
+	}
+	a2aClient, err := a2a.NewClient(cache, clientOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -124,18 +130,26 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		handlers[intents.TnTEvent] = inbound
 		handlers[intents.TnTAlert] = inbound
 	}
-	restURL := ""
+	restURL, a2aURL := "", ""
+	if cfg.Role == config.RoleOperator {
+		// The operator's agent serves the shipment-inquiry skill.
+		a2aURL = "https://" + cfg.Domain + "/a2a"
+	}
 	if insecure {
 		restURL = "http://" + cfg.Domain + "/ulp"
+		if a2aURL != "" {
+			a2aURL = "http://" + cfg.Domain + "/a2a"
+		}
 	}
 	n, err := node.New(node.Config{
 		Domain: cfg.Domain, Name: cfg.Name, Roles: []string{cfg.Role},
-		KID: kid, Signer: signer, PublicJWK: jwk, RESTURL: restURL, AllowHTTP: insecure,
+		KID: kid, Signer: signer, PublicJWK: jwk, RESTURL: restURL, A2AURL: a2aURL, AllowHTTP: insecure,
 		Keys:     cache,
 		Replay:   store.NewReplay(store.ReplayOptions{Retention: cfg.Security.ReplayRetention}),
 		MaxSkew:  cfg.Security.MaxSkew,
 		Handlers: handlers,
 		Poster:   client,
+		A2A:      a2aClient,
 		Observer: node.SlogObserver(logger),
 	})
 	if err != nil {

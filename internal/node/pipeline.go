@@ -27,6 +27,7 @@ import (
 	"github.com/go-steer/supercargo/pkg/discovery"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
+	"github.com/go-steer/supercargo/pkg/transport/a2a"
 	"github.com/go-steer/supercargo/pkg/transport/rest"
 )
 
@@ -45,7 +46,11 @@ func (n *Node) Process(ctx context.Context, msg []byte) (res rest.Result) {
 		return rest.Result{Status: http.StatusBadRequest}
 	}
 	claimed := u.ClaimedHeader()
-	ev := Event{Direction: "in", Intent: claimed.Intent, Sender: claimed.Sender, Receiver: claimed.Receiver,
+	via := "rest"
+	if a2a.Via(ctx) {
+		via = "a2a"
+	}
+	ev := Event{Direction: "in", Via: via, Intent: claimed.Intent, Sender: claimed.Sender, Receiver: claimed.Receiver,
 		MessageID: claimed.MessageID, KID: u.KID()}
 
 	env, status, rej := n.verify(ctx, u, &ev)
@@ -85,7 +90,7 @@ func (n *Node) Process(ctx context.Context, msg []byte) (res rest.Result) {
 	if reply == nil || reply.Body == nil {
 		return rest.Result{}
 	}
-	out, err := n.sealReply(&h, reply)
+	out, err := n.sealReply(&h, reply, ev.Via)
 	if err != nil {
 		ev.Outcome, ev.Reason, ev.Time = "failed", "sealing the reply: "+err.Error(), n.cfg.Now()
 		n.cfg.Observer(ev)
@@ -181,7 +186,7 @@ func (n *Node) refuse(h *envelope.Header, ev Event, rej *Rejection) rest.Result 
 			body = &intents.ErrorBody{Code: intents.CodeInternal, Detail: details[intents.CodeInternal]}
 		}
 	}
-	out, err := n.sealReply(h, &Reply{Body: body})
+	out, err := n.sealReply(h, &Reply{Body: body}, ev.Via)
 	if err != nil {
 		return rest.Result{Status: http.StatusInternalServerError}
 	}
@@ -189,7 +194,7 @@ func (n *Node) refuse(h *envelope.Header, ev Event, rej *Rejection) rest.Result 
 }
 
 // sealReply signs reply as a response to the verified header h.
-func (n *Node) sealReply(h *envelope.Header, reply *Reply) ([]byte, error) {
+func (n *Node) sealReply(h *envelope.Header, reply *Reply, via string) ([]byte, error) {
 	if err := reply.Body.Validate(); err != nil {
 		return nil, fmt.Errorf("node: invalid %s reply body: %w", reply.Body.Intent(), err)
 	}
@@ -215,7 +220,7 @@ func (n *Node) sealReply(h *envelope.Header, reply *Reply) ([]byte, error) {
 	if len(out) > envelope.MaxSize {
 		return nil, fmt.Errorf("node: reply is %d bytes, over the %d the receiver accepts", len(out), envelope.MaxSize)
 	}
-	n.cfg.Observer(Event{Time: n.cfg.Now(), Direction: "out", Intent: rh.Intent, Sender: rh.Sender, Receiver: rh.Receiver,
+	n.cfg.Observer(Event{Time: n.cfg.Now(), Direction: "out", Via: via, Intent: rh.Intent, Sender: rh.Sender, Receiver: rh.Receiver,
 		MessageID: rh.MessageID, KID: n.cfg.KID, Outcome: "sent", Verified: true})
 	return out, nil
 }

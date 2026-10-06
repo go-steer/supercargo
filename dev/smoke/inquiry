@@ -49,10 +49,14 @@ grep -q "Halifax" <<<"$answer" || smoke_fail "$work" "the answer doesn't mention
 grep -q "(held, signed)" <<<"$answer" || smoke_fail "$work" "the answer cites nothing the shipper holds"
 if grep -q "(not held)" <<<"$answer"; then smoke_fail "$work" "the answer cites records the shipper doesn't hold"; fi
 
-grep -qE '"intent":"ulp.tnt.inquiry".*"verified":true.*"outcome":"accepted"' "$work/operator.log" ||
-  smoke_fail "$work" "the operator logged no verified, accepted inquiry"
+grep -qE '"intent":"ulp.tnt.inquiry".*"via":"a2a".*"verified":true.*"outcome":"accepted"' "$work/operator.log" ||
+  smoke_fail "$work" "the operator logged no verified, accepted inquiry over A2A"
 grep -qE '"msg":"model call".*"booking":"'"$ref"'".*"outcome":"ok"' "$work/operator.log" ||
   smoke_fail "$work" "the operator logged no model call"
+
+# The operator's agent card lists the skill the inquiry went to.
+curl -fsS "http://127.0.0.1:$OP_PORT/.well-known/agent-card.json" | grep -q '"id":"shipment-inquiry"' ||
+  smoke_fail "$work" "the operator's agent card doesn't list shipment-inquiry"
 
 # Asking about a booking the shipper doesn't hold never leaves its node.
 if "$work/bin/ulpnode" ask --config "$work/shipper.yaml" --booking OB-BKG-9999 "Where is it?" >/dev/null 2>&1; then
