@@ -53,6 +53,7 @@ operator="$q/bin/ulpnode serve --config $q/operator.yaml"
 shipper="$q/bin/ulpnode serve --config $q/shipper.yaml"
 book="$q/bin/ulpnode book --config $q/shipper.yaml --operator ocean-blue.example --request $q/booking.json"
 disrupt="$q/bin/ulpctl disrupt --config $q/operator.yaml --booking OB-BKG-1042 --delay 72h --reason \"Engine repair, unscheduled call at Halifax.\""
+ask="$q/bin/ulpnode ask --config $q/shipper.yaml --booking OB-BKG-1042 \"What caused the delay, and how firm is the new ETA?\""
 
 if $tmux; then
   command -v tmux >/dev/null || { echo "hello-ulp: tmux is not installed; run without --tmux" >&2; exit 1; }
@@ -70,6 +71,7 @@ if $tmux; then
   tmux select-pane -t "$session:0.2"
   echo "In tmux: press Enter in the lower-left pane to book (answer y), and in the"
   echo "lower-right pane once Cymbal's log shows the departure, to disrupt."
+  echo "Then ask Ocean Blue why, in the lower-left pane: $ask"
   exec tmux attach -t "$session"
 fi
 
@@ -96,6 +98,13 @@ Hello ULP is set up in $dir. Open four terminals:
 
      Cymbal's log shows the signed delay alert: "alert recorded",
      severity=high, the ETA moving from the 13th to the 16th.
+
+  5. Ask Ocean Blue why, as Cymbal Shoes:
+       $ask
+
+     Ocean Blue's log shows the inquiry verified, authorized and answered
+     (a "model call" line; the fake model needs no API key), and the answer
+     cites events and the alert that Cymbal holds signed.
 
 Run it again from step 1 with a fresh booking by restarting both nodes
 (they keep everything in memory).

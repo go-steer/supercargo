@@ -119,12 +119,12 @@ func TestDecodeConfirmationAndError(t *testing.T) {
 }
 
 func TestSupported(t *testing.T) {
-	for _, in := range []string{BookingRequest, BookingConfirmation, Error, TnTEvent, TnTAlert} {
+	for _, in := range []string{BookingRequest, BookingConfirmation, Error, TnTEvent, TnTAlert, TnTInquiry, TnTInquiryResponse} {
 		if !Supported(in) {
 			t.Errorf("Supported(%s) = false", in)
 		}
 	}
-	for _, in := range []string{TnTInquiry, TnTInquiryResponse, DelegationGrant, "ulp.nope", ""} {
+	for _, in := range []string{DelegationGrant, "ulp.nope", ""} {
 		if Supported(in) {
 			t.Errorf("Supported(%s) = true", in)
 		}
@@ -133,9 +133,9 @@ func TestSupported(t *testing.T) {
 
 func TestDecodeUnsupported(t *testing.T) {
 	e := request(`{}`)
-	e.Header.Intent = TnTInquiry
+	e.Header.Intent = DelegationGrant
 	if _, err := Decode(e); !errors.Is(err, ErrUnsupportedIntent) {
-		t.Errorf("Decode(%s) = %v, want ErrUnsupportedIntent", TnTInquiry, err)
+		t.Errorf("Decode(%s) = %v, want ErrUnsupportedIntent", DelegationGrant, err)
 	}
 }
 

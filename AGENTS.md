@@ -145,5 +145,10 @@ are in:
   script, real processes over sockets, sharing `lib.sh` with `dev/demo`.
   A new demo-able scenario gets a smoke script here.
 
-Next is milestone 4: the A2A binding and the inquiry responder (fake model
-first).
+- The inquiry (milestone 4, part 1): `tnt.inquiry` over REST, `internal/llm`
+  (the `Model` interface and the fake), the operator's `InquiryService`
+  (authorize, then load one booking, then the model, then validate, else
+  the template), and `ulpnode ask`.
+
+Next in milestone 4: the A2A binding for the inquiry, then the Anthropic
+adapter (ported from mast) and agent skills.

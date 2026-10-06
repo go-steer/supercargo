@@ -14,6 +14,15 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- The inquiry, Scene 5 over REST (milestone 4, part 1):
+  - `ulp.tnt.inquiry` and `ulp.tnt.inquiry.response` bodies in `pkg/intents`.
+  - `internal/llm`: a small provider-neutral `Model` interface, and a fake model with adversarial replies.
+  - The operator's `InquiryService`. Only the booking's shipper may ask. Only that booking's record and records reach the model, with the question in its own block. The reply must be one JSON object whose answer passes the free-text rules and whose citations are this booking's. Otherwise it retries once, then falls back to a deterministic template. Each model call is logged (prompt hash, tokens, latency, outcome).
+  - `ulpnode ask`: asks through the running shipper node, and marks the cited records the shipper holds signed.
+  - Limits on inquiries in progress (2 per partner, 8 in all).
+  - `rest.ClientOptions.MaxTimeout`: `Timeout` now bounds an exchange whose context has no deadline, and a longer context deadline is honoured up to `MaxTimeout`.
+  - `llm: { provider: fake }` answers grounded in the records with no API key; without an `llm` section every answer is the template.
+  - `dev/smoke/inquiry`, and step 5 of `dev/demo/hello-ulp`.
 - Hello ULP, milestone 3's demo: `dev/demo/hello-ulp` sets up an operator and a shipper on localhost and prints the commands for four terminals (or opens them in tmux). You book, watch the voyage's events arrive signed and verified, then disrupt the voyage and watch the delay alert arrive.
   - The operator's shipment simulator: each confirmed booking plays out on an accelerated clock (`simulator.hoursPerSecond`): gate-in, load, departure, arrival estimate, arrival, discharge, gate-out.
   - `ulpctl disrupt`: delays a voyage. The simulator publishes a new arrival estimate and a delay alert citing it.

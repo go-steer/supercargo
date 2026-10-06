@@ -32,6 +32,7 @@ import (
 
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/operator"
 	"github.com/go-steer/supercargo/internal/shipper"
@@ -103,7 +104,9 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	client, err := rest.NewClient(cache, rest.ClientOptions{Peers: cfg.Peers, AllowHTTP: insecure, TLSConfig: clientTLS})
+	// Exchanges get 10s unless their context says otherwise; an inquiry,
+	// waiting on the operator's model, sets a longer deadline (shipper.AskTimeout).
+	client, err := rest.NewClient(cache, rest.ClientOptions{Peers: cfg.Peers, AllowHTTP: insecure, TLSConfig: clientTLS, MaxTimeout: time.Minute})
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +146,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		a.Publisher.Pusher = n
 	}
 	if cfg.Role == config.RoleShipper {
-		a.Shipper = &shipper.Shipper{Node: n, Bookings: a.Bookings, Now: time.Now}
+		a.Shipper = &shipper.Shipper{Node: n, Bookings: a.Bookings, Events: a.Events, Now: time.Now}
 	}
 	if cfg.Control != nil {
 		h := operator.ControlHandler(a.Simulator)
@@ -159,7 +162,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		// connection (and its goroutine) open indefinitely.
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      60 * time.Second, // an inquiry waits on a model
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
@@ -262,6 +265,21 @@ func (a *App) operatorRole(handlers map[string]node.Handler) {
 	deny := map[string]bool{}
 	for _, d := range o.Deny {
 		deny[d] = true
+	}
+	var model llm.Model
+	if cfg.LLM != nil && cfg.LLM.Provider == config.ProviderFake {
+		model = operator.FakeInquiryModel()
+	}
+	handlers[intents.TnTInquiry] = &operator.InquiryService{Bookings: a.Bookings, Log: a.Events, Model: model, Name: cfg.Name,
+		OnModelCall: func(c operator.ModelCall) {
+			level := slog.LevelInfo
+			if c.Outcome != "ok" {
+				level = slog.LevelWarn
+			}
+			log.Log(context.Background(), level, "model call", "booking", c.Booking, "attempt", c.Attempt, "model", c.Model,
+				"promptHash", c.PromptHash, "inputTokens", c.Usage.InputTokens, "outputTokens", c.Usage.OutputTokens,
+				"latency", c.Latency.Round(time.Millisecond).String(), "outcome", c.Outcome, "reason", c.Reason)
+		},
 	}
 	handlers[intents.BookingRequest] = &operator.BookingService{
 		Bookings: a.Bookings, Deny: deny, RefPrefix: o.RefPrefix, ContainerPrefix: o.ContainerPrefix, Now: time.Now,

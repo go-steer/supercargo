@@ -68,6 +68,20 @@ func TestEventLogKeys(t *testing.T) {
 	}
 }
 
+func TestBookingsOperators(t *testing.T) {
+	s := NewBookings()
+	for _, op := range []string{"z.example", "a.example"} {
+		_ = s.Add(Booking{Ref: "R-1", Operator: op})
+	}
+	_ = s.Add(Booking{Ref: "R-2", Operator: "a.example"})
+	if got := s.Operators("R-1"); len(got) != 2 || got[0] != "a.example" || got[1] != "z.example" {
+		t.Errorf("Operators(R-1) = %v", got)
+	}
+	if got := s.Operators("R-9"); len(got) != 0 {
+		t.Errorf("Operators(R-9) = %v", got)
+	}
+}
+
 func TestBookingsCap(t *testing.T) {
 	s := NewBookings()
 	s.max = 1

@@ -48,7 +48,8 @@ dev/
 ├── smoke/                 # end-to-end scenarios: real ulpnode processes
 │   ├── lib.sh             # shared with dev/demo: build, keys, configs, start/stop
 │   ├── booking            # two nodes book over REST; a declined booking isn't sent
-│   └── push               # hello ULP scripted: events, ulpctl disrupt, the alert
+│   ├── push               # hello ULP scripted: events, ulpctl disrupt, the alert
+│   └── inquiry            # Scene 5: ulpnode ask, a grounded, signed answer
 ├── demo/
 │   └── hello-ulp          # the interactive milestone 3 demo (see below)
 └── ci/
@@ -148,6 +149,8 @@ in `internal/node`.
 - `push`: the hello ULP demo, scripted. The voyage's events reach the
   shipper, verified and recorded; `ulpctl disrupt` produces a delay alert
   that reaches it too.
+- `inquiry`: Scene 5. After a disruption, `ulpnode ask` gets an answer from
+  the operator's fake model, citing records the shipper holds signed.
 
 To add one, write an executable script in `dev/smoke/` that sources
 `lib.sh` (`demo_build`, `demo_ports`, `demo_setup`, `smoke_start`,

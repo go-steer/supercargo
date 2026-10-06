@@ -15,7 +15,9 @@
 package shipper
 
 import (
+	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/pkg/envelope"
@@ -66,5 +68,51 @@ func ControlHandler(s *Shipper) http.Handler {
 		}
 		control.Answer(w, http.StatusOK, BookResponse{Confirmation: conf})
 	})
+	mux.HandleFunc("POST /ask", func(w http.ResponseWriter, r *http.Request) {
+		var req AskRequest
+		if err := control.Decode(r, &req); err != nil {
+			control.Answer(w, http.StatusBadRequest, AskResponse{Error: err.Error()})
+			return
+		}
+		op := req.Operator
+		if op == "" {
+			// The reference alone names it if exactly one operator has it.
+			switch ops := s.Bookings.Operators(req.BookingRef); len(ops) {
+			case 0:
+				control.Answer(w, http.StatusNotFound, AskResponse{Error: "no booking " + req.BookingRef})
+				return
+			case 1:
+				op = ops[0]
+			default:
+				control.Answer(w, http.StatusConflict, AskResponse{Error: "several operators have a booking " + req.BookingRef + "; name one: " + strings.Join(ops, ", ")})
+				return
+			}
+		}
+		a, err := s.Ask(r.Context(), op, req.BookingRef, req.Question)
+		switch {
+		case errors.Is(err, ErrNotOurBooking):
+			control.Answer(w, http.StatusNotFound, AskResponse{Error: err.Error()})
+		case err != nil:
+			control.Answer(w, http.StatusBadGateway, AskResponse{Error: err.Error()})
+		default:
+			control.Answer(w, http.StatusOK, AskResponse{Operator: a.Operator, Answer: a.Response, Held: a.Held})
+		}
+	})
 	return mux
+}
+
+// AskRequest is the body of the control API's POST /ask. Operator may be
+// empty when only one operator has a booking under BookingRef.
+type AskRequest struct {
+	Operator   string `json:"operator,omitempty"`
+	BookingRef string `json:"bookingRef"`
+	Question   string `json:"question"`
+}
+
+// AskResponse is its answer.
+type AskResponse struct {
+	Operator string                          `json:"operator,omitempty"`
+	Answer   *intents.TnTInquiryResponseBody `json:"answer,omitempty"`
+	Held     []string                        `json:"held,omitempty"`
+	Error    string                          `json:"error,omitempty"`
 }

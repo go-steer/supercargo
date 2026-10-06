@@ -32,7 +32,10 @@ import (
 type Shipper struct {
 	Node     *node.Node
 	Bookings *store.Bookings
-	Now      func() time.Time
+	// Events are the events and alerts received (optional): Ask marks
+	// which of an answer's citations the shipper holds.
+	Events *store.EventLog
+	Now    func() time.Time
 }
 
 // Book sends a booking request to operator and returns its answer. Only a

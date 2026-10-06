@@ -111,7 +111,7 @@ var (
 )
 
 // MaxCauseEvents bounds the events an alert may cite.
-const MaxCauseEvents = 20
+const MaxCauseEvents = MaxCitations
 
 // TnTAlertBody is the body of ulp.tnt.alert: the operator telling
 // subscribers, unasked, that something changed.
@@ -158,16 +158,6 @@ func (b *TnTAlertBody) Validate() error {
 			}
 		}
 	}
-	if len(b.CauseEventIDs) > MaxCauseEvents {
-		errs = append(errs, fmt.Errorf("causeEventIds has %d entries, over %d", len(b.CauseEventIDs), MaxCauseEvents))
-	}
-	seen := map[string]bool{}
-	for i, id := range b.CauseEventIDs {
-		errs = append(errs, ref(fmt.Sprintf("causeEventIds[%d]", i), id))
-		if seen[id] {
-			errs = append(errs, fmt.Errorf("causeEventIds[%d] repeats %s", i, logsafe.Quote(id)))
-		}
-		seen[id] = true
-	}
+	errs = append(errs, citations("causeEventIds", b.CauseEventIDs))
 	return errors.Join(errs...)
 }
