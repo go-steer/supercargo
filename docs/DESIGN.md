@@ -528,6 +528,8 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 
 **Converse over A2A, commit with intents.** An agentic conversation can end in a decision, for example a negotiation settling on a different voyage. That decision is never left as prose in a transcript: it's executed as an ordinary signed intent (a booking request or amendment), verified and authorized like any other, carried either inside the same A2A task as a data part or separately over REST. The binding record of what was agreed is a signed, structured message.
 
+**Only signed intents commit.** That rule covers every binding and integration, not just A2A. MCP tool calls, agent conversations and partner integrations may look things up, propose and draft. Anything that binds two companies (a booking, an amendment, a grant of access) happens only as a signed intent, built and signed by the node.
+
 **REST binding:**
 - `POST /ulp` with the serialized envelope as the JSON request body. Sync responses (`booking.confirmation`, `ulp.error`) come back as the response body, also signed envelopes.
 - Webhooks: the operator `POST`s signed `tnt.event`/`tnt.alert` envelopes to the subscriber's registered endpoint (its own `/ulp`). A 2xx response is the ack; the publisher retries with backoff otherwise.
@@ -539,7 +541,22 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 - The demo's inquiry is a single request/response. Longer conversations (negotiation, exception workflows) map onto A2A **tasks**, with `input-required` for steps that wait on a person.
 - Implementation: evaluate the official A2A Go SDK first; otherwise a small JSON-RPC client and server. The envelope stays independent of the binding.
 
-**MCP binding (later):** the shipper's internal operations as MCP tools (stdio) so any MCP-capable assistant can drive the shipper node, and possibly an operator-side MCP server for third-party LLM clients. The tools call the node's operations; anything sent to a partner is still built and signed by the node, never by the model, and an operator-side server applies the same authorization rules ([A.6](#a6-authorization-rules)).
+**MCP binding (later):** the node as an MCP server, in two forms. Both use the official MCP Go SDK, and the tools call the node's core operations.
+
+- **Local server (shipper side, stdio).** The shipper's internal operations as MCP tools, so the company's own MCP-capable assistants can drive its node. It sits in the same trust domain as `ulpchat` and offers the same kind of tools: read and draft. Sending and granting stay behind the CLI's explicit confirmation; anything sent to a partner is still built and signed by the node, never by the model.
+- **Partner on-ramp (operator side).** A read-only way in for partners' LLM clients, so a partner without a ULP node (a consignee checking a container, say) can still get answers. This is **the one place trust doesn't come from the envelope**: an MCP call is not a signed message. So:
+  - **Identity.** The caller's identity is a **domain**, established through MCP's OAuth authorization, federated with the partner's identity provider and bound to that partner's domain. A partner that already publishes `/.well-known/ulp` can authenticate its client with those keys instead (`private_key_jwt`, RFC 7523), which makes publishing a profile the first step of joining ULP.
+  - **Read-only tools.** They map onto read-only operations (shipment inquiry, event history, booking status): never booking, granting, or anything that commits.
+  - **Same rules, same log.** The authorization rules of [A.6](#a6-authorization-rules) apply to that domain unchanged, and every call is logged like an envelope (`via MCP`, caller, decision).
+
+**MCP as a client: integrations, not bindings.** A node may also call MCP servers. These calls aren't ULP traffic, so they get their own rules:
+
+- **Backend connectors.** A company's existing systems (TMS, booking, ERP) can sit behind MCP servers. Connectors are called by **deterministic code** (the core operations), **after authorization** and scoped to the authorized request: the events of one `bookingRef`, not a query the model wrote. Models see results, never the connector. A model with open access to a backend connector could fetch other bookings' data, which [A.6](#a6-authorization-rules) and the hard rules forbid. Where a model does need a tool (`ulpchat` drafting), it gets a pre-scoped, read-only tool bound to the current request.
+- **Partner MCP servers.** For a partner without a ULP node, or for capabilities ULP doesn't define (rates, schedules, documents), the node may call the partner's MCP server. This is outside ULP and weaker than it: there's no signed record, and identity is only as strong as the server's TLS and OAuth.
+  - Results are **untrusted data**: validated, length-capped, never authoritative, and never instructions to a model.
+  - Calls are read-only by default. Anything with an external effect needs the same explicit human confirmation as sending an envelope.
+  - Anything that must bind both parties goes over ULP.
+- **Client hardening (both kinds).** Refuse server-initiated sampling, elicitation and roots requests. Run stdio servers with a minimal environment. Cap response sizes. This mirrors the hardening in go-steer/mast's MCP client.
 
 ### A.8 Operator internals
 
@@ -551,6 +568,7 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 | Event store | Append-only events per booking (the operator's "knowledge graph" for the demo) |
 | Publisher | Signs and pushes events and alerts to subscribers; retries with backoff; per-subscription ordering |
 | Inquiry responder | Serves the A2A `shipment-inquiry` skill: authorized data (fetched through the same core operations as the REST binding) → LLM → output validation → response ([A.10](#a10-llm-integration)) |
+| Backend connectors (later) | MCP clients to the operator's existing systems (TMS, booking), called by core operations after authorization ([A.7](#a7-transport-bindings)). The demo uses the in-memory stores instead |
 
 ### A.9 Shipper internals
 
@@ -561,7 +579,8 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 | Shipment store | Bookings, received events and alerts (verified envelopes stored as received, for audit) |
 | Business context | Private data the LLM may use: required delivery dates, warehouse slots, launch dates. **Never sent to partners** |
 | Inbound handlers | `tnt.event` → store; `tnt.alert` → store + trigger the alert summarizer |
-| Internal API | Local-only API used by `ulpchat` (and later by a local MCP server) |
+| Internal API | Local-only API used by `ulpchat` (and later by the local MCP server, [A.7](#a7-transport-bindings)) |
+| Backend connectors (later) | MCP clients to the shipper's own systems (ERP, warehouse), called by deterministic code; also the source of business context |
 
 ### A.10 LLM integration
 
@@ -576,6 +595,24 @@ type Model interface {
 ```
 
 Choose the provider by config. The demo logic must not depend on provider-specific features beyond tool calling and JSON output.
+
+**No agent runner: the tool loop is ours.** Each `Generate` call is one turn. Tool calls come back to the caller, which validates them and then executes or refuses them. Frameworks whose runner executes the model's tool calls itself (ADK's, for one) don't fit "models propose, code acts".
+
+**Code adapted from go-steer/mast.** The Anthropic adapter is adapted from mast's provider: tool-call conversion, thinking blocks, JSON-schema normalization. Copied files carry a `derived from go-steer/mast@<commit>` header and are maintained here. mast's packages are internal to its module, and copying keeps pre-1.0 churn and private-module access out of this build. The fake model follows mast's replay and schema-filling fakes. It adds adversarial replies (malformed JSON, event IDs from another booking, oversized answers) so that validation and fallback paths are exercised by default.
+
+**Agent skills.** An *agent skill* is a `SKILL.md` file: YAML frontmatter (`name`, `description`) plus Markdown instructions that steer a model. It's not the same as an *A2A skill* ([A.7](#a7-transport-bindings)), which is a capability listed in the agent card. A company's agent skills are, among other things, how it customizes the agent behind its A2A skills. There are two sources:
+
+- **Built-in agent skills** ship with supercargo, one per interaction (booking, tracking, inquiry, delegation). Each explains to the model what that interaction means, what the node will and won't do, and what its outputs look like. They're versioned with the protocol, so the model's picture of an interaction matches the code.
+- **Company agent skills** load from a directory in the node's own configuration ([A.12](#a12-configuration-per-company)) and customize behavior: tone, business rules, escalation policy, what to disclose. One example is how Ocean Blue's `shipment-inquiry` agent phrases delays. They're part of that company's own configuration and trusted like the rest of it, but never accepted from partners or over the wire.
+
+Skill descriptions go into the system prompt; a skill's full body loads when needed, through a read-only tool. Parsing uses ADK v2's `skill` package (standard library plus YAML, with no runner) or an equivalent small loader.
+
+**The boundary:** agent skills shape what a model says and proposes, nothing more.
+- They can't add tools or reach the send and grant paths.
+- They can't widen data scope: authorization and data loading happen before the model, in code.
+- They can't relax the rules in this section, which the code enforces whatever any prompt says.
+
+Each model call logs the agent skills it ran with (name and content hash).
 
 **LLM #1: shipper assistant** (in `ulpchat`, using tools against the node's internal API)
 
@@ -620,7 +657,9 @@ ulp-demo/
 │   ├── node/             # pipeline: verify → replay → validate → authorize → route
 │   ├── operator/         # bookings, simulator, events, publisher, inquiry responder
 │   ├── shipper/          # partners, drafts, store, business context, handlers, internal API
-│   ├── llm/              # Model interface + anthropic, gemini, fake
+│   ├── llm/              # Model interface, our tool loop; anthropic (adapted from mast), gemini, fake
+│   ├── skills/           # agent skills: built-in SKILL.md files (embedded) + company directory loader
+│   ├── mcp/              # MCP server binding and client connectors (official MCP Go SDK)
 │   └── store/            # in-memory stores (+ optional JSON snapshot for reset)
 ├── deploy/
 │   ├── docker-compose.yml   # cymbal-shoes, ocean-blue, cymbal-footwear, mallory
@@ -643,6 +682,12 @@ llm:
   provider: anthropic            # anthropic | gemini | fake
   model: <model id>
   apiKeyEnv: LLM_API_KEY
+skills:
+  dir: /etc/ulp/skills           # company agent skills (optional), on top of the built-in ones
+mcp:                             # later (A.7)
+  connectors:                    # backend systems; called by core operations only, never by a model
+    - name: tms
+      url: https://tms.internal.ocean-blue.example/mcp
 simulator:
   hoursPerSecond: 1
 security:
@@ -656,7 +701,7 @@ security:
 |---|---|
 | Unit | Envelope JWS against the golden vectors from an independent JOSE implementation; envelope sign/verify round trip; body validation; delegation checks; authorization table ([A.6](#a6-authorization-rules)) as table tests |
 | Integration | Two or more nodes in one test process (`httptest` servers with fake domains), running scenes 1–8 with the **fake model**; asserts on envelopes exchanged and log decisions |
-| Security | Tampered body/header, wrong `kid`, unknown sender, replayed `messageId`, stale `sentAt`, wrong `receiver`, subscription endpoint on a foreign domain, expired or mis-scoped delegation, prompt-injection inquiries from authorized senders (the answer must still cite only that booking's events) |
+| Security | Tampered body/header, wrong `kid`, unknown sender, replayed `messageId`, stale `sentAt`, wrong `receiver`, subscription endpoint on a foreign domain, expired or mis-scoped delegation, prompt-injection inquiries from authorized senders (the answer must still cite only that booking's events), a company agent skill that tries to widen data scope or trigger a send (no effect), the fake model's adversarial replies (template fallback), webhook and discovery URLs that resolve to private addresses (refused); later, partner MCP results carrying instructions (treated as data) and MCP on-ramp callers asking about another domain's booking (denied) |
 | LLM evals (manual / nightly) | A fixed set of inquiries and alerts with expected facts; check citations are valid and no data from other bookings appears |
 | End to end | `docker compose up` + scripted `ulpchat`/`ulpctl` run of the full demo |
 
@@ -673,6 +718,13 @@ security:
 | 7 | Delegation | Scene 8 |
 | 8 | Polish: compose setup, local CA, log formatting, rehearsal with the fake model | Acceptance criteria 1–5 |
 
+What each milestone also carries:
+
+- **M2:** the discovery fetch refuses loopback, private, link-local and metadata addresses *after resolving* and doesn't follow redirects (`sender` is checked for form, not for where it points). Transports cap reads at `envelope.MaxSize`. Typed body decoding matches member names exactly.
+- **M3:** webhook delivery applies the same address guards. A subscription endpoint on the subscriber's own domain ([A.6](#a6-authorization-rules)) can still resolve to an internal address.
+- **M4:** the `internal/llm` Model interface, the Anthropic adapter and the fake model (adapted from mast, [A.10](#a10-llm-integration)), the agent skills loader, the built-in inquiry skill, and company agent skills for the inquiry responder.
+- **M5:** `ulpchat`'s tool loop (ours, no runner) and the built-in booking and tracking agent skills.
+
 ### A.15 Out of scope (and where each would go next)
 
 | Item | Next step |
@@ -681,7 +733,10 @@ security:
 | Spot procurement (multiple operators) | `ulp.booking.procurement` broadcast + shipper LLM comparing offers |
 | Alternative voyage proposals | `booking.confirmation.status = alternative_proposed` |
 | Rebooking negotiation | A2A `rebooking-negotiation` skill as a multi-turn task (`input-required` when a person must decide), committed as a signed booking amendment ([A.7](#a7-transport-bindings): converse over A2A, commit with intents) |
-| Local MCP server | The MCP binding ([A.7](#a7-transport-bindings)): the shipper's internal API as MCP tools (stdio) so any MCP-capable assistant can drive it |
+| Local MCP server | The MCP binding ([A.7](#a7-transport-bindings)): the shipper's internal API as MCP tools (stdio) so any MCP-capable assistant can drive it; read and draft only |
+| Partner MCP on-ramp | Operator-side MCP server for partners without a node ([A.7](#a7-transport-bindings)): read-only tools, identity as a domain via federated OAuth or `private_key_jwt` with the partner's published keys; a possible "Scene 8b" where the consignee uses an assistant instead of a node |
+| Backend MCP connectors | Core operations reading the TMS and ERP through MCP instead of in-memory stores, after authorization and scoped to the request ([A.7](#a7-transport-bindings)) |
+| Partner MCP client | Calling a partner's MCP server where it has no ULP node: untrusted results, read-only by default, human confirmation for effects ([A.7](#a7-transport-bindings)) |
 | Signed acknowledgements (B2B MDN equivalent) | Signed `ulp.ack` for pushes |
 | Production key management | Key rotation via multiple `kid`s in the profile; HSM/KMS-backed signing (a `sig.Signer` implementation) |
 | Post-quantum signatures | ML-DSA-65 (FIPS 204) as a second `alg` once Go exposes it publicly; see [A.2](#a2-identity-keys-and-trust-design-decisions) |
