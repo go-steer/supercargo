@@ -26,10 +26,14 @@ demo scenario scene by scene, plus the technical design (envelope, intents,
 trust and authorization, transport bindings, LLM integration) and the build
 milestones.
 
-Milestone 1 is in: signed JWS envelopes (`pkg/envelope`), pluggable
-signatures with Ed25519 first (`pkg/sig`), and strict JSON decoding for
-unauthenticated input. Next is milestone 2: discovery, the node pipeline and
-the REST binding.
+Milestones 1 and 2 are in:
+- **Protocol:** signed JWS envelopes (`pkg/envelope`), pluggable signatures with Ed25519 first (`pkg/sig`), party profiles and a key cache (`pkg/discovery`), and intent bodies (`pkg/intents`).
+- **Node:** the node pipeline and the REST binding (`internal/node`, `pkg/transport/rest`).
+- **Binary:** `ulpnode` (`serve`, `keygen`, `book`).
+
+Two companies' nodes now book over REST and TLS, each verifying the other's signed envelopes. Next is milestone 3: the shipment simulator, subscriptions and webhook push.
+
+To try it, mint a key with `ulpnode keygen`, write a config ([§A.12](./docs/DESIGN.md#a12-configuration-per-company)), and run `ulpnode serve`. `dev/tools/smoke` does exactly that for an operator and a shipper on localhost.
 
 ## Development
 

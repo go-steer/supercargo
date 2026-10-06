@@ -742,14 +742,28 @@ ulp-demo/
 
 ```yaml
 domain: ocean-blue.example
-role: operator
+name: Ocean Blue                 # published in the profile
+role: operator                   # operator | shipper
 listen: ":8443"
-tls: { mode: local-ca }          # or insecure-dev
-keys:
+tls:
+  mode: local-ca                 # or insecure-dev (plain HTTP, loudly logged)
+  certFile: /certs/ocean-blue.pem      # the node's server certificate
+  keyFile: /certs/ocean-blue-key.pem
+  caFile: /certs/ca.pem          # trusted for partners' certificates; omit for the system roots
+keys:                            # exactly one until key rotation (A.15)
   - kid: ob-2026-1
-    privateKeyFile: /keys/ob-2026-1.pem
+    privateKeyFile: /keys/ob-2026-1.pem   # PKCS#8 Ed25519, mode 0600 (`ulpnode keygen`)
 peers:                           # local deployments only (A.2): domain → host:port to connect to
   cymbal-shoes.example: cymbal-shoes:8443
+partners: [cymbal-shoes.example] # pinned in the key cache, with every peer-map domain
+operator:                        # operator role only
+  refPrefix: OB-BKG
+  containerPrefix: OCBU          # ISO 6346 owner code + category
+  vessel: Ocean Blue Aurora
+  voyage: 42W
+  departureHour: 18              # UTC, the day after the earliest departure requested
+  transit: 134h
+  deny: []                       # domains whose booking requests are refused
 discovery:
   ttl: 1h                        # profiles are never used past this
   refreshFloor: 1m               # at most one fetch per domain per floor
@@ -769,6 +783,13 @@ security:
   maxSkew: 5m
   replayRetention: 15m            # must exceed 2 × maxSkew
 ```
+
+Loading is strict: an unknown or misspelled key is an error, because a security setting that is silently ignored is worse than one that fails to load. The `llm`, `skills`, `mcp` and `simulator` sections are accepted now and used by later milestones.
+
+`ulpnode` runs a node:
+- `ulpnode serve --config node.yaml` runs it, with every HTTP server timeout set.
+- `ulpnode keygen --kid … --out key.pem` mints a signing key (mode 0600, never overwriting) and prints its public JWK. No key, test or otherwise, ever lives in the repository.
+- `ulpnode book --config shipper.yaml --operator … --request booking.json` sends a booking after an explicit `y`. `--yes` is for scripts, where running the command is the confirmation.
 
 ### A.13 Testing
 

@@ -372,6 +372,9 @@ func TestCacheResistsJunkDomains(t *testing.T) {
 	if !c.cached("partner.example") || !c.cached(domain) {
 		t.Fatal("junk domains displaced a partner's valid entry")
 	}
+	if !c.IsPinned(domain) || c.IsPinned("partner.example") {
+		t.Error("IsPinned disagrees with CacheOptions.Pinned")
+	}
 	if _, err := c.Key(ctx, "partner.example", "p1"); err != nil {
 		t.Errorf("partner lookup during the flood: %v", err)
 	}

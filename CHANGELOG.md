@@ -14,6 +14,9 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- `cmd/ulpnode`: `serve` runs a node from its YAML config, with every HTTP server timeout set and the peer map logged at startup. `keygen` mints an Ed25519 signing key (mode 0600, never overwriting) and prints its public JWK. `book` sends a booking after an explicit `y`.
+- `internal/config` (strict YAML: unknown keys are errors; the signing key must be owner-only) and `internal/app` (a node assembled from config, with the same peers and TLS policy for discovery and the REST client, and partners pinned in the key cache).
+- `dev/tools/smoke`, now in the CI sweep: two real `ulpnode` processes booking over sockets. Milestone 2 is complete.
 - `pkg/transport/rest`: the REST binding. `Handler` serves `POST /ulp` (size-capped while reading) for any `Processor`, and `Client` posts to the endpoint in the receiver's profile, always through the guarded outbound client.
 - The ULP node (`internal/node`): its profile, the inbound pipeline (parse → receiver and intent → key → verify → skew → replay → body → authorize → handle → signed reply, with nothing signed in answer to an unverified message: refusals before verification are bare HTTP statuses, after it signed `ulp.error` replies with fixed details), `Exchange` for outbound requests with full response checks, and a structured event per decision.
 - The operator's booking service and the shipper's `Book`, with in-memory replay and booking stores. Two nodes now book over REST and TLS, which is milestone 2's demo.

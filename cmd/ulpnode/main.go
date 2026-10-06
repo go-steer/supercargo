@@ -1,0 +1,228 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Command ulpnode runs one company's ULP node (docs/DESIGN.md, section A.1).
+//
+//	ulpnode serve  --config node.yaml               run the node
+//	ulpnode keygen --kid cy-2026-1 --out key.pem    mint a signing key; print its public JWK
+//	ulpnode book   --config node.yaml --operator ocean-blue.example --request booking.json
+//	                                                send a booking (after an explicit y)
+package main
+
+import (
+	"bufio"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+
+	"github.com/go-steer/supercargo/internal/app"
+	"github.com/go-steer/supercargo/internal/config"
+	"github.com/go-steer/supercargo/pkg/intents"
+	"github.com/go-steer/supercargo/pkg/sig"
+)
+
+func main() {
+	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, "ulpnode:", err)
+		os.Exit(1)
+	}
+}
+
+const usage = `usage:
+  ulpnode serve  --config FILE [--log-format text|json]
+  ulpnode keygen --kid KID --out FILE
+  ulpnode book   --config FILE --operator DOMAIN --request FILE [--yes]`
+
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		return errors.New(usage)
+	}
+	switch args[0] {
+	case "serve":
+		return serve(args[1:], stderr)
+	case "keygen":
+		return keygen(args[1:], stdout)
+	case "book":
+		return book(args[1:], stdin, stdout, stderr)
+	default:
+		return fmt.Errorf("unknown command %q\n%s", args[0], usage)
+	}
+}
+
+func logger(format string, w io.Writer) (*slog.Logger, error) {
+	switch format {
+	case "text":
+		return slog.New(slog.NewTextHandler(w, nil)), nil
+	case "json":
+		return slog.New(slog.NewJSONHandler(w, nil)), nil
+	}
+	return nil, fmt.Errorf("--log-format %q is not text or json", format)
+}
+
+func serve(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path := fs.String("config", "", "node configuration (YAML)")
+	format := fs.String("log-format", "text", "text or json")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *path == "" {
+		return errors.New("serve: --config is required")
+	}
+	log, err := logger(*format, stderr)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	a, err := app.New(cfg, log)
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return a.Serve(ctx)
+}
+
+func keygen(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
+	kid := fs.String("kid", "", "key ID to publish the key under")
+	out := fs.String("out", "", "where to write the private key (PKCS#8 PEM, mode 0600; must not exist)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !sig.ValidKID(*kid) || *out == "" {
+		return errors.New("keygen: --kid (1-64 of [A-Za-z0-9._-]) and --out are required")
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return err
+	}
+	if err := config.WriteSigningKey(*out, priv); err != nil {
+		return err
+	}
+	jwk, err := sig.Ed25519JWK(pub, *kid)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(stdout, "%s\n", jwk)
+	return err
+}
+
+func book(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("book", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path := fs.String("config", "", "the shipper node's configuration (YAML)")
+	operatorDomain := fs.String("operator", "", "the operator's domain")
+	reqPath := fs.String("request", "", "the booking request body (JSON)")
+	yes := fs.Bool("yes", false, "send without asking (scripts; the person running it is the confirmation)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *path == "" || *operatorDomain == "" || *reqPath == "" {
+		return errors.New("book: --config, --operator and --request are required")
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	if cfg.Role != config.RoleShipper {
+		return errors.New("book: the config is not a shipper's")
+	}
+	req, err := readRequest(*reqPath)
+	if err != nil {
+		return err
+	}
+	// Built before asking: a broken key or CA shows up before anyone says
+	// yes, not after.
+	log, _ := logger("text", stderr)
+	a, err := app.New(cfg, log)
+	if err != nil {
+		return err
+	}
+	printSummary(stdout, *operatorDomain, req)
+	if !*yes {
+		// The hard rule: an action with external effect needs an explicit
+		// yes from a person.
+		fmt.Fprint(stdout, "Send this booking request? [y/N] ")
+		answer, _ := bufio.NewReader(stdin).ReadString('\n')
+		if strings.TrimSpace(strings.ToLower(answer)) != "y" {
+			fmt.Fprintln(stdout, "Not sent.")
+			return errNotSent
+		}
+	}
+	conf, err := a.Shipper.Book(context.Background(), *operatorDomain, req)
+	if err != nil {
+		return err
+	}
+	out, _ := json.MarshalIndent(conf, "", "  ")
+	_, err = fmt.Fprintf(stdout, "%s\n", out)
+	return err
+}
+
+// errNotSent reports a booking the person declined: a non-zero exit, so a
+// script can tell "not sent" from "sent".
+var errNotSent = errors.New("book: not sent")
+
+// printSummary shows everything the operator will learn or act on, so a
+// yes is an informed one: where events will be pushed, who the consignee
+// is, what is shipped.
+func printSummary(w io.Writer, operator string, r *intents.BookingRequestBody) {
+	fmt.Fprintf(w, "Booking request to %s (ref %s):\n", operator, r.ShipperRef)
+	fmt.Fprintf(w, "  Route:      %s (%s) → %s (%s), earliest departure %s\n",
+		r.Origin.Name, r.Origin.UNLocode, r.Destination.Name, r.Destination.UNLocode, r.EarliestDeparture)
+	for _, e := range r.Equipment {
+		fmt.Fprintf(w, "  Equipment:  %d × %s (%s)\n", e.Count, e.Label, e.ISOType)
+	}
+	fmt.Fprintf(w, "  Cargo:      %s, HS %s\n", r.Cargo.Description, r.Cargo.HSCode)
+	if r.Consignee != nil {
+		fmt.Fprintf(w, "  Consignee:  %s (%s)\n", r.Consignee.Name, r.Consignee.Domain)
+	}
+	if r.Subscription != nil {
+		fmt.Fprintf(w, "  Updates:    %s will push %s to %s\n", operator, strings.Join(r.Subscription.Intents, ", "), r.Subscription.Endpoint)
+	} else {
+		fmt.Fprintln(w, "  Updates:    none requested")
+	}
+}
+
+func readRequest(path string) (*intents.BookingRequestBody, error) {
+	f, err := os.Open(path) //nolint:gosec // G304: the user's own request file
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	dec := json.NewDecoder(io.LimitReader(f, 64<<10))
+	dec.DisallowUnknownFields()
+	var req intents.BookingRequestBody
+	if err := dec.Decode(&req); err != nil {
+		return nil, fmt.Errorf("book: %s: %w", path, err)
+	}
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("book: %s: %w", path, err)
+	}
+	return &req, nil
+}

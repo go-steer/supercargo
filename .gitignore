@@ -7,6 +7,8 @@ CLAUDE.md
 
 # Go build artifacts
 bin/
+# `go build ./cmd/ulpnode` from the repo root drops the binary here.
+/ulpnode
 dist/
 *.test
 *.out
