@@ -65,6 +65,7 @@ dev/ci/presubmits/verify-go-format  # gofmt + goimports (fix: dev/tools/fix-go-f
 dev/ci/presubmits/verify-mod-tidy   # go.mod/go.sum are tidy
 dev/ci/presubmits/verify-apidiff    # exported-API diff vs the last release tag
 dev/ci/presubmits/verify-vuln       # govulncheck
+dev/ci/presubmits/smoke             # two real ulpnode processes booking over sockets
 dev/ci/presubmits/verify-no-agent-attribution  # no agent credit in commits
 ```
 
@@ -124,14 +125,18 @@ Conventions worth knowing at agent prompt time:
 
 ## Current state
 
-Milestone 1 of [`docs/DESIGN.md`](./docs/DESIGN.md#a14-build-milestones) is
-in:
-- `pkg/envelope`: JWS envelopes; `Seal`, then `Parse` and `Unverified.Verify`.
-- `pkg/sig`: pluggable signers and verifiers; Ed25519; JWK keys.
-- `pkg/internal/strictjson`: strict decoding of unauthenticated JSON.
+Milestones 1 and 2 of [`docs/DESIGN.md`](./docs/DESIGN.md#a14-build-milestones)
+are in:
+- `pkg/envelope`, `pkg/sig`, `pkg/internal/strictjson`: JWS envelopes with
+  pluggable signatures (Ed25519), checked against `testdata/golden/envelope.json`
+  (made by joserfc via `dev/tools/gen-golden-vectors`; regenerate, never edit).
+- `pkg/discovery`, `pkg/intents`, `pkg/internal/netguard`: profiles and the
+  key cache, intent bodies, and the outbound guard every request to a host
+  named by someone else goes through.
+- `internal/node` (the pipeline), `pkg/transport/rest`, `internal/store`,
+  `internal/operator`, `internal/shipper`: two nodes book over REST and TLS.
+- `internal/config`, `internal/app`, `cmd/ulpnode` (`serve`, `keygen`,
+  `book`), and `dev/tools/smoke`: two real processes booking over sockets.
 
-They are checked against `testdata/golden/envelope.json`, which joserfc
-makes through `dev/tools/gen-golden-vectors`. Regenerate it, never edit it.
-The same script's `verify-go` mode checks Go-sealed envelopes with joserfc
-(see `TestGoSealedEnvelopesForPython`). Next is milestone 2: discovery (JWK
-key sets), the node pipeline and the REST transport.
+Next is milestone 3: the shipment simulator, subscriptions and webhook push
+("hello ULP", REST only). Webhook delivery must use the outbound guard.

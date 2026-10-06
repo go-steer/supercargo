@@ -1,0 +1,253 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package config
+
+import (
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+const operatorYAML = `
+domain: ocean-blue.example
+name: Ocean Blue
+role: operator
+listen: ":8443"
+tls: { mode: local-ca, certFile: /certs/ob.pem, keyFile: /certs/ob-key.pem, caFile: /certs/ca.pem }
+keys:
+  - kid: ob-2026-1
+    privateKeyFile: /keys/ob-2026-1.pem
+peers:
+  cymbal-shoes.example: cymbal-shoes:8443
+partners: [cymbal-shoes.example, cymbal-footwear.example]
+discovery: { ttl: 1h, refreshFloor: 1m }
+security: { maxSkew: 5m, replayRetention: 15m }
+operator:
+  refPrefix: OB-BKG
+  containerPrefix: OCBU
+  vessel: Ocean Blue Aurora
+  voyage: 42W
+  departureHour: 18
+  transit: 134h
+  deny: [mallory.example]
+llm: { provider: fake, model: m, apiKeyEnv: LLM_API_KEY }
+skills: { dir: /etc/ulp/skills }
+mcp: { connectors: [{ name: tms, url: "https://tms.internal.ocean-blue.example/mcp" }] }
+simulator: { hoursPerSecond: 1 }
+`
+
+func TestParse(t *testing.T) {
+	c, err := Parse([]byte(operatorYAML))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if c.Domain != "ocean-blue.example" || c.Operator.Transit != 134*time.Hour || c.Security.ReplayRetention != 15*time.Minute ||
+		c.Peers["cymbal-shoes.example"] != "cymbal-shoes:8443" || c.Discovery.TTL != time.Hour {
+		t.Errorf("parsed %+v", c)
+	}
+	pinned := c.Pinned()
+	slices.Sort(pinned)
+	if !slices.Equal(pinned, []string{"cymbal-footwear.example", "cymbal-shoes.example"}) {
+		t.Errorf("Pinned = %v", pinned)
+	}
+	// Defaults: skew 5m, retention 3× skew.
+	minimal := `{domain: cymbal-shoes.example, name: Cymbal, role: shipper, listen: ":8443", tls: {mode: insecure-dev},
+keys: [{kid: cy-1, privateKeyFile: k.pem}]}`
+	c, err = Parse([]byte(minimal))
+	if err != nil {
+		t.Fatalf("Parse(minimal): %v", err)
+	}
+	if c.Security.MaxSkew != 5*time.Minute || c.Security.ReplayRetention != 15*time.Minute {
+		t.Errorf("defaults: %+v", c.Security)
+	}
+}
+
+func TestParseRejects(t *testing.T) {
+	for name, edit := range map[string][2]string{
+		"unknown key":                {"name: Ocean Blue", "name: Ocean Blue\nfrobnicate: yes"},
+		"misspelled security key":    {"maxSkew: 5m", "maxskew: 5m"},
+		"bad domain":                 {"domain: ocean-blue.example", "domain: Ocean Blue"},
+		"no name":                    {"name: Ocean Blue", "name: \"\""},
+		"bad role":                   {"role: operator", "role: admin"},
+		"bad listen":                 {`listen: ":8443"`, "listen: 8443"},
+		"bad tls mode":               {"mode: local-ca", "mode: none"},
+		"local-ca without cert":      {"certFile: /certs/ob.pem, ", ""},
+		"bad kid":                    {"kid: ob-2026-1", "kid: ob 1"},
+		"no key file":                {"privateKeyFile: /keys/ob-2026-1.pem", "privateKeyFile: \"\""},
+		"two keys":                   {"    privateKeyFile: /keys/ob-2026-1.pem", "    privateKeyFile: /keys/ob-2026-1.pem\n  - kid: ob-2\n    privateKeyFile: /k2"},
+		"peer key not a domain":      {"cymbal-shoes.example: cymbal-shoes:8443", "10.0.0.1: cymbal-shoes:8443"},
+		"peer target without port":   {"cymbal-shoes.example: cymbal-shoes:8443", "cymbal-shoes.example: cymbal-shoes"},
+		"partner not a domain":       {"partners: [cymbal-shoes.example", "partners: [Cymbal"},
+		"negative ttl":               {"ttl: 1h", "ttl: -1h"},
+		"negative skew":              {"maxSkew: 5m", "maxSkew: -5m"},
+		"retention not over 2× skew": {"replayRetention: 15m", "replayRetention: 10m"},
+		"bad duration":               {"ttl: 1h", "ttl: an hour"},
+		"short container prefix":     {"containerPrefix: OCBU", "containerPrefix: OCB"},
+		"lowercase container prefix": {"containerPrefix: OCBU", "containerPrefix: ocbu"},
+		"bad departure hour":         {"departureHour: 18", "departureHour: 24"},
+		"no transit":                 {"transit: 134h", "transit: 0s"},
+		"deny entry not a domain":    {"deny: [mallory.example]", "deny: [\"*\"]"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := strings.Replace(operatorYAML, edit[0], edit[1], 1)
+			if in == operatorYAML {
+				t.Fatalf("edit %q didn't apply", edit[0])
+			}
+			if _, err := Parse([]byte(in)); err == nil {
+				t.Error("Parse succeeded")
+			}
+		})
+	}
+	// An operator with no operator section at all: only the section check
+	// can refuse it (an unknown key would be caught by strict decoding).
+	section := "operator:\n  refPrefix: OB-BKG\n  containerPrefix: OCBU\n  vessel: Ocean Blue Aurora\n  voyage: 42W\n  departureHour: 18\n  transit: 134h\n  deny: [mallory.example]\n"
+	if !strings.Contains(operatorYAML, section) {
+		t.Fatal("fixture changed: operator section not found")
+	}
+	if _, err := Parse([]byte(strings.Replace(operatorYAML, section, "", 1))); err == nil {
+		t.Error("an operator without an operator section was accepted")
+	}
+	if _, err := Parse([]byte(strings.Replace(operatorYAML, section, "operator: ~\n", 1))); err == nil {
+		t.Error("an operator with a null operator section was accepted")
+	}
+	// A second YAML document would otherwise be silently ignored.
+	if _, err := Parse([]byte(operatorYAML + "---\nsecurity: { maxSkew: 1m }\n")); err == nil {
+		t.Error("a second YAML document was accepted")
+	}
+	for name, edit := range map[string][2]string{
+		"skew over an hour":           {"security: { maxSkew: 5m, replayRetention: 15m }", "security: { maxSkew: 100000h, replayRetention: 300001h }"},
+		"retention over a day":        {"replayRetention: 15m", "replayRetention: 25h"},
+		"ttl over a day":              {"ttl: 1h", "ttl: 48h"},
+		"refresh floor over a day":    {"refreshFloor: 1m", "refreshFloor: 48h"},
+		"name with a control char":    {"name: Ocean Blue", "name: \"Ocean\\x07Blue\""},
+		"name with a bidi override":   {"name: Ocean Blue", "name: \"Ocean Blue\\u202e\""},
+		"listen with a word for port": {`listen: ":8443"`, `listen: "host:abc"`},
+		"listen port out of range":    {`listen: ":8443"`, `listen: ":70000"`},
+		"peer target with no host":    {"cymbal-shoes.example: cymbal-shoes:8443", `cymbal-shoes.example: ":8443"`},
+		"self as a partner":           {"partners: [cymbal-shoes.example", "partners: [ocean-blue.example"},
+		"self on the deny list":       {"deny: [mallory.example]", "deny: [ocean-blue.example]"},
+	} {
+		in := strings.Replace(operatorYAML, edit[0], edit[1], 1)
+		if in == operatorYAML {
+			t.Fatalf("%s: edit didn't apply", name)
+		}
+		if _, err := Parse([]byte(in)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	shipperWithOperator := strings.Replace(operatorYAML, "role: operator", "role: shipper", 1)
+	if _, err := Parse([]byte(shipperWithOperator)); err == nil {
+		t.Error("a shipper with an operator section was accepted")
+	}
+	if _, err := Parse([]byte("{")); err == nil {
+		t.Error("invalid YAML accepted")
+	}
+}
+
+func TestLoad(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "node.yaml")
+	if err := os.WriteFile(p, []byte(operatorYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err != nil {
+		t.Errorf("Load: %v", err)
+	}
+	if _, err := Load(filepath.Join(dir, "missing.yaml")); err == nil {
+		t.Error("Load of a missing file succeeded")
+	}
+}
+
+func TestSigningKeyRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "key.pem")
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	if err := WriteSigningKey(p, priv); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(p)
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("key written with mode %v", info.Mode().Perm())
+	}
+	got, err := LoadSigningKey(p)
+	if err != nil || !got.Equal(priv) {
+		t.Fatalf("LoadSigningKey = %v", err)
+	}
+	if err := WriteSigningKey(p, priv); err == nil {
+		t.Error("WriteSigningKey overwrote an existing file")
+	}
+	if err := WriteSigningKey(filepath.Join(dir, "no", "such", "dir"), priv); err == nil {
+		t.Error("WriteSigningKey into a missing directory succeeded")
+	}
+}
+
+func TestLoadSigningKeyRejects(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, data []byte, mode os.FileMode) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, data, mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, mode); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	der, _ := x509.MarshalPKCS8PrivateKey(priv)
+	good := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	ecDER, _ := x509.MarshalPKCS8PrivateKey(ec)
+
+	for name, p := range map[string]string{
+		"group-readable": write("group.pem", good, 0o640),
+		"world-readable": write("world.pem", good, 0o604),
+		"not PEM":        write("junk.pem", []byte("key"), 0o600),
+		"wrong type":     write("type.pem", pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}), 0o600),
+		"trailing data":  write("trail.pem", append(append([]byte(nil), good...), []byte("extra")...), 0o600),
+		"bad DER":        write("der.pem", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte{1, 2}}), 0o600),
+		"not Ed25519":    write("ec.pem", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: ecDER}), 0o600),
+		"missing":        filepath.Join(dir, "missing.pem"),
+		"a directory":    dir,
+	} {
+		if _, err := LoadSigningKey(p); err == nil {
+			t.Errorf("%s: LoadSigningKey succeeded", name)
+		}
+	}
+	// A good key in a directory others can write to: they could swap it.
+	shared := t.TempDir()
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(shared, "key.pem")
+	if err := os.WriteFile(p, good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSigningKey(p); err == nil {
+		t.Error("a key in a world-writable directory was accepted")
+	}
+	if _, err := LoadSigningKey(filepath.Join(t.TempDir(), "missing-dir", "key.pem")); err == nil {
+		t.Error("a key in a missing directory was accepted")
+	}
+}

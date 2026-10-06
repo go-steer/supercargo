@@ -59,8 +59,8 @@ STEPS=(
   "test      dev/tools/test-unit"
   # Reads the coverage.out the test step just wrote.
   "coverage  dev/tools/verify-coverage"
-  # An end-to-end smoke step joins this list with the node binary; see
-  # dev/README.md.
+  # Two real ulpnode processes booking over sockets.
+  "smoke     dev/tools/smoke"
   "vuln      dev/tools/verify-vuln"
 )
 

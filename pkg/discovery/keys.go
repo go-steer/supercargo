@@ -143,6 +143,9 @@ func NewCache(src Source, opts CacheOptions) (*Cache, error) {
 	}, nil
 }
 
+// IsPinned reports whether domain is pinned (CacheOptions.Pinned).
+func (c *Cache) IsPinned(domain string) bool { return c.pinned[domain] }
+
 // Key returns the verifier domain publishes under kid. It fetches the
 // profile when none is cached, when the cached one is older than TTL, or
 // when it lacks kid (a rotated key), but no more often than RefreshFloor.

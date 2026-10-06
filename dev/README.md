@@ -38,6 +38,7 @@ dev/
 │   ├── verify-apidiff     # exported-API diff vs the last release tag
 │   ├── test-unit          # go test -race -coverprofile
 │   ├── verify-coverage    # per-package floors vs coverage.out
+│   ├── smoke              # two real ulpnode processes booking over sockets
 │   ├── verify-vuln        # govulncheck ./...
 │   ├── verify-no-agent-attribution # no agent credit in commits/PR text
 │   ├── add-license-headers # bulk-applier for the Apache 2.0 header
@@ -55,6 +56,7 @@ dev/
         ├── verify-vuln
         ├── verify-no-agent-attribution
         ├── verify-coverage
+        ├── smoke
         └── test-unit
 ```
 
@@ -124,10 +126,15 @@ diff hunk. It regenerates a stale profile itself.
 in `dev/tools/ci`, whose default run needs no Python.
 See [`testdata/golden/README.md`](../testdata/golden/README.md).
 
-## Deferred until there is code to hold
+## Smoke test
 
-- **An end-to-end smoke step** (the demo's nodes talking over real sockets)
-  joins once the node binary exists.
+`dev/tools/smoke` builds `ulpnode`, mints two signing keys with `ulpnode
+keygen` into a temp dir, starts an operator and a shipper as separate
+processes on localhost (insecure-dev mode, joined by a peer map), books
+through `ulpnode book --yes`, and checks the operator logged a verified,
+accepted request, and that a booking answered with anything but `y` is not
+sent. It needs `curl`. TLS is exercised by the integration tests in
+`internal/node`.
 
 ## review-gate
 
