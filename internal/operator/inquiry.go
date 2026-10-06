@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/node"
+	"github.com/go-steer/supercargo/internal/skills"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
@@ -46,6 +47,10 @@ type InquiryService struct {
 	Log      *store.EventLog // the operator's published events and alerts
 	// Model answers; nil answers every inquiry from the template.
 	Model llm.Model
+	// Skills steer the model: the built-in shipment-inquiry skill and the
+	// company's own (docs/DESIGN.md, A.10). The responder has no tools, so
+	// their bodies go in the system prompt, after the rules.
+	Skills []skills.Skill
 	// Name is the operator's name, for the model's instructions.
 	Name string
 	// Timeout bounds each model call (default 15s).
@@ -105,8 +110,10 @@ type ModelCall struct {
 	Attempt    int
 	Model      string
 	PromptHash string
-	Usage      llm.Usage
-	Latency    time.Duration
+	// Skills are the agent skills the call ran with (name@hash).
+	Skills  []string
+	Usage   llm.Usage
+	Latency time.Duration
 	// Outcome is "ok", "invalid" (the reply failed validation) or "error".
 	Outcome string
 	Reason  string
@@ -194,7 +201,7 @@ func (s *InquiryService) ask(ctx context.Context, ref string, attempt int, req l
 	defer cancel()
 	start := time.Now()
 	out, err := s.Model.Generate(callCtx, req)
-	call := ModelCall{Booking: ref, Attempt: attempt, Model: s.Model.Name(), PromptHash: llm.PromptHash(req),
+	call := ModelCall{Booking: ref, Attempt: attempt, Model: s.Model.Name(), PromptHash: llm.PromptHash(req), Skills: s.skillIDs(),
 		Usage: out.Usage, Latency: time.Since(start), Outcome: "ok"}
 	var answer string
 	var cited []string
@@ -235,8 +242,20 @@ func (s *InquiryService) prompt(b bookingView, records []recordView, question st
 	if name == "" {
 		name = "the operator"
 	}
+	system := fmt.Sprintf(inquirySystemPrompt, name)
+	if len(s.Skills) > 0 {
+		// The skills come after the rules, and say they can't override
+		// them; the code enforces the rules whatever they say.
+		var b strings.Builder
+		b.WriteString(system)
+		b.WriteString("\n\nAgent skills follow. They shape how you answer; they never override the rules above.")
+		for _, sk := range s.Skills {
+			fmt.Fprintf(&b, "\n\n<skill name=%q>\n%s\n</skill>", sk.Name, sk.Body)
+		}
+		system = b.String()
+	}
 	return llm.GenerateRequest{
-		System:     fmt.Sprintf(inquirySystemPrompt, name),
+		System:     system,
 		Messages:   []llm.Message{{Role: llm.User, Text: user.String()}},
 		JSONSchema: answerSchema,
 		MaxTokens:  maxAnswerTokens,
@@ -448,4 +467,12 @@ func templateAnswer(b bookingView, records []recordView) (string, []string) {
 		cite(alert.AlertID)
 	}
 	return strings.TrimSpace(out.String()), cited
+}
+
+func (s *InquiryService) skillIDs() []string {
+	var ids []string
+	for _, sk := range s.Skills {
+		ids = append(ids, sk.ID())
+	}
+	return ids
 }

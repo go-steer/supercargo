@@ -54,6 +54,10 @@ grep -qE '"intent":"ulp.tnt.inquiry".*"via":"a2a".*"verified":true.*"outcome":"a
 grep -qE '"msg":"model call".*"booking":"'"$ref"'".*"outcome":"ok"' "$work/operator.log" ||
   smoke_fail "$work" "the operator logged no model call"
 
+# The responder ran with the built-in skill and Ocean Blue's own.
+grep -qE '"msg":"model call".*"skills":\["shipment-inquiry@[0-9a-f]{12}","delay-phrasing@[0-9a-f]{12}"\]' "$work/operator.log" ||
+  smoke_fail "$work" "the model call didn't log both agent skills"
+
 # The operator's agent card lists the skill the inquiry went to.
 curl -fsS "http://127.0.0.1:$OP_PORT/.well-known/agent-card.json" | grep -q '"id":"shipment-inquiry"' ||
   smoke_fail "$work" "the operator's agent card doesn't list shipment-inquiry"

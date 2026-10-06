@@ -153,5 +153,11 @@ are in:
 - The A2A binding (milestone 4, part 2): `pkg/transport/a2a`, the agent
   card, and `node.ExchangeA2A` (falls back to REST).
 
-Next in milestone 4: the Anthropic adapter (ported from mast) and agent
-skills.
+- Claude and agent skills (milestone 4, part 3): `internal/llm/anthropic`,
+  `internal/skills` (built-in `shipment-inquiry`, company skills from
+  `skills.dir`). Milestone 4 is complete.
+
+Next is milestone 5: `ulpchat` (the shipper assistant with tools) and the
+alert summarizer. It is a chat CLI: discuss the interface with the
+maintainer before building it. Cited cause IDs in alerts must be checked
+against the shipper's log before an alert reaches a model.

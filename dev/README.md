@@ -163,7 +163,9 @@ someone may want to watch belongs in `dev/demo/` too, on the same helpers.
 and Cymbal Shoes on localhost, and prints the command for each of four
 terminals: the two nodes' logs, booking, and `ulpctl disrupt` (or opens
 them in tmux). Ports and the clock speed come from `OP_PORT`, `SH_PORT` and
-`HOURS_PER_SECOND`.
+`HOURS_PER_SECOND`. `ULP_LLM=anthropic` has Ocean Blue answer inquiries with
+Claude (the key from `ANTHROPIC_API_KEY` in the operator's terminal); the
+default, the fake model, needs no key.
 
 ## review-gate
 

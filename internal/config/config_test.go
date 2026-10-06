@@ -93,6 +93,11 @@ keys: [{kid: cy-1, privateKeyFile: k.pem}]}`
 	if err != nil || c.Control.Socket != "/tmp/cy/ulp.sock" {
 		t.Errorf("a shipper's control socket: %+v, %v", c, err)
 	}
+	// Anthropic: the key's variable defaults to ANTHROPIC_API_KEY.
+	c, err = Parse([]byte(strings.Replace(operatorYAML, "provider: fake, model: m, apiKeyEnv: LLM_API_KEY", "provider: anthropic", 1)))
+	if err != nil || c.LLM.APIKeyEnv != "ANTHROPIC_API_KEY" || c.LLM.Model != "" {
+		t.Errorf("anthropic defaults: %+v, %v", c.LLM, err)
+	}
 	// An operator's clock defaults to 1h/s.
 	c, err = Parse([]byte(strings.Replace(operatorYAML, "simulator: { hoursPerSecond: 1 }\n", "", 1)))
 	if err != nil {
@@ -132,6 +137,9 @@ func TestParseRejects(t *testing.T) {
 		"clock over the cap":         {"hoursPerSecond: 1", "hoursPerSecond: 3601"},
 		"NaN clock":                  {"hoursPerSecond: 1", "hoursPerSecond: .nan"},
 		"unknown llm provider":       {"provider: fake", "provider: oracle"},
+		"api key env not a name":     {"provider: fake, model: m, apiKeyEnv: LLM_API_KEY", "provider: anthropic, model: m, apiKeyEnv: \"sk-ant-123 key\""},
+		"model not an id":            {"provider: fake, model: m,", "provider: anthropic, model: \"m; rm -rf\","},
+		"relative skills dir":        {"dir: /etc/ulp/skills", "dir: skills"},
 		"relative control socket":    {"socket: /run/ulp/ocean-blue.sock", "socket: ulp.sock"},
 		"unclean control socket":     {"socket: /run/ulp/ocean-blue.sock", "socket: /run/ulp/../ulp.sock"},
 		"long control socket":        {"socket: /run/ulp/ocean-blue.sock", "socket: /" + strings.Repeat("x", 100)},

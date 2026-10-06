@@ -14,6 +14,11 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- Claude and agent skills (milestone 4, part 3):
+  - `internal/llm/anthropic`: the Anthropic adapter, derived from mast's provider. JSON replies come through a forced `respond` tool.
+  - `llm: { provider: anthropic }` takes the key from `ANTHROPIC_API_KEY` (or `apiKeyEnv`); a node without it doesn't start.
+  - `internal/skills`: a `SKILL.md` loader with limits. The built-in `shipment-inquiry` skill is embedded; company skills come from `skills.dir`, and a broken one stops the node. The inquiry responder's skills go after its rules, and each model call logs them by name and hash.
+  - Ocean Blue's `delay-phrasing` skill in the demo. `ULP_LLM=anthropic` runs the demo against Claude, and an opt-in real-model test (`SUPERCARGO_REAL_LLM=1`) sits outside CI.
 - The A2A binding (milestone 4, part 2), `pkg/transport/a2a`: JSON-RPC `message/send` carrying the signed envelope in a data part, and the agent card at `/.well-known/agent-card.json`. Operators publish `transports.a2a` and the `shipment-inquiry` skill, and the shipper's inquiries go over A2A, falling back to REST for a receiver without an endpoint. Refusals before verification come back as JSON-RPC errors carrying the bare status. Node log lines name the binding (`via`).
 - The inquiry, Scene 5 over REST (milestone 4, part 1):
   - `ulp.tnt.inquiry` and `ulp.tnt.inquiry.response` bodies in `pkg/intents`.
