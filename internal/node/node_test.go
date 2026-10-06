@@ -411,6 +411,10 @@ func (f posterFunc) Post(ctx context.Context, r string, m []byte) ([]byte, error
 	return f(ctx, r, m)
 }
 
+func (f posterFunc) PostTo(ctx context.Context, r, _ string, m []byte) ([]byte, error) {
+	return f(ctx, r, m)
+}
+
 func TestProfileServed(t *testing.T) {
 	op := newParty(t, "ob-2026-1")
 	h := handlerFunc{handle: func(context.Context, *node.Request) (*node.Reply, error) { return nil, nil }}

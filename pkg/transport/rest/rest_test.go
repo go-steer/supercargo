@@ -23,7 +23,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-steer/supercargo/pkg/discovery"
@@ -153,6 +155,54 @@ func TestClientPost(t *testing.T) {
 	resp, err := c.Post(context.Background(), "ocean-blue.example", []byte(`{"m":1}`))
 	if err != nil || string(resp) != `{"ok":1}` || string(sent) != `{"m":1}` {
 		t.Errorf("Post = %q, %v (sent %q)", resp, err, sent)
+	}
+}
+
+type mapDNS map[string][]netip.Addr
+
+func (m mapDNS) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
+	if a, ok := m[host]; ok {
+		return a, nil
+	}
+	return nil, errors.New("no such host")
+}
+
+// TestPostTo: a webhook goes exactly to the registered endpoint, which must
+// be on the receiver's own domain and reachable through the guard.
+func TestPostTo(t *testing.T) {
+	var path string
+	var hits atomic.Int32
+	c := client(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		hits.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}, true)
+	if _, err := c.PostTo(context.Background(), "ocean-blue.example", "http://ocean-blue.example/hooks/ulp", nil); !errors.Is(err, ErrNoResponse) {
+		t.Fatalf("PostTo = %v, want ErrNoResponse (204)", err)
+	}
+	if path != "/hooks/ulp" {
+		t.Errorf("posted to %s", path)
+	}
+	for endpoint, want := range map[string]string{
+		"http://mallory.example/ulp":         "is not on",
+		"http://ocean-blue.example:8080/ulp": "is not on",
+		"http://user@ocean-blue.example/ulp": "is not on",
+		"http://OCEAN-BLUE.example/ulp":      "is not on",
+		"ftp://ocean-blue.example/ulp":       "is not https",
+		"%zz":                                "invalid URL escape",
+	} {
+		if _, err := c.PostTo(context.Background(), "ocean-blue.example", endpoint, nil); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("PostTo(%s) = %v, want %q", endpoint, err, want)
+		}
+	}
+	if hits.Load() != 1 {
+		t.Errorf("the server was hit %d times, want 1", hits.Load())
+	}
+	// The receiver's own domain, resolving inward: refused by the guard,
+	// before any connection.
+	guarded, _ := NewClient(profiles{}, ClientOptions{AllowHTTP: true, Resolver: mapDNS{"cymbal-shoes.example": {netip.MustParseAddr("10.0.0.5")}}})
+	if _, err := guarded.PostTo(context.Background(), "cymbal-shoes.example", "http://cymbal-shoes.example/ulp", nil); !errors.Is(err, ErrRefused) {
+		t.Errorf("PostTo an inward-resolving host = %v, want ErrRefused", err)
 	}
 }
 

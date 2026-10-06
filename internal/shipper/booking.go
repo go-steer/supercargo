@@ -61,8 +61,10 @@ func (s *Shipper) Book(ctx context.Context, operator string, req *intents.Bookin
 			Request:      *req,
 			Confirmation: *conf,
 			CreatedAt:    s.Now(),
-		}); err != nil {
+		}); errors.Is(err, store.ErrExists) {
 			return nil, fmt.Errorf("shipper: %s confirmed %s again: %w", operator, conf.BookingRef, err)
+		} else if err != nil {
+			return nil, fmt.Errorf("shipper: recording %s's confirmation of %s: %w", operator, conf.BookingRef, err)
 		}
 	}
 	return conf, nil

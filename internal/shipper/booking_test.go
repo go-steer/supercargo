@@ -20,6 +20,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,6 +46,10 @@ func (k keys) Key(_ context.Context, domain, kid string) (sig.Verifier, error) {
 type poster func(context.Context, string, []byte) ([]byte, error)
 
 func (p poster) Post(ctx context.Context, r string, m []byte) ([]byte, error) { return p(ctx, r, m) }
+
+func (p poster) PostTo(ctx context.Context, r, _ string, m []byte) ([]byte, error) {
+	return p(ctx, r, m)
+}
 
 func shipperWith(t *testing.T, answer func(req envelope.Header) (string, any)) *Shipper {
 	t.Helper()
@@ -121,11 +126,27 @@ func TestBookRefusesReusedReference(t *testing.T) {
 	}
 	second := request()
 	second.ShipperRef = "P2"
-	if _, err := s.Book(context.Background(), "ocean-blue.example", second); err == nil {
-		t.Error("a reused reference was accepted")
+	if _, err := s.Book(context.Background(), "ocean-blue.example", second); !errors.Is(err, store.ErrExists) || !strings.Contains(err.Error(), "again") {
+		t.Errorf("a reused reference: %v, want ErrExists", err)
 	}
 	if b, _ := s.Bookings.Get("ocean-blue.example", "OB-BKG-1"); b.Request.ShipperRef != "P1" {
 		t.Errorf("the first booking was overwritten: %+v", b.Request)
+	}
+}
+
+// TestBookStoreFull: a confirmation the shipper can't record is an error,
+// and not one that blames the operator for reusing a reference.
+func TestBookStoreFull(t *testing.T) {
+	s := shipperWith(t, func(envelope.Header) (string, any) {
+		return intents.BookingConfirmation, &intents.BookingConfirmationBody{
+			BookingRef: "OB-BKG-1", Status: intents.StatusConfirmed,
+			Vessel:           &intents.Vessel{Name: "Aurora", Voyage: "42W"},
+			PlannedDeparture: "2026-10-07T18:00:00Z", PlannedArrival: "2026-10-13T08:00:00Z",
+		}
+	})
+	s.Bookings = store.NewBookingsCap(0)
+	if _, err := s.Book(context.Background(), "ocean-blue.example", request()); !errors.Is(err, store.ErrFull) || strings.Contains(err.Error(), "again") {
+		t.Errorf("Book into a full store: %v, want ErrFull", err)
 	}
 }
 

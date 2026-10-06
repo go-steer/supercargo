@@ -27,10 +27,10 @@ var (
 	// ErrReplay reports a message ID this sender has already used.
 	ErrReplay = errors.New("store: message ID already seen")
 
-	// ErrFull reports a replay store at capacity, for everyone or for this
-	// sender. The message is refused (fail closed), not admitted
-	// unrecorded.
-	ErrFull = errors.New("store: replay store full")
+	// ErrFull reports a store at capacity. For the replay store (for
+	// everyone or for this sender), the message is refused (fail closed),
+	// not admitted unrecorded.
+	ErrFull = errors.New("store: full")
 )
 
 // ReplayOptions configures a Replay. Zero or negative values mean the

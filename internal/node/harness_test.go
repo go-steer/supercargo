@@ -155,6 +155,19 @@ func (c *company) lastIn(t *testing.T) node.Event {
 	return node.Event{}
 }
 
+// inCount is how many inbound events the company's node recorded.
+func (c *company) inCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, e := range c.events {
+		if e.Direction == "in" {
+			n++
+		}
+	}
+	return n
+}
+
 // network is a set of companies that can reach each other's servers.
 type network struct {
 	ca    *testCA
@@ -208,6 +221,24 @@ type demo struct {
 	ship     *shipper.Shipper
 	bookings *store.Bookings // the operator's
 	booking  *operator.BookingService
+
+	// The push path: the operator's publisher, the shipper's inbound
+	// handler and what each logged, and a second carrier (resolvable,
+	// verifiable) that has no business pushing to the operator's bookings.
+	publisher *operator.Publisher
+	opLog     *store.EventLog
+	inbound   *shipper.Inbound
+	shipLog   *store.EventLog
+	rival     *company
+
+	dropMu  sync.Mutex
+	dropped []string
+}
+
+func (d *demo) drops() []string {
+	d.dropMu.Lock()
+	defer d.dropMu.Unlock()
+	return append([]string(nil), d.dropped...)
 }
 
 func newDemo(t *testing.T) *demo {
@@ -217,9 +248,11 @@ func newDemo(t *testing.T) *demo {
 	d.shipper = newCompany(t, ca, shipperDomain, "cy-2026-1")
 	d.operator = newCompany(t, ca, operatorDomain, "ob-2026-1")
 	d.mallory = newCompany(t, ca, "mallory.example", "ml-1")
+	d.rival = newCompany(t, ca, "other-carrier.example", "oc-1")
 	d.nw = &network{ca: ca, now: time.Now, peers: map[string]string{
-		shipperDomain:  d.shipper.addr,
-		operatorDomain: d.operator.addr,
+		shipperDomain:           d.shipper.addr,
+		operatorDomain:          d.operator.addr,
+		"other-carrier.example": d.rival.addr,
 	}}
 	d.bookings = store.NewBookings()
 	d.booking = &operator.BookingService{
@@ -228,8 +261,25 @@ func newDemo(t *testing.T) *demo {
 		Voyage: operator.Voyage{Vessel: "Ocean Blue Aurora", Number: "42W", DepartureHour: 18, Transit: 134 * time.Hour},
 	}
 	d.nw.wire(t, d.operator, "Ocean Blue", "operator", map[string]node.Handler{"ulp.booking.request": d.booking})
-	d.nw.wire(t, d.shipper, "Cymbal Shoes", "shipper", nil)
+	shipBookings := store.NewBookings()
+	d.shipLog = store.NewEventLog(0)
+	d.inbound = &shipper.Inbound{Bookings: shipBookings, Log: d.shipLog, Now: time.Now}
+	d.nw.wire(t, d.shipper, "Cymbal Shoes", "shipper", map[string]node.Handler{
+		"ulp.tnt.event": d.inbound, "ulp.tnt.alert": d.inbound,
+	})
 	d.nw.wire(t, d.mallory, "Mallory", "shipper", nil)
-	d.ship = &shipper.Shipper{Node: d.shipper.node, Bookings: store.NewBookings(), Now: time.Now}
+	d.nw.wire(t, d.rival, "Other Carrier", "operator", nil)
+	d.ship = &shipper.Shipper{Node: d.shipper.node, Bookings: shipBookings, Now: time.Now}
+	d.opLog = store.NewEventLog(0)
+	d.publisher = &operator.Publisher{
+		Pusher: d.operator.node, Domain: operatorDomain, Log: d.opLog, Now: time.Now,
+		Backoff: []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond},
+		OnDrop: func(_, id string, err error) {
+			d.dropMu.Lock()
+			d.dropped = append(d.dropped, id+": "+err.Error())
+			d.dropMu.Unlock()
+		},
+	}
+	t.Cleanup(d.publisher.Close)
 	return d
 }

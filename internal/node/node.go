@@ -52,10 +52,12 @@ type KeyResolver interface {
 	Key(ctx context.Context, domain, kid string) (sig.Verifier, error)
 }
 
-// Poster sends a serialized envelope to a party and returns its response.
+// Poster sends a serialized envelope to a party (at the REST endpoint in its
+// profile, or at an endpoint it registered) and returns its response.
 // *rest.Client implements it.
 type Poster interface {
 	Post(ctx context.Context, receiver string, msg []byte) ([]byte, error)
+	PostTo(ctx context.Context, receiver, endpoint string, msg []byte) ([]byte, error)
 }
 
 // Config configures a Node.
