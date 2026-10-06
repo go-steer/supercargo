@@ -238,9 +238,16 @@ func (c *Cache) document(ctx context.Context, domain, kid string) (doc *Document
 // fetch runs one fetch on its own deadline, so one impatient caller can't
 // fail it for the others waiting.
 func (c *Cache) fetch(domain string, e *entry, cl *call, slot bool) {
-	if slot {
-		defer func() { <-c.slots }()
+	// The slot is released before the result is published, so a caller
+	// that gets its answer and looks up again never finds this fetch still
+	// counted. The deferred release covers a Source that panics.
+	release := func() {
+		if slot {
+			slot = false
+			<-c.slots
+		}
 	}
+	defer release()
 	ctx, cancel := context.WithTimeout(context.Background(), c.opts.FetchTimeout)
 	defer cancel()
 	doc, err := c.src.Fetch(ctx, domain)
@@ -254,6 +261,7 @@ func (c *Cache) fetch(domain string, e *entry, cl *call, slot bool) {
 	}
 	e.inflight = nil
 	c.mu.Unlock()
+	release()
 	cl.doc, cl.err = doc, err
 	close(cl.done)
 }

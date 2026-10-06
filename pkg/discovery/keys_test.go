@@ -17,6 +17,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -384,6 +385,23 @@ func TestCacheResistsJunkDomains(t *testing.T) {
 	}
 }
 
+// TestCacheReleasesSlotBeforeAnswering: by the time a lookup returns, its
+// fetch no longer holds a slot, so an immediate next lookup is never
+// refused as "too many fetches in flight".
+func TestCacheReleasesSlotBeforeAnswering(t *testing.T) {
+	c, src, _ := newCache(t, CacheOptions{MaxConcurrentFetches: 1})
+	for i := range 200 {
+		d := "d" + strings.Repeat("x", i%40) + string(rune('a'+i%26)) + ".example"
+		src.set(d, "k1")
+		if _, err := c.Key(context.Background(), d, "k1"); err != nil {
+			t.Fatalf("lookup %d: %v", i, err)
+		}
+		if n := len(c.slots); n != 0 {
+			t.Fatalf("lookup %d returned while its fetch still held a slot", i)
+		}
+	}
+}
+
 // TestCacheBoundsConcurrentFetches: envelopes naming many unknown domains
 // can't start unbounded outbound fetches.
 func TestCacheBoundsConcurrentFetches(t *testing.T) {
@@ -398,8 +416,7 @@ func TestCacheBoundsConcurrentFetches(t *testing.T) {
 	}
 	close(src.gate)
 	<-done
-	// The slot is released after the result is published; give it a moment.
-	waitFor(t, func() bool { return len(c.slots) == 0 })
+	// The slot is free by the time the result arrives: no waiting needed.
 	if _, err := c.Key(context.Background(), "other.example", "k1"); err != nil {
 		t.Errorf("Key once a slot is free: %v", err)
 	}
