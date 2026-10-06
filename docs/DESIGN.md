@@ -680,7 +680,11 @@ Choose the provider by config. The demo logic must not depend on provider-specif
 - **Built-in agent skills** ship with supercargo, one per interaction (booking, tracking, inquiry, delegation). Each explains to the model what that interaction means, what the node will and won't do, and what its outputs look like. They're versioned with the protocol, so the model's picture of an interaction matches the code.
 - **Company agent skills** load from a directory in the node's own configuration ([A.12](#a12-configuration-per-company)) and customize behavior: tone, business rules, escalation policy, what to disclose. One example is how Ocean Blue's `shipment-inquiry` agent phrases delays. They're part of that company's own configuration and trusted like the rest of it, but never accepted from partners or over the wire.
 
-Skill descriptions go into the system prompt; a skill's full body loads when needed, through a read-only tool. Parsing uses ADK v2's `skill` package (standard library plus YAML, with no runner) or an equivalent small loader.
+For a model with tools (`ulpchat`, milestone 5), skill descriptions go into the system prompt and a skill's full body loads when needed, through a read-only tool. The inquiry responder has no tools, so its skills' bodies go in the system prompt, after the rules and introduced as unable to override them. `internal/skills` is a small loader (standard library plus YAML; mast has none to copy):
+- A skill is a directory named after it, holding a `SKILL.md` whose frontmatter gives `name` (lowercase letters, digits and hyphens) and `description`. Other frontmatter fields are ignored.
+- Bodies are capped at 32 KiB, and descriptions at 1,024 characters. Neither may contain control or format characters (bidi overrides, zero-width, tag characters), since what steers a model must be all there is to read.
+- A company directory holds at most 32 skills, 128 KiB in all, since every one goes into each model call's prompt. A skill that doesn't parse stops the node rather than being skipped, and so does anything else that looks like a skill but isn't loadable: a directory without a `SKILL.md`, or a symlinked directory. Plain files, such as a README, are ignored.
+- The built-in `shipment-inquiry` skill is embedded in the binary. The demo's Ocean Blue adds its own `delay-phrasing` skill (`dev/demo/skills/ocean-blue`).
 
 **The boundary:** agent skills shape what a model says and proposes, nothing more.
 - They can't add tools or reach the send and grant paths.
@@ -688,6 +692,8 @@ Skill descriptions go into the system prompt; a skill's full body loads when nee
 - They can't relax the rules in this section, which the code enforces whatever any prompt says.
 
 Each model call logs the agent skills it ran with (name and content hash).
+
+**The Anthropic adapter** (`internal/llm/anthropic`, derived from mast's provider) sends the system prompt (cached), the messages, and, for a request with a JSON schema, a single `respond` tool whose input schema is that schema, with `tool_choice` forcing it. The tool call's input is the reply, and it is still validated like any model output. It talks to Anthropic's API directly, not through the outbound guard, because that host comes from the operator's own configuration, not from a partner. The SDK's environment defaults are switched off: they would take a base URL (`ANTHROPIC_BASE_URL`, a profile file), other credentials and extra headers from the environment, any of which could send the key to another host. A JSON reply that stopped early (`max_tokens`) is an error, even if what arrived parses, so the template fallback runs. The key never appears in the config file, only the name of the environment variable holding it, and a node configured for Claude without one doesn't start. A real-model test (`TestRealModelInquiry`) is opt-in (`SUPERCARGO_REAL_LLM=1`) and never part of `dev/tools/ci`.
 
 **LLM #1: shipper assistant** (in `ulpchat`, using tools against the node's internal API)
 
@@ -776,11 +782,11 @@ discovery:
   ttl: 1h                        # profiles are never used past this
   refreshFloor: 1m               # at most one fetch per domain per floor
 llm:
-  provider: anthropic            # fake now; anthropic next (milestone 4); omit for template-only answers
+  provider: anthropic            # anthropic | fake; omit for template-only answers
   model: <model id>
-  apiKeyEnv: LLM_API_KEY
+  apiKeyEnv: ANTHROPIC_API_KEY   # the default; the key itself never goes in this file
 skills:
-  dir: /etc/ulp/skills           # company agent skills (optional), on top of the built-in ones
+  dir: /etc/ulp/skills           # absolute; company agent skills (optional), after the built-in ones
 mcp:                             # later (A.7)
   connectors:                    # backend systems; called by core operations only, never by a model
     - name: tms
@@ -833,7 +839,7 @@ What each milestone also carries:
 
 - **M2:** the discovery fetch refuses loopback, private, link-local and metadata addresses *after resolving* and doesn't follow redirects (`sender` is checked for form, not for where it points). Transports cap reads at `envelope.MaxSize`. Typed body decoding matches member names exactly.
 - **M3:** webhook delivery applies the same address guards. A subscription endpoint on the subscriber's own domain ([A.6](#a6-authorization-rules)) can still resolve to an internal address. Also the control socket, `ulpctl disrupt` (ahead of M6, so Scene 4 has its trigger) and `dev/demo/hello-ulp`, the interactive demo.
-- **M4:** the `internal/llm` Model interface, the Anthropic adapter and the fake model (adapted from mast, [A.10](#a10-llm-integration)), the agent skills loader, the built-in inquiry skill, and company agent skills for the inquiry responder. It lands in three steps: the inquiry over REST with the fake model; the A2A binding; the Anthropic adapter and agent skills. mast's LLM layer is ADK's `model.LLM` over genai types, so `internal/llm` keeps its own small interface, and the adapter ports mast's conversion logic onto it.
+- **M4:** the `internal/llm` Model interface, the Anthropic adapter and the fake model (adapted from mast, [A.10](#a10-llm-integration)), the agent skills loader, the built-in inquiry skill, and company agent skills for the inquiry responder. It landed in three steps: the inquiry over REST with the fake model; the A2A binding; the Anthropic adapter and agent skills. mast's LLM layer is ADK's `model.LLM` over genai types, so `internal/llm` keeps its own small interface, and the adapter ports mast's conversion logic onto it.
 - **M5:** `ulpchat`'s tool loop (ours, no runner) and the built-in booking and tracking agent skills.
 
 ### A.15 Out of scope (and where each would go next)

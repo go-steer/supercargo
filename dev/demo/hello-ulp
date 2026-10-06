@@ -26,7 +26,9 @@
 #
 # Environment: OP_PORT (8441), SH_PORT (8442), HOURS_PER_SECOND (1: the
 # voyage departs about half a minute after booking and arrives about two
-# and a half minutes later).
+# and a half minutes later), ULP_LLM (fake: deterministic answers, no key;
+# anthropic: Ocean Blue answers inquiries with Claude, the key from
+# ANTHROPIC_API_KEY in the operator's terminal).
 set -euo pipefail
 . "$(dirname "$0")/../smoke/lib.sh"
 

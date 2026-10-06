@@ -29,6 +29,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -114,9 +115,15 @@ type Operator struct {
 	Deny            []string      `yaml:"deny"`
 }
 
+var (
+	envName   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+	modelName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$`)
+)
+
 // LLM providers.
 const (
-	ProviderFake = "fake" // deterministic, no API key: tests and rehearsal
+	ProviderFake      = "fake"      // deterministic, no API key: tests and rehearsal
+	ProviderAnthropic = "anthropic" // Claude; the API key comes from the environment
 )
 
 // LLM configures the model. Without it, an operator answers inquiries
@@ -268,8 +275,27 @@ func (c *Config) validate() error {
 			}
 		}
 	}
-	if c.LLM != nil && c.LLM.Provider != ProviderFake {
-		return fmt.Errorf("llm: provider %q is not available (supported: %s)", c.LLM.Provider, ProviderFake)
+	if c.LLM != nil {
+		switch c.LLM.Provider {
+		case ProviderFake:
+		case ProviderAnthropic:
+			if c.LLM.APIKeyEnv == "" {
+				c.LLM.APIKeyEnv = "ANTHROPIC_API_KEY"
+			}
+			// The key itself never goes in the file: only the name of the
+			// environment variable holding it.
+			if !envName.MatchString(c.LLM.APIKeyEnv) {
+				return fmt.Errorf("llm: apiKeyEnv %q is not an environment variable name", c.LLM.APIKeyEnv)
+			}
+			if c.LLM.Model != "" && !modelName.MatchString(c.LLM.Model) {
+				return fmt.Errorf("llm: model %q is not a model ID", c.LLM.Model)
+			}
+		default:
+			return fmt.Errorf("llm: provider %q is not %s or %s", c.LLM.Provider, ProviderFake, ProviderAnthropic)
+		}
+	}
+	if c.Skills != nil && (c.Skills.Dir == "" || !filepath.IsAbs(c.Skills.Dir)) {
+		return fmt.Errorf("skills: dir %q must be an absolute path", c.Skills.Dir)
 	}
 	if c.Role != RoleOperator && c.Simulator != nil {
 		return errors.New("simulator: for operator nodes only")

@@ -42,7 +42,15 @@ demo_ports() {
 # DIR, using OP_PORT and SH_PORT. DIR is made owner-only: the signing keys
 # and the control sockets (DIR/ob.sock, DIR/cy.sock) live there.
 demo_setup() {
-  local dir=$1 hps=$2
+  local dir=$1 hps=$2 root llm
+  root="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
+  # ULP_LLM=anthropic answers inquiries with Claude (the key comes from
+  # ANTHROPIC_API_KEY); the default is the fake model, which needs no key.
+  case "${ULP_LLM:-fake}" in
+    fake) llm="provider: fake   # deterministic answers, no API key" ;;
+    anthropic) llm="provider: anthropic   # the key comes from ANTHROPIC_API_KEY" ;;
+    *) echo "demo_setup: ULP_LLM must be fake or anthropic" >&2; return 1 ;;
+  esac
   chmod 700 "$dir"
   [[ -f "$dir/ob.pem" ]] || "$dir/bin/ulpnode" keygen --kid ob-demo-1 --out "$dir/ob.pem" >/dev/null
   [[ -f "$dir/cy.pem" ]] || "$dir/bin/ulpnode" keygen --kid cy-demo-1 --out "$dir/cy.pem" >/dev/null
@@ -72,7 +80,9 @@ operator:
 simulator:
   hoursPerSecond: $hps
 llm:
-  provider: fake   # deterministic answers, no API key
+  $llm
+skills:
+  dir: "$root/dev/demo/skills/ocean-blue"   # Ocean Blue's own agent skills
 control:
   socket: $dir/ob.sock
 EOF

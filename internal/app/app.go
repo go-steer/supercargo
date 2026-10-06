@@ -33,9 +33,11 @@ import (
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/internal/llm"
+	"github.com/go-steer/supercargo/internal/llm/anthropic"
 	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/operator"
 	"github.com/go-steer/supercargo/internal/shipper"
+	"github.com/go-steer/supercargo/internal/skills"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/discovery"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -120,7 +122,9 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	a := &App{Config: cfg, Bookings: store.NewBookings(), Events: store.NewEventLog(0), Keys: cache, Logger: logger}
 	handlers := map[string]node.Handler{}
 	if cfg.Role == config.RoleOperator {
-		a.operatorRole(handlers)
+		if err := a.operatorRole(handlers); err != nil {
+			return nil, err
+		}
 	}
 	if cfg.Role == config.RoleShipper {
 		inbound := &shipper.Inbound{Bookings: a.Bookings, Log: a.Events, Now: time.Now,
@@ -257,7 +261,7 @@ func (a *App) shutdown() {
 
 // operatorRole sets up the booking service, the publisher and simulator
 // behind it. The publisher's Pusher is the node, set once it exists.
-func (a *App) operatorRole(handlers map[string]node.Handler) {
+func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	cfg, log := a.Config, a.Logger
 	o := cfg.Operator
 	a.Publisher = &operator.Publisher{Domain: cfg.Domain, Log: a.Events, Now: time.Now,
@@ -280,18 +284,29 @@ func (a *App) operatorRole(handlers map[string]node.Handler) {
 	for _, d := range o.Deny {
 		deny[d] = true
 	}
-	var model llm.Model
-	if cfg.LLM != nil && cfg.LLM.Provider == config.ProviderFake {
-		model = operator.FakeInquiryModel()
+	model, err := newModel(cfg.LLM)
+	if err != nil {
+		return err
 	}
-	handlers[intents.TnTInquiry] = &operator.InquiryService{Bookings: a.Bookings, Log: a.Events, Model: model, Name: cfg.Name,
+	agentSkills, err := inquirySkills(cfg.Skills)
+	if err != nil {
+		return err
+	}
+	if model != nil {
+		var ids []string
+		for _, s := range agentSkills {
+			ids = append(ids, s.ID()+" ("+s.Source+")")
+		}
+		log.Info("inquiry responder", "model", model.Name(), "skills", ids)
+	}
+	handlers[intents.TnTInquiry] = &operator.InquiryService{Bookings: a.Bookings, Log: a.Events, Model: model, Name: cfg.Name, Skills: agentSkills,
 		OnModelCall: func(c operator.ModelCall) {
 			level := slog.LevelInfo
 			if c.Outcome != "ok" {
 				level = slog.LevelWarn
 			}
 			log.Log(context.Background(), level, "model call", "booking", c.Booking, "attempt", c.Attempt, "model", c.Model,
-				"promptHash", c.PromptHash, "inputTokens", c.Usage.InputTokens, "outputTokens", c.Usage.OutputTokens,
+				"promptHash", c.PromptHash, "skills", c.Skills, "inputTokens", c.Usage.InputTokens, "outputTokens", c.Usage.OutputTokens,
 				"latency", c.Latency.Round(time.Millisecond).String(), "outcome", c.Outcome, "reason", c.Reason)
 		},
 	}
@@ -307,6 +322,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) {
 				"arrival", b.Confirmation.PlannedArrival, "hoursPerSecond", cfg.Simulator.HoursPerSecond)
 		},
 	}
+	return nil
 }
 
 // logEvent logs a validated event's fields: codes from fixed sets, and
@@ -339,4 +355,35 @@ func loadPool(path string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("app: CA file %s holds no PEM certificates", path)
 	}
 	return pool, nil
+}
+
+// newModel builds the configured model: none (template answers only), the
+// fake, or Claude with its key from the environment.
+func newModel(c *config.LLM) (llm.Model, error) {
+	switch {
+	case c == nil:
+		return nil, nil
+	case c.Provider == config.ProviderFake:
+		return operator.FakeInquiryModel(), nil
+	}
+	key := os.Getenv(c.APIKeyEnv)
+	if key == "" {
+		return nil, fmt.Errorf("llm: the environment variable %s, which holds the API key, is empty", c.APIKeyEnv)
+	}
+	return anthropic.New(anthropic.Options{APIKey: key, Model: c.Model, CacheSystem: true})
+}
+
+// inquirySkills are the inquiry responder's agent skills: the built-in
+// shipment-inquiry skill, then the company's own.
+func inquirySkills(c *config.Skills) ([]skills.Skill, error) {
+	builtin, _ := skills.Find(skills.Builtin(), "shipment-inquiry")
+	out := []skills.Skill{builtin}
+	if c != nil {
+		company, err := skills.LoadDir(c.Dir)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, company...)
+	}
+	return out, nil
 }
