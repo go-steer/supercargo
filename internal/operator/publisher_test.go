@@ -236,8 +236,8 @@ func TestQueueFullDrops(t *testing.T) {
 	_ = p.Publish(b, ev("EV-1")) // taken by the worker, which blocks
 	<-f.entered
 	_ = p.Publish(b, ev("EV-2")) // fills the queue
-	if err := p.Publish(b, ev("EV-3")); err == nil {
-		t.Error("Publish into a full queue succeeded")
+	if err := p.Publish(b, ev("EV-3")); !errors.Is(err, ErrNotQueued) {
+		t.Errorf("Publish into a full queue = %v, want ErrNotQueued", err)
 	}
 	if got := d.list(); len(got) != 1 || got[0] != "EV-3" {
 		t.Errorf("drops %v, want [EV-3]", got)
@@ -372,8 +372,8 @@ func TestWorkersExitAndAreCapped(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := p.Publish(book("C"), ev("EV-1")); err == nil {
-		t.Error("a third subscription got a worker past MaxWorkers 2")
+	if err := p.Publish(book("C"), ev("EV-1")); !errors.Is(err, ErrNotQueued) {
+		t.Errorf("a third subscription past MaxWorkers 2: %v, want ErrNotQueued", err)
 	}
 	if got := d.list(); len(got) != 1 {
 		t.Errorf("drops %v, want the refused push", got)

@@ -65,7 +65,7 @@ dev/ci/presubmits/verify-go-format  # gofmt + goimports (fix: dev/tools/fix-go-f
 dev/ci/presubmits/verify-mod-tidy   # go.mod/go.sum are tidy
 dev/ci/presubmits/verify-apidiff    # exported-API diff vs the last release tag
 dev/ci/presubmits/verify-vuln       # govulncheck
-dev/ci/presubmits/smoke             # two real ulpnode processes booking over sockets
+dev/ci/presubmits/smoke             # end-to-end scenarios in dev/smoke (real processes, sockets)
 dev/ci/presubmits/verify-no-agent-attribution  # no agent credit in commits
 ```
 
@@ -125,7 +125,7 @@ Conventions worth knowing at agent prompt time:
 
 ## Current state
 
-Milestones 1 and 2 of [`docs/DESIGN.md`](./docs/DESIGN.md#a14-build-milestones)
+Milestones 1 to 3 of [`docs/DESIGN.md`](./docs/DESIGN.md#a14-build-milestones)
 are in:
 - `pkg/envelope`, `pkg/sig`, `pkg/internal/strictjson`: JWS envelopes with
   pluggable signatures (Ed25519), checked against `testdata/golden/envelope.json`
@@ -136,7 +136,14 @@ are in:
 - `internal/node` (the pipeline), `pkg/transport/rest`, `internal/store`,
   `internal/operator`, `internal/shipper`: two nodes book over REST and TLS.
 - `internal/config`, `internal/app`, `cmd/ulpnode` (`serve`, `keygen`,
-  `book`), and `dev/tools/smoke`: two real processes booking over sockets.
+  `book`): a node from its YAML config.
+- The push path and hello ULP: `tnt.event`/`tnt.alert`, the operator's
+  publisher and shipment simulator, the shipper's inbound handler, the
+  control socket (`internal/control`) that `ulpnode book` and
+  `ulpctl disrupt` use, and `dev/demo/hello-ulp`.
+- `dev/smoke/*` (run by `dev/tools/smoke`): one end-to-end scenario per
+  script, real processes over sockets, sharing `lib.sh` with `dev/demo`.
+  A new demo-able scenario gets a smoke script here.
 
-Next is milestone 3: the shipment simulator, subscriptions and webhook push
-("hello ULP", REST only). Webhook delivery must use the outbound guard.
+Next is milestone 4: the A2A binding and the inquiry responder (fake model
+first).

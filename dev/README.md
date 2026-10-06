@@ -38,13 +38,19 @@ dev/
 │   ├── verify-apidiff     # exported-API diff vs the last release tag
 │   ├── test-unit          # go test -race -coverprofile
 │   ├── verify-coverage    # per-package floors vs coverage.out
-│   ├── smoke              # two real ulpnode processes booking over sockets
+│   ├── smoke              # runs every scenario in dev/smoke (or those named)
 │   ├── verify-vuln        # govulncheck ./...
 │   ├── verify-no-agent-attribution # no agent credit in commits/PR text
 │   ├── add-license-headers # bulk-applier for the Apache 2.0 header
 │   ├── gen-golden-vectors # Python: regenerate testdata/golden (not in ci)
 │   ├── common.sh          # shared bash helpers (ensure_tool, run_step)
 │   └── .golangci.yml      # linter config
+├── smoke/                 # end-to-end scenarios: real ulpnode processes
+│   ├── lib.sh             # shared with dev/demo: build, keys, configs, start/stop
+│   ├── booking            # two nodes book over REST; a declined booking isn't sent
+│   └── push               # hello ULP scripted: events, ulpctl disrupt, the alert
+├── demo/
+│   └── hello-ulp          # the interactive milestone 3 demo (see below)
 └── ci/
     └── presubmits/        # thin delegators called by .github/workflows/
         ├── verify-go-format
@@ -126,15 +132,35 @@ diff hunk. It regenerates a stale profile itself.
 in `dev/tools/ci`, whose default run needs no Python.
 See [`testdata/golden/README.md`](../testdata/golden/README.md).
 
-## Smoke test
+## Smoke tests
 
-`dev/tools/smoke` builds `ulpnode`, mints two signing keys with `ulpnode
-keygen` into a temp dir, starts an operator and a shipper as separate
-processes on localhost (insecure-dev mode, joined by a peer map), books
-through `ulpnode book --yes`, and checks the operator logged a verified,
-accepted request, and that a booking answered with anything but `y` is not
-sent. It needs `curl`. TLS is exercised by the integration tests in
-`internal/node`.
+Each executable in `dev/smoke/` is one end-to-end scenario: it builds
+`ulpnode` and `ulpctl`, mints signing keys with `ulpnode keygen` into a temp
+dir, starts an operator and a shipper as separate processes on localhost
+(insecure-dev mode, joined by a peer map, control sockets in the temp dir),
+drives them through the CLIs, and checks their JSON logs. `dev/tools/smoke`
+runs them all (`dev/tools/smoke push` runs one); CI runs them through
+`dev/tools/ci`. They need `curl`. TLS is exercised by the integration tests
+in `internal/node`.
+
+- `booking`: a booking confirmed over REST, verified both ways; one answered
+  with anything but `y` is never sent.
+- `push`: the hello ULP demo, scripted. The voyage's events reach the
+  shipper, verified and recorded; `ulpctl disrupt` produces a delay alert
+  that reaches it too.
+
+To add one, write an executable script in `dev/smoke/` that sources
+`lib.sh` (`demo_build`, `demo_ports`, `demo_setup`, `smoke_start`,
+`smoke_wait_for`, `smoke_fail`) and prints a `✓` line on success. A scenario
+someone may want to watch belongs in `dev/demo/` too, on the same helpers.
+
+## The interactive demo
+
+`dev/demo/hello-ulp [--tmux] [DIR]` sets up milestone 3's demo, Ocean Blue
+and Cymbal Shoes on localhost, and prints the command for each of four
+terminals: the two nodes' logs, booking, and `ulpctl disrupt` (or opens
+them in tmux). Ports and the clock speed come from `OP_PORT`, `SH_PORT` and
+`HOURS_PER_SECOND`.
 
 ## review-gate
 

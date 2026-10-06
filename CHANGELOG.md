@@ -14,6 +14,12 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- Hello ULP, milestone 3's demo: `dev/demo/hello-ulp` sets up an operator and a shipper on localhost and prints the commands for four terminals (or opens them in tmux). You book, watch the voyage's events arrive signed and verified, then disrupt the voyage and watch the delay alert arrive.
+  - The operator's shipment simulator: each confirmed booking plays out on an accelerated clock (`simulator.hoursPerSecond`): gate-in, load, departure, arrival estimate, arrival, discharge, gate-out.
+  - `ulpctl disrupt`: delays a voyage. The simulator publishes a new arrival estimate and a delay alert citing it.
+  - A local control socket per node (`control.socket`): HTTP over a Unix socket in an owner-only directory, used by `ulpnode book` and `ulpctl`.
+  - The shipper's log shows each event and alert it recorded; the operator's shows each one it published.
+- Smoke tests now live in `dev/smoke/`, one script per scenario, sharing helpers with the demo: `booking`, and `push` (the demo, scripted). `dev/tools/smoke` runs them all.
 - The push path for track and trace:
   - `ulp.tnt.event` and `ulp.tnt.alert` bodies in `pkg/intents`.
   - `node.Push` and `rest.Client.PostTo`, which post to a subscriber's registered endpoint on its own domain, through the guarded client.
@@ -53,3 +59,7 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 - Repository scaffolding: Apache 2.0 license, the `dev/` presubmit tooling
   and CI workflows shared with the other go-steer repositories, and the
   design of record in `docs/DESIGN.md`.
+
+### Fixed
+
+- `ulpnode book` sends through the running shipper node (its control socket). It used to book from a node of its own that exited with the command, so the running node never had the booking and refused every push for it.

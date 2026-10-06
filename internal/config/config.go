@@ -36,6 +36,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/sig"
 )
@@ -63,15 +64,16 @@ type Config struct {
 	Peers    map[string]string `yaml:"peers"`
 	Partners []string          `yaml:"partners"`
 
-	Discovery Discovery `yaml:"discovery"`
-	Security  Security  `yaml:"security"`
-	Operator  *Operator `yaml:"operator"`
+	Discovery Discovery  `yaml:"discovery"`
+	Security  Security   `yaml:"security"`
+	Operator  *Operator  `yaml:"operator"`
+	Simulator *Simulator `yaml:"simulator"` // operator only
+	Control   *Control   `yaml:"control"`
 
 	// Sections for later milestones, accepted so a full config loads.
-	LLM       *LLM       `yaml:"llm"`
-	Skills    *Skills    `yaml:"skills"`
-	MCP       *MCP       `yaml:"mcp"`
-	Simulator *Simulator `yaml:"simulator"`
+	LLM    *LLM    `yaml:"llm"`
+	Skills *Skills `yaml:"skills"`
+	MCP    *MCP    `yaml:"mcp"`
 }
 
 // TLS configures transport security.
@@ -132,9 +134,24 @@ type MCP struct {
 	} `yaml:"connectors"`
 }
 
-// Simulator configures the shipment simulator (milestone 3).
+// Simulator configures the operator's shipment simulator.
 type Simulator struct {
+	// HoursPerSecond is simulated hours per real second (default 1, at most
+	// MaxHoursPerSecond).
 	HoursPerSecond float64 `yaml:"hoursPerSecond"`
+}
+
+// MaxHoursPerSecond bounds the simulator's clock speed: a whole voyage in
+// well under a second, for tests.
+const MaxHoursPerSecond = 3600
+
+// Control configures the node's local control API (internal/control): the
+// shipper's CLI books through it, the presenter's ulpctl drives the
+// operator's simulator.
+type Control struct {
+	// Socket is the Unix socket's absolute path, in a directory only the
+	// node's user can enter (checked at startup).
+	Socket string `yaml:"socket"`
 }
 
 // Load reads, decodes and validates the config at path.
@@ -243,6 +260,27 @@ func (c *Config) validate() error {
 			if !envelope.ValidDomain(d) || d == c.Domain {
 				return fmt.Errorf("operator: deny entry %q is not a lowercase domain", d)
 			}
+		}
+	}
+	if c.Role != RoleOperator && c.Simulator != nil {
+		return errors.New("simulator: for operator nodes only")
+	}
+	if c.Role == RoleOperator {
+		if c.Simulator == nil {
+			c.Simulator = &Simulator{}
+		}
+		// NaN fails both comparisons, so it is caught too.
+		if !(c.Simulator.HoursPerSecond >= 0 && c.Simulator.HoursPerSecond <= MaxHoursPerSecond) {
+			return fmt.Errorf("simulator: hoursPerSecond must be between 0 and %d", MaxHoursPerSecond)
+		}
+		if c.Simulator.HoursPerSecond == 0 {
+			c.Simulator.HoursPerSecond = 1
+		}
+	}
+	if c.Control != nil {
+		p := c.Control.Socket
+		if !filepath.IsAbs(p) || filepath.Clean(p) != p || len(p) > control.MaxSocketPath {
+			return fmt.Errorf("control: socket %q must be a clean absolute path of at most %d bytes", p, control.MaxSocketPath)
 		}
 	}
 	return nil

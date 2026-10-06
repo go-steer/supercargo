@@ -635,7 +635,7 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 |---|---|
 | Booking service | Validate request → assign `bookingRef`, vessel/voyage, equipment → store → confirmation |
 | Subscription registry | `bookingRef → [endpoint, intents]`; validated per [A.6](#a6-authorization-rules) |
-| Shipment simulator | Timeline per booking (GTIN → LOAD → DEPA → ARRI EST updates → ARRI → DISC → GTOT) on an accelerated clock; `disrupt` inserts delay events, recomputes ETA and raises an alert |
+| Shipment simulator | Starts a voyage for each confirmed booking: per container gate-in (26 h before departure) and load (4 h before), the departure, an arrival estimate an hour later, the arrival, then per container discharge (6 h after) and gate-out (30 h after). Simulated time runs `simulator.hoursPerSecond` hours per real second from 27 h before departure, starting 2 s after the booking so the confirmation reaches the shipper first; voyages in progress are capped. `disrupt` (from `ulpctl`, through the control socket) publishes a new arrival estimate and then a delay alert citing it, graded by the delay (12 h medium, 48 h high), and moves every later step. The reason given becomes the alert's summary, so it must pass the free-text rules |
 | Event store | Append-only events per booking (the operator's "knowledge graph" for the demo) |
 | Publisher | Records each event and alert in the operator's event log, then pushes it to the booking's subscriber if its subscription lists that intent. One queue and worker per subscription keep a booking's events in order and isolate slow subscribers. Only failures another attempt can fix are retried, backing off from 1 s doubling to 30 s (eight attempts at most), and **each attempt is a newly signed message**: a re-sent copy would be a replay, or go stale. A worker exits once its queue is empty, and the number of subscriptions with pushes in flight is capped. Each ID is published once per booking. Pushes it gives up on, that overflow a queue or the worker cap, or that are still pending at shutdown, are reported; they stay in the log, and the subscriber catches up with `tnt.inquiry` rather than a republish |
 | Inquiry responder | Serves the A2A `shipment-inquiry` skill: authorized data (fetched through the same core operations as the REST binding) → LLM → output validation → response ([A.10](#a10-llm-integration)) |
@@ -650,7 +650,7 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 | Shipment store | Bookings, received events and alerts (verified envelopes stored as received, for audit) |
 | Business context | Private data the LLM may use: required delivery dates, warehouse slots, launch dates. **Never sent to partners** |
 | Inbound handlers | `tnt.event` → store; `tnt.alert` → store + trigger the alert summarizer. Each is recorded once per event or alert ID, as the verified header and body it arrived with, so the publisher's re-signed retries never duplicate an event |
-| Internal API | Local-only API used by `ulpchat` (and later by the local MCP server, [A.7](#a7-transport-bindings)) |
+| Internal API | The node's control socket ([A.12](#a12-configuration-per-company)): `ulpnode book` sends a booking through it, so the running node records the booking and accepts its pushes. Later `ulpchat` and the local MCP server ([A.7](#a7-transport-bindings)) use it too |
 | Backend connectors (later) | MCP clients to the shipper's own systems (ERP, warehouse), called by deterministic code; also the source of business context |
 
 ### A.10 LLM integration
@@ -778,19 +778,24 @@ mcp:                             # later (A.7)
   connectors:                    # backend systems; called by core operations only, never by a model
     - name: tms
       url: https://tms.internal.ocean-blue.example/mcp
-simulator:
-  hoursPerSecond: 1
+simulator:                       # operator role only
+  hoursPerSecond: 1              # default 1, at most 3600
+control:
+  socket: /run/ulp/ocean-blue.sock   # the control socket for ulpnode book / ulpctl; its directory must be owner-only
 security:
   maxSkew: 5m
   replayRetention: 15m            # must exceed 2 × maxSkew
 ```
 
-Loading is strict: an unknown or misspelled key is an error, because a security setting that is silently ignored is worse than one that fails to load. The `llm`, `skills`, `mcp` and `simulator` sections are accepted now and used by later milestones.
+Loading is strict: an unknown or misspelled key is an error, because a security setting that is silently ignored is worse than one that fails to load. The `llm`, `skills` and `mcp` sections are accepted now and used by later milestones.
 
 `ulpnode` runs a node:
 - `ulpnode serve --config node.yaml` runs it, with every HTTP server timeout set.
 - `ulpnode keygen --kid … --out key.pem` mints a signing key (mode 0600, never overwriting) and prints its public JWK. No key, test or otherwise, ever lives in the repository.
-- `ulpnode book --config shipper.yaml --operator … --request booking.json` sends a booking after an explicit `y`. `--yes` is for scripts, where running the command is the confirmation.
+- `ulpnode book --config shipper.yaml --operator … --request booking.json` sends a booking through the running shipper node after an explicit `y`. `--yes` is for scripts, where running the command is the confirmation.
+- `ulpctl disrupt --config operator.yaml --booking … --delay 72h --reason "…"` delays a voyage on the running operator node.
+
+Both CLIs reach their node through its **control socket**: HTTP over a Unix socket in a directory only the node's user can enter. Nothing on it is signed or authorized beyond that; whoever can reach the socket is the node's operator, the same person who can read its signing key. A Unix socket rather than a loopback port keeps out other users on the host and web pages in a local browser. The node refuses to start if the directory is open to group or others, and replaces only a stale socket at the path, never another file.
 
 ### A.13 Testing
 
@@ -800,6 +805,7 @@ Loading is strict: an unknown or misspelled key is an error, because a security 
 | Integration | Two or more nodes in one test process (`httptest` servers with fake domains), running scenes 1–8 with the **fake model**; asserts on envelopes exchanged and log decisions |
 | Security | Tampered body/header, wrong `kid`, unknown sender, replayed `messageId`, stale `sentAt`, wrong `receiver`, subscription endpoint on a foreign domain, expired or mis-scoped delegation, prompt-injection inquiries from authorized senders (the answer must still cite only that booking's events), a company agent skill that tries to widen data scope or trigger a send (no effect), the fake model's adversarial replies (template fallback), webhook and discovery URLs that resolve to private addresses (refused); later, partner MCP results carrying instructions (treated as data) and MCP on-ramp callers asking about another domain's booking (denied) |
 | LLM evals (manual / nightly) | A fixed set of inquiries and alerts with expected facts; check citations are valid and no data from other bookings appears |
+| Smoke | `dev/smoke/*`, run by `dev/tools/smoke` in CI: real `ulpnode` processes over real sockets, one script per scenario (`booking`; `push`, which is `dev/demo/hello-ulp` scripted). They share `dev/smoke/lib.sh` with the demo, so the demo and its check can't drift apart |
 | End to end | `docker compose up` + scripted `ulpchat`/`ulpctl` run of the full demo |
 
 ### A.14 Build milestones
@@ -818,7 +824,7 @@ Loading is strict: an unknown or misspelled key is an error, because a security 
 What each milestone also carries:
 
 - **M2:** the discovery fetch refuses loopback, private, link-local and metadata addresses *after resolving* and doesn't follow redirects (`sender` is checked for form, not for where it points). Transports cap reads at `envelope.MaxSize`. Typed body decoding matches member names exactly.
-- **M3:** webhook delivery applies the same address guards. A subscription endpoint on the subscriber's own domain ([A.6](#a6-authorization-rules)) can still resolve to an internal address.
+- **M3:** webhook delivery applies the same address guards. A subscription endpoint on the subscriber's own domain ([A.6](#a6-authorization-rules)) can still resolve to an internal address. Also the control socket, `ulpctl disrupt` (ahead of M6, so Scene 4 has its trigger) and `dev/demo/hello-ulp`, the interactive demo.
 - **M4:** the `internal/llm` Model interface, the Anthropic adapter and the fake model (adapted from mast, [A.10](#a10-llm-integration)), the agent skills loader, the built-in inquiry skill, and company agent skills for the inquiry responder.
 - **M5:** `ulpchat`'s tool loop (ours, no runner) and the built-in booking and tracking agent skills.
 

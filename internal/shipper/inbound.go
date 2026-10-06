@@ -38,6 +38,9 @@ type Inbound struct {
 	// Cause event IDs in the alert are the operator's claims, unchecked
 	// against the log; check them before they reach a model.
 	OnAlert func(b store.Booking, a *intents.TnTAlertBody)
+	// OnEvent runs for each new event, after it is recorded (the node's
+	// log shows it). Optional; the same rules as OnAlert.
+	OnEvent func(b store.Booking, e *intents.TnTEventBody)
 }
 
 // forbidden is the one refusal for every reason, so the answer says
@@ -68,9 +71,10 @@ func (in *Inbound) Handle(_ context.Context, req *node.Request) (*node.Reply, er
 	h := req.Envelope.Header
 	var id string
 	var alert *intents.TnTAlertBody
+	var event *intents.TnTEventBody
 	switch b := req.Body.(type) {
 	case *intents.TnTEventBody:
-		id = b.EventID
+		id, event = b.EventID, b
 	case *intents.TnTAlertBody:
 		id, alert = b.AlertID, b
 	default:
@@ -82,11 +86,15 @@ func (in *Inbound) Handle(_ context.Context, req *node.Request) (*node.Reply, er
 	if err != nil {
 		return nil, err
 	}
-	if added && alert != nil && in.OnAlert != nil {
-		b, err := in.Bookings.Get(h.Sender, *h.BookingRef)
-		if err == nil {
-			in.OnAlert(b, alert)
-		}
+	if !added || (alert == nil || in.OnAlert == nil) && (event == nil || in.OnEvent == nil) {
+		return nil, nil
+	}
+	// Found by Authorize a moment ago, and bookings are never removed.
+	b, _ := in.Bookings.Get(h.Sender, *h.BookingRef)
+	if alert != nil {
+		in.OnAlert(b, alert)
+	} else {
+		in.OnEvent(b, event)
 	}
 	return nil, nil
 }

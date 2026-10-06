@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Smoke: the "hello ULP" demo (dev/demo/hello-ulp), scripted. A booking
+# starts a voyage; the operator pushes its events, signed, and the shipper
+# verifies and records them (Scene 3); `ulpctl disrupt` delays the voyage
+# and the shipper receives the delay alert (Scene 4's trigger).
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+work="$(mktemp -d)"
+trap 'smoke_stop; rm -rf "$work"' EXIT
+
+demo_build "$work"
+demo_ports
+# 10 simulated hours per second: departure about 5s after booking,
+# arrival about 18s after, so the disruption has a wide margin.
+demo_setup "$work" 10
+smoke_start "$work"
+
+if ! out="$("$work/bin/ulpnode" book --config "$work/shipper.yaml" --operator ocean-blue.example --request "$work/booking.json" --yes 2>"$work/book.log")"; then
+  smoke_fail "$work" "booking failed"
+fi
+ref="$(sed -n 's/.*"bookingRef": "\([^"]*\)".*/\1/p' <<<"$out")"
+[[ -n "$ref" ]] || smoke_fail "$work" "no booking reference in: $out"
+
+# Scene 3: the events arrive at the shipper, verified.
+smoke_wait_for "$work" "$work/operator.log" '"msg":"voyage started".*"booking":"'"$ref"'"' 5
+for event in "EQUIPMENT GTIN ACT" "EQUIPMENT LOAD ACT" "TRANSPORT DEPA ACT" "TRANSPORT ARRI EST"; do
+  smoke_wait_for "$work" "$work/shipper.log" '"msg":"event recorded".*"event":"'"$event"'"' 10
+done
+grep -qE '"intent":"ulp.tnt.event".*"verified":true.*"outcome":"accepted"' "$work/shipper.log" ||
+  smoke_fail "$work" "the shipper logged no verified, accepted event"
+
+# Scene 4's trigger: the presenter disrupts the voyage.
+if ! ctl="$("$work/bin/ulpctl" disrupt --config "$work/operator.yaml" --booking "$ref" --delay 72h --reason "Engine repair, unscheduled call at Halifax." 2>&1)"; then
+  smoke_fail "$work" "ulpctl disrupt failed: $ctl"
+fi
+echo "$ctl"
+grep -q "high delay alert" <<<"$ctl" || smoke_fail "$work" "ulpctl didn't report a high delay alert: $ctl"
+smoke_wait_for "$work" "$work/shipper.log" '"msg":"alert recorded".*"booking":"'"$ref"'".*"severity":"high"' 10
+grep -qE '"intent":"ulp.tnt.alert".*"verified":true.*"outcome":"accepted"' "$work/shipper.log" ||
+  smoke_fail "$work" "the shipper logged no verified, accepted alert"
+
+# A disruption for a booking with no voyage is refused.
+if "$work/bin/ulpctl" disrupt --config "$work/operator.yaml" --booking OB-BKG-9999 --delay 1h --reason "Late." >/dev/null 2>&1; then
+  smoke_fail "$work" "ulpctl disrupted a booking that doesn't exist"
+fi
+
+if grep -q '"msg":"push dropped"' "$work/operator.log"; then smoke_fail "$work" "the operator dropped a push"; fi
+if grep -q '"outcome":"rejected"' "$work/shipper.log"; then smoke_fail "$work" "the shipper rejected a push"; fi
+
+echo "✓ smoke/push: events and a delay alert pushed, signed, verified and recorded"
