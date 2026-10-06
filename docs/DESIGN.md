@@ -429,8 +429,8 @@ All payloads are **demo designs**, loosely modeled on DCSA where noted. None are
 | Intent | Direction | Binding | Sync/async | Response intent |
 |---|---|---|---|---|
 | `ulp.booking.request` | shipper → operator | REST | sync | `ulp.booking.confirmation` |
-| `ulp.tnt.event` | operator → subscriber | REST webhook | async push | (HTTP 2xx ack only) |
-| `ulp.tnt.alert` | operator → subscriber | REST webhook | async push | (HTTP 2xx ack only) |
+| `ulp.tnt.event` | operator → subscriber | REST webhook | async push | (HTTP 204 ack only) |
+| `ulp.tnt.alert` | operator → subscriber | REST webhook | async push | (HTTP 204 ack only) |
 | `ulp.tnt.inquiry` | shipper/receiver → operator | **A2A** (`shipment-inquiry` skill) | sync | `ulp.tnt.inquiry.response` |
 | `ulp.delegation.grant` | shipper → operator (optional pre-notify) | REST | sync | ack |
 | `ulp.error` | any | same as the request | as a response | n/a |
@@ -507,7 +507,7 @@ The shipper's required delivery date is **deliberately not sent**. It's private 
 | `EQUIPMENT` | `GTIN`, `LOAD`, `DISC`, `GTOT` | Gate-in, loaded, discharged, gate-out |
 | `TRANSPORT` | `DEPA`, `ARRI` | Departure, arrival |
 
-`eventClassifierCode`: `ACT` (actual), `EST` (estimated), `PLN` (planned). The codes mirror DCSA Track & Trace conventions. Check them against the DCSA T&T version you target before claiming conformance.
+`eventClassifierCode`: `ACT` (actual), `EST` (estimated), `PLN` (planned). The codes mirror DCSA Track & Trace conventions. Check them against the DCSA T&T version you target before claiming conformance. An `EQUIPMENT` event names its container (`equipmentRef`, ISO 6346); a `TRANSPORT` event names its vessel and voyage (`transport`).
 
 **`ulp.tnt.alert`**
 ```json
@@ -521,6 +521,7 @@ The shipper's required delivery date is **deliberately not sent**. It's private 
   "causeEventIds": ["EV-0019", "EV-0021"]
 }
 ```
+`kind` is `delay`, `early` or `exception`, and `severity` is `low`, `medium` or `high`. A `delay` or `early` alert carries both ETAs, and `newEta` is later (or earlier) accordingly. `summary` is one line of at most 280 characters, and an alert cites at most 20 cause events.
 
 **`ulp.tnt.inquiry`** → **`ulp.tnt.inquiry.response`**
 ```json
@@ -563,7 +564,7 @@ These are evaluated after signature, replay and body validation, and **before** 
 |---|---|
 | `booking.request` | Sender is not on a deny list (demo: anyone may request; the operator may reject) |
 | `tnt.inquiry` | `sender == booking.shipper` **or** a valid delegation is attached: signature by `booking.shipper`, `audience == self`, `grantee == sender`, `scope` includes `tnt:read`, matching `bookingRef`, not expired |
-| `tnt.event` / `tnt.alert` (inbound at the shipper) | `sender == booking.operator` and an active subscription exists |
+| `tnt.event` / `tnt.alert` (inbound at the shipper) | `sender == booking.operator` (the booking is looked up under the sender, so another carrier never finds it), and the booking has an active subscription that lists this intent. Every failure is the same `forbidden`, so the answer reveals nothing about which bookings exist |
 | Subscription endpoint | Must be on the sender's own domain (prevents using the operator to push data to third parties) |
 
 ### A.7 Transport bindings
@@ -601,7 +602,7 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 
   Redirects are never followed.
 - The REST client always uses the guarded outbound client ([A.2](#a2-identity-keys-and-trust-design-decisions)) and finds the endpoint in the receiver's profile. There's no way to hand it an unguarded HTTP client.
-- Webhooks: the operator `POST`s signed `tnt.event`/`tnt.alert` envelopes to the subscriber's registered endpoint (its own `/ulp`). A 2xx response is the ack; the publisher retries with backoff otherwise.
+- Webhooks: the operator `POST`s signed `tnt.event`/`tnt.alert` envelopes to exactly the subscriber's registered endpoint, which must be on the subscriber's own domain ([A.6](#a6-authorization-rules)). Delivery goes through the guarded outbound client, so an endpoint whose host resolves inward is refused, never retried. A 204 is the ack. A node serves pushes on the same `/ulp` handler as everything else, so in this implementation the subscription endpoint is `https://{subscriber}/ulp`. The publisher retries transport failures, 5xx, 408, 429 and a retryable `ulp.error`; it gives up on other bare 4xx, signed refusals, responses that fail verification and anything else.
 - Until a message's signature verifies, refusals are bare statuses (above): the receiver signs nothing in answer to an unverified message ([A.1](#a1-architecture)). Every verified message gets a signed response, a `ulp.error` included, or a 204.
 - HTTP status codes report transport-level outcomes; protocol outcomes are in the signed response envelope, so a proxy can't forge a protocol decision.
 
@@ -636,7 +637,7 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 | Subscription registry | `bookingRef → [endpoint, intents]`; validated per [A.6](#a6-authorization-rules) |
 | Shipment simulator | Timeline per booking (GTIN → LOAD → DEPA → ARRI EST updates → ARRI → DISC → GTOT) on an accelerated clock; `disrupt` inserts delay events, recomputes ETA and raises an alert |
 | Event store | Append-only events per booking (the operator's "knowledge graph" for the demo) |
-| Publisher | Signs and pushes events and alerts to subscribers; retries with backoff; per-subscription ordering |
+| Publisher | Records each event and alert in the operator's event log, then pushes it to the booking's subscriber if its subscription lists that intent. One queue and worker per subscription keep a booking's events in order and isolate slow subscribers. Only failures another attempt can fix are retried, backing off from 1 s doubling to 30 s (eight attempts at most), and **each attempt is a newly signed message**: a re-sent copy would be a replay, or go stale. A worker exits once its queue is empty, and the number of subscriptions with pushes in flight is capped. Each ID is published once per booking. Pushes it gives up on, that overflow a queue or the worker cap, or that are still pending at shutdown, are reported; they stay in the log, and the subscriber catches up with `tnt.inquiry` rather than a republish |
 | Inquiry responder | Serves the A2A `shipment-inquiry` skill: authorized data (fetched through the same core operations as the REST binding) → LLM → output validation → response ([A.10](#a10-llm-integration)) |
 | Backend connectors (later) | MCP clients to the operator's existing systems (TMS, booking), called by core operations after authorization ([A.7](#a7-transport-bindings)). The demo uses the in-memory stores instead |
 
@@ -648,7 +649,7 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 | Booking drafts | Drafts created by the LLM tool; sent only after CLI confirmation |
 | Shipment store | Bookings, received events and alerts (verified envelopes stored as received, for audit) |
 | Business context | Private data the LLM may use: required delivery dates, warehouse slots, launch dates. **Never sent to partners** |
-| Inbound handlers | `tnt.event` → store; `tnt.alert` → store + trigger the alert summarizer |
+| Inbound handlers | `tnt.event` → store; `tnt.alert` → store + trigger the alert summarizer. Each is recorded once per event or alert ID, as the verified header and body it arrived with, so the publisher's re-signed retries never duplicate an event |
 | Internal API | Local-only API used by `ulpchat` (and later by the local MCP server, [A.7](#a7-transport-bindings)) |
 | Backend connectors (later) | MCP clients to the shipper's own systems (ERP, warehouse), called by deterministic code; also the source of business context |
 

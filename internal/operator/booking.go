@@ -18,6 +18,7 @@ package operator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -129,7 +130,7 @@ func (s *BookingService) Handle(_ context.Context, req *node.Request) (*node.Rep
 		conf.EquipmentRefs = append(conf.EquipmentRefs, containerNumber(s.ContainerPrefix, firstSerial+i))
 	}
 	if b.Subscription != nil {
-		// Recorded with the booking; pushing events to it is milestone 3.
+		// Recorded with the booking; the Publisher pushes to it.
 		conf.SubscriptionID = fmt.Sprintf("SUB-%d", n)
 	}
 	if err := s.Bookings.Add(store.Booking{
@@ -139,7 +140,12 @@ func (s *BookingService) Handle(_ context.Context, req *node.Request) (*node.Rep
 		Request:      *b,
 		Confirmation: *conf,
 		CreatedAt:    s.Now(),
-	}); err != nil {
+	}); errors.Is(err, store.ErrFull) {
+		return &node.Reply{BookingRef: ref, Body: &intents.BookingConfirmationBody{
+			BookingRef: ref, Status: intents.StatusRejected,
+			Messages: []intents.Message{{Code: "at_capacity", Detail: "This operator is not taking new bookings right now."}},
+		}}, nil
+	} else if err != nil {
 		return nil, err
 	}
 	return &node.Reply{Body: conf, BookingRef: conf.BookingRef}, nil

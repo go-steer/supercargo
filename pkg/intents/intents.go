@@ -90,12 +90,14 @@ type spec struct {
 	newBody    func() Body
 }
 
-// specs are the intents this package decodes. Event, alert, inquiry and
+// specs are the intents this package decodes. Inquiry and
 // delegation bodies join with the milestones that use them.
 var specs = map[string]spec{
 	BookingRequest:      {bookingRef: forbidden, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &BookingRequestBody{} }},
 	BookingConfirmation: {bookingRef: required, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &BookingConfirmationBody{} }},
 	Error:               {bookingRef: optional, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &ErrorBody{} }},
+	TnTEvent:            {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &TnTEventBody{} }},
+	TnTAlert:            {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &TnTAlertBody{} }},
 }
 
 // Supported reports whether Decode has a body type for intent.

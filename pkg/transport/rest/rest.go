@@ -156,6 +156,23 @@ func NewClient(profiles Profiles, opts ClientOptions) (*Client, error) {
 // nothing back.
 var ErrNoResponse = errors.New("rest: accepted with no response")
 
+// ErrRefused reports an endpoint the guarded client won't connect to: its
+// host resolves to a non-public address. Retrying won't help.
+var ErrRefused = netguard.ErrRefused
+
+// TransportError is a failure to exchange HTTP at all (connection refused,
+// reset, timeout, TLS failure): the receiver may be fine a moment later.
+type TransportError struct {
+	Receiver string
+	Err      error
+}
+
+func (e *TransportError) Error() string {
+	return fmt.Sprintf("rest: posting to %s: %v", e.Receiver, e.Err)
+}
+
+func (e *TransportError) Unwrap() error { return e.Err }
+
 // StatusError is a bare HTTP refusal: the receiver decided before (or
 // without) verifying the message, or couldn't answer at all.
 type StatusError struct {
@@ -167,9 +184,12 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("rest: %s answered HTTP %d (%s)", e.Receiver, e.Code, http.StatusText(e.Code))
 }
 
-// Retryable reports a refusal worth retrying later: 503, the receiver
-// couldn't fetch the sender's profile.
-func (e *StatusError) Retryable() bool { return e.Code == http.StatusServiceUnavailable }
+// Retryable reports a refusal worth retrying later: 503 (the receiver
+// couldn't fetch the sender's profile, or is overloaded), any other 5xx,
+// 408 and 429.
+func (e *StatusError) Retryable() bool {
+	return e.Code >= 500 || e.Code == http.StatusRequestTimeout || e.Code == http.StatusTooManyRequests
+}
 
 // Post sends a serialized envelope to receiver's REST endpoint and returns
 // the response envelope, unverified: checking it is the caller's job. A 204
@@ -179,7 +199,15 @@ func (c *Client) Post(ctx context.Context, receiver string, msg []byte) ([]byte,
 	if err != nil {
 		return nil, fmt.Errorf("rest: %w", err)
 	}
-	endpoint := doc.Profile.Transports.REST
+	return c.PostTo(ctx, receiver, doc.Profile.Transports.REST, msg)
+}
+
+// PostTo sends a serialized envelope to endpoint, which must be on
+// receiver's own domain, and returns the response like Post. It is for
+// webhooks: a subscriber registers the endpoint pushes go to. The request
+// still goes through the guarded client, so an endpoint whose host
+// resolves to a non-public address is refused.
+func (c *Client) PostTo(ctx context.Context, receiver, endpoint string, msg []byte) ([]byte, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("rest: %s's endpoint %s: %w", receiver, logsafe.Quote(endpoint), err)
@@ -190,6 +218,11 @@ func (c *Client) Post(ctx context.Context, receiver string, msg []byte) ([]byte,
 	if u.Scheme != "https" && (!c.allowHTTP || u.Scheme != "http") {
 		return nil, fmt.Errorf("rest: %s's endpoint %s is not https", receiver, logsafe.Quote(endpoint))
 	}
+	if u.Hostname() != receiver || u.Host != u.Hostname() || u.User != nil {
+		// Profiles and subscriptions are already validated this way; a
+		// post never goes anywhere but the receiver's own domain.
+		return nil, fmt.Errorf("rest: endpoint %s is not on %s", logsafe.Quote(endpoint), receiver)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(msg))
 	if err != nil {
 		return nil, fmt.Errorf("rest: %w", err)
@@ -198,7 +231,10 @@ func (c *Client) Post(ctx context.Context, receiver string, msg []byte) ([]byte,
 	req.Header.Set("Accept", ContentType)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("rest: posting to %s: %w", receiver, err)
+		if errors.Is(err, ErrRefused) {
+			return nil, fmt.Errorf("rest: posting to %s: %w", receiver, err)
+		}
+		return nil, &TransportError{Receiver: receiver, Err: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	switch resp.StatusCode {

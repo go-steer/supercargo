@@ -144,6 +144,27 @@ func TestTooManyContainersRejected(t *testing.T) {
 	}
 }
 
+// TestFullStoreRejected: once the booking store is full, a request is
+// answered "rejected" rather than failing.
+func TestFullStoreRejected(t *testing.T) {
+	s := service()
+	s.Bookings = store.NewBookingsCap(1)
+	if _, err := s.Handle(context.Background(), request("cymbal-shoes.example", body())); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := s.Handle(context.Background(), request("cymbal-shoes.example", body()))
+	if err != nil {
+		t.Fatalf("a full store failed the request: %v", err)
+	}
+	c := reply.Body.(*intents.BookingConfirmationBody)
+	if c.Status != intents.StatusRejected || len(c.Messages) != 1 || c.Messages[0].Code != "at_capacity" || c.Validate() != nil {
+		t.Errorf("full-store answer %+v", c)
+	}
+	if s.Bookings.Len() != 1 {
+		t.Errorf("%d bookings, want 1", s.Bookings.Len())
+	}
+}
+
 func TestHandle(t *testing.T) {
 	s := service()
 	reply, err := s.Handle(context.Background(), request("cymbal-shoes.example", body()))

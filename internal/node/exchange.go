@@ -56,6 +56,27 @@ func (n *Node) Exchange(ctx context.Context, h envelope.Header, body intents.Bod
 	if n.cfg.Poster == nil {
 		return nil, errors.New("node: no Poster configured")
 	}
+	return n.exchange(ctx, h, body, expect, func(msg []byte) ([]byte, error) {
+		return n.cfg.Poster.Post(ctx, h.Receiver, msg)
+	})
+}
+
+// Push signs body as a new message to h.Receiver and posts it to endpoint,
+// a webhook the receiver registered (it must be on the receiver's domain).
+// A push expects no response: nil means the receiver accepted it (204). A
+// signed ulp.error comes back as a *RemoteError, a bare refusal as a
+// *rest.StatusError.
+func (n *Node) Push(ctx context.Context, h envelope.Header, body intents.Body, endpoint string) error {
+	if n.cfg.Poster == nil {
+		return errors.New("node: no Poster configured")
+	}
+	_, err := n.exchange(ctx, h, body, nil, func(msg []byte) ([]byte, error) {
+		return n.cfg.Poster.PostTo(ctx, h.Receiver, endpoint, msg)
+	})
+	return err
+}
+
+func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Body, expect []string, post func([]byte) ([]byte, error)) (*Request, error) {
 	if h.Sender != n.cfg.Domain || h.Intent != body.Intent() {
 		return nil, fmt.Errorf("node: header sender %q / intent %q don't match this node and the body", h.Sender, h.Intent)
 	}
@@ -72,7 +93,7 @@ func (n *Node) Exchange(ctx context.Context, h envelope.Header, body intents.Bod
 		return nil, err
 	}
 	ev := Event{Direction: "out", Intent: h.Intent, Sender: h.Sender, Receiver: h.Receiver, MessageID: h.MessageID, KID: n.cfg.KID, Verified: true}
-	resp, err := n.cfg.Poster.Post(ctx, h.Receiver, msg)
+	resp, err := post(msg)
 	if errors.Is(err, rest.ErrNoResponse) && len(expect) == 0 {
 		ev.Outcome, ev.Time = "sent", n.cfg.Now()
 		n.cfg.Observer(ev)

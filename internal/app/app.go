@@ -51,7 +51,10 @@ type App struct {
 	// shipper's recorded).
 	Bookings *store.Bookings
 	// Keys is the key cache (partners pinned).
-	Keys   *discovery.Cache
+	Keys *discovery.Cache
+	// Events are the booking events and alerts the node received (shipper)
+	// or published (operator).
+	Events *store.EventLog
 	Server *http.Server
 	Logger *slog.Logger
 }
@@ -98,7 +101,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		return nil, err
 	}
 
-	a := &App{Config: cfg, Bookings: store.NewBookings(), Keys: cache, Logger: logger}
+	a := &App{Config: cfg, Bookings: store.NewBookings(), Events: store.NewEventLog(0), Keys: cache, Logger: logger}
 	handlers := map[string]node.Handler{}
 	if cfg.Role == config.RoleOperator {
 		o := cfg.Operator
@@ -110,6 +113,11 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			Bookings: a.Bookings, Deny: deny, RefPrefix: o.RefPrefix, ContainerPrefix: o.ContainerPrefix, Now: time.Now,
 			Voyage: operator.Voyage{Vessel: o.Vessel, Number: o.Voyage, DepartureHour: o.DepartureHour, Transit: o.Transit},
 		}
+	}
+	if cfg.Role == config.RoleShipper {
+		inbound := &shipper.Inbound{Bookings: a.Bookings, Log: a.Events, Now: time.Now}
+		handlers[intents.TnTEvent] = inbound
+		handlers[intents.TnTAlert] = inbound
 	}
 	restURL := ""
 	if insecure {

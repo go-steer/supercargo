@@ -54,8 +54,8 @@ github.com/go-steer/supercargo/pkg/internal/netguard     97.0  # 98.1
 # need a broken network; shipper for a response-type assertion the expected
 # intent already settles.
 github.com/go-steer/supercargo/internal/node            92.0  # 93.2
-github.com/go-steer/supercargo/internal/operator        95.0  # 96.2
-github.com/go-steer/supercargo/internal/shipper         89.0  # 90.9
+github.com/go-steer/supercargo/internal/operator        94.0  # 95.4
+github.com/go-steer/supercargo/internal/shipper         96.0  # 97.1
 github.com/go-steer/supercargo/internal/store          100.0
 github.com/go-steer/supercargo/pkg/transport/rest       90.0  # 91.8
 

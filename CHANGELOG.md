@@ -14,6 +14,13 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- The push path for track and trace:
+  - `ulp.tnt.event` and `ulp.tnt.alert` bodies in `pkg/intents`.
+  - `node.Push` and `rest.Client.PostTo`, which post to a subscriber's registered endpoint on its own domain, through the guarded client.
+  - The operator's `Publisher`: records each push (one per ID per booking), then delivers it in order per subscription, with idle workers exiting and a cap on active ones; it retries only failures another attempt can fix, and each retry is re-signed. `rest.TransportError` marks failures to exchange HTTP at all.
+  - The shipper's `Inbound` handler: only the booking's operator, for a subscribed intent; each event recorded once.
+  - An event log.
+- The operator's booking store is capped (`store.MaxBookings`), since anyone may request a booking; a request past the cap is answered `rejected` (`at_capacity`).
 - `cmd/ulpnode`: `serve` runs a node from its YAML config, with every HTTP server timeout set and the peer map logged at startup. `keygen` mints an Ed25519 signing key (mode 0600, never overwriting) and prints its public JWK. `book` sends a booking after an explicit `y`.
 - `internal/config` (strict YAML: unknown keys are errors; the signing key must be owner-only) and `internal/app` (a node assembled from config, with the same peers and TLS policy for discovery and the REST client, and partners pinned in the key cache).
 - `dev/tools/smoke`, now in the CI sweep: two real `ulpnode` processes booking over sockets. Milestone 2 is complete.

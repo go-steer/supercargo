@@ -47,23 +47,36 @@ type Booking struct {
 // confirmation overwrite another's booking. It is safe for concurrent use,
 // and copies bookings deeply on the way in and out.
 type Bookings struct {
+	max int
+
 	mu sync.Mutex
 	m  map[bookingKey]Booking
 }
 
+// MaxBookings bounds a Bookings store. Anyone may request a booking
+// (docs/DESIGN.md, A.6), so without a bound requests could grow the
+// operator's memory without limit.
+const MaxBookings = 100_000
+
 type bookingKey struct{ operator, ref string }
 
-// NewBookings returns an empty store.
-func NewBookings() *Bookings { return &Bookings{m: map[bookingKey]Booking{}} }
+// NewBookings returns an empty store holding at most MaxBookings.
+func NewBookings() *Bookings { return NewBookingsCap(MaxBookings) }
+
+// NewBookingsCap returns an empty store holding at most n bookings.
+func NewBookingsCap(n int) *Bookings { return &Bookings{max: n, m: map[bookingKey]Booking{}} }
 
 // Add stores b under (b.Operator, b.Ref). It never replaces a booking:
-// ErrExists if the key is taken.
+// ErrExists if the key is taken, ErrFull if the store is at capacity.
 func (s *Bookings) Add(b Booking) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := bookingKey{b.Operator, b.Ref}
 	if _, ok := s.m[k]; ok {
 		return ErrExists
+	}
+	if len(s.m) >= s.max {
+		return ErrFull
 	}
 	s.m[k] = clone(b)
 	return nil

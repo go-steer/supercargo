@@ -28,6 +28,8 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +37,8 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/config"
+	"github.com/go-steer/supercargo/pkg/discovery"
+	"github.com/go-steer/supercargo/pkg/intents"
 )
 
 func keyFile(t *testing.T) string {
@@ -96,6 +100,31 @@ func TestNewRoles(t *testing.T) {
 	}
 	if a.Shipper != nil {
 		t.Error("an operator app has a Shipper")
+	}
+}
+
+// TestRoleProfiles: each role's published profile lists the intents its
+// node serves, which is what partners check before sending.
+func TestRoleProfiles(t *testing.T) {
+	for role, want := range map[string][]string{
+		config.RoleShipper:  {intents.TnTEvent, intents.TnTAlert},
+		config.RoleOperator: {intents.BookingRequest},
+	} {
+		a, err := New(cfg(t, role), quiet())
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		a.Server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/.well-known/ulp", nil))
+		doc, err := discovery.ParseProfile(rec.Body.Bytes(), discovery.ParseOptions{Domain: "cymbal-shoes.example", AllowHTTP: true})
+		if err != nil {
+			t.Fatalf("%s profile: %v", role, err)
+		}
+		for _, i := range want {
+			if !doc.Accepts(i) {
+				t.Errorf("the %s profile doesn't accept %s", role, i)
+			}
+		}
 	}
 }
 
