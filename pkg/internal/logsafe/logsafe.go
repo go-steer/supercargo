@@ -19,11 +19,27 @@ package logsafe
 
 import (
 	"strconv"
+	"unicode"
 	"unicode/utf8"
 )
 
 // MaxLen is how many bytes of an untrusted string Quote keeps.
 const MaxLen = 64
+
+// Unsafe reports whether r doesn't belong in free text that people read and
+// models are given: control characters (Cc), format characters (Cf: bidi
+// overrides, zero-width characters, the U+E0000 tag block used to smuggle
+// hidden instructions to models), private-use and surrogate code points,
+// noncharacters, and the line and paragraph separators. multiline allows
+// '\n' and '\t'.
+func Unsafe(r rune, multiline bool) bool {
+	if multiline && (r == '\n' || r == '\t') {
+		return false
+	}
+	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Co, unicode.Cs) ||
+		r == '\u2028' || r == '\u2029' ||
+		(r >= 0xfdd0 && r <= 0xfdef) || r&0xfffe == 0xfffe || r == utf8.RuneError
+}
 
 // Quote returns s as a Go-quoted string, cut to MaxLen bytes (on a rune
 // boundary) with "..." appended when it was longer.

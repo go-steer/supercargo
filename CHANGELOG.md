@@ -14,6 +14,11 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- `pkg/discovery`: party profiles at `/.well-known/ulp`.
+  - `Fetcher` connects only to public addresses (or an explicit static peer map), follows no redirects and validates the profile strictly.
+  - `Cache` resolves (domain, kid) to a verifier with a TTL, a per-domain refresh floor, single-flight fetches and a cap on concurrent fetches. It never serves an expired profile. Unknown domains can't evict a valid profile, and pinned partner domains are never evicted or starved.
+- `pkg/intents`: typed, validated bodies for `booking.request`, `booking.confirmation` and `ulp.error`, plus the per-intent header rules. `Decode` matches member names exactly, so a case variant can't mean one thing here and another elsewhere.
+- `envelope.ValidDomain`, the party-identity rule, for other packages.
 - `pkg/envelope`: the signed ULP envelope, a JWS (RFC 7515, flattened JSON
   serialization) with `typ` `ulp-envelope+jws`. `Seal` signs it. `Parse`
   decodes strictly and returns an `Unverified` message that exposes what

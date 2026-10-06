@@ -19,6 +19,33 @@ import (
 	"testing"
 )
 
+// Runes are written as numbers: an invisible character in a source literal
+// is exactly what this test is about.
+func TestUnsafe(t *testing.T) {
+	for _, r := range []rune{0x61, 0x5A, 0x30, 0x20, 0x2D, 0xE9, 0x6771, 0x1F600, 0x3000} {
+		if Unsafe(r, false) {
+			t.Errorf("Unsafe(%U) = true", r)
+		}
+	}
+	for _, r := range []rune{
+		0x00, 0x07, 0x0A, 0x09, 0x0D, 0x7F, 0x85, // control
+		0x200B, 0x200D, 0x2060, 0xFEFF, 0xAD, // zero-width and format
+		0x202E, 0x2066, // bidi
+		0xE0001, 0xE0041, 0xE007F, // tag characters
+		0xE000, 0xF0000, // private use
+		0xFDD0, 0xFFFE, 0x1FFFF, // noncharacters
+		0x2028, 0x2029, // separators
+		0xFFFD, // replacement character
+	} {
+		if !Unsafe(r, false) {
+			t.Errorf("Unsafe(%U) = false", r)
+		}
+	}
+	if Unsafe(0x0A, true) || Unsafe(0x09, true) || !Unsafe(0x0D, true) {
+		t.Error("multiline should allow exactly U+000A and U+0009")
+	}
+}
+
 func TestQuote(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"", `""`},

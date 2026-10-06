@@ -30,7 +30,17 @@ github.com/go-steer/supercargo/pkg/sig                 100.0
 # decode bytes that strictjson.Valid already accepted, or to marshal a fixed
 # struct, and an empty value for a member known to be present.
 github.com/go-steer/supercargo/pkg/envelope              96.0  # 97.8
-github.com/go-steer/supercargo/pkg/internal/strictjson   96.0  # 97.3
+github.com/go-steer/supercargo/pkg/internal/strictjson   97.0  # 98.6
 
 # Small and pure.
 github.com/go-steer/supercargo/pkg/internal/logsafe     100.0
+
+# Meaning and discovery: what a verified envelope says, and whose key it is.
+# intents is pure validation. discovery and netguard fall short of 100 only
+# for arms that need the network or a failure nothing in-process provokes:
+# a successful dial to a public address, a request that cannot be built
+# for a validated domain, a body read that fails mid-stream, and eviction
+# skipping an entry whose fetch is in flight.
+github.com/go-steer/supercargo/pkg/intents              100.0
+github.com/go-steer/supercargo/pkg/discovery             97.0  # 98.3
+github.com/go-steer/supercargo/pkg/internal/netguard     97.0  # 98.1
