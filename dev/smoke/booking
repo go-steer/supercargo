@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Smoke: two real ulpnode processes (an operator and a shipper) book over
+# real sockets, and a booking nobody confirmed is never sent.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+work="$(mktemp -d)"
+trap 'smoke_stop; rm -rf "$work"' EXIT
+
+demo_build "$work"
+demo_ports
+demo_setup "$work" 1
+smoke_start "$work"
+
+if ! out="$("$work/bin/ulpnode" book --config "$work/shipper.yaml" --operator ocean-blue.example --request "$work/booking.json" --yes 2>"$work/book.log")"; then
+  smoke_fail "$work" "booking failed"
+fi
+echo "$out"
+
+grep -q '"status": "confirmed"' <<<"$out" || smoke_fail "$work" "no confirmation"
+grep -q '"outcome":"accepted"' "$work/operator.log" || smoke_fail "$work" "operator logged no accepted request"
+grep -q '"verified":true' "$work/operator.log" || smoke_fail "$work" "operator logged no verified request"
+
+# A booking nobody confirmed must not be sent: answering anything but "y"
+# exits non-zero, and the operator receives nothing more.
+if out="$(echo n | "$work/bin/ulpnode" book --config "$work/shipper.yaml" --operator ocean-blue.example --request "$work/booking.json" 2>/dev/null)"; then
+  smoke_fail "$work" "declining exited 0"
+fi
+grep -q "Not sent." <<<"$out" || smoke_fail "$work" "declining didn't say so"
+sleep 0.5 # anything sent would have arrived by now
+accepted="$(grep -c '"intent":"ulp.booking.request".*"outcome":"accepted"' "$work/operator.log" || true)"
+[[ "$accepted" == 1 ]] || smoke_fail "$work" "the operator accepted $accepted booking requests, want 1"
+
+echo "✓ smoke/booking: two ulpnode processes booked over REST, verified both ways"

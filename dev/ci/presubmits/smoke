@@ -13,6 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# CI delegator: two real ulpnode processes booking over sockets, via dev/tools/smoke.
+# CI delegator: the end-to-end scenarios in dev/smoke, via dev/tools/smoke.
 set -euo pipefail
 exec "$(dirname "$0")/../../tools/smoke" "$@"

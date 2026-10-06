@@ -93,6 +93,29 @@ func TestInboundHandle(t *testing.T) {
 	if *alerts != 1 {
 		t.Errorf("OnAlert ran %d times, want 1", *alerts)
 	}
+	// OnEvent likewise runs once per new event, with the booking.
+	var seen []string
+	in.OnEvent = func(b store.Booking, e *intents.TnTEventBody) { seen = append(seen, b.Ref+" "+e.EventID) }
+	ev2 := *anEvent
+	ev2.EventID = "EV-2"
+	for range 2 {
+		if _, err := in.Handle(context.Background(), pushReq("ocean-blue.example", "OB-BKG-1", &ev2)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(seen) != 1 || seen[0] != "OB-BKG-1 EV-2" {
+		t.Errorf("OnEvent saw %v", seen)
+	}
+	// With no hooks set, new pushes are still recorded.
+	in.OnAlert, in.OnEvent = nil, nil
+	al2 := *anAlert
+	al2.AlertID = "AL-2"
+	if _, err := in.Handle(context.Background(), pushReq("ocean-blue.example", "OB-BKG-1", &al2)); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(in.Log.List("ocean-blue.example", "OB-BKG-1")); n != 4 {
+		t.Errorf("%d records, want 4", n)
+	}
 	if _, err := in.Handle(context.Background(), &node.Request{
 		Envelope: pushReq("ocean-blue.example", "OB-BKG-1", anEvent).Envelope,
 		Body:     &intents.ErrorBody{Code: "internal", Detail: "x"},

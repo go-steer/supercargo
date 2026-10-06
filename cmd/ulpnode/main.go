@@ -31,13 +31,17 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/go-steer/supercargo/internal/app"
 	"github.com/go-steer/supercargo/internal/config"
+	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/sig"
 )
@@ -153,16 +157,19 @@ func book(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if cfg.Role != config.RoleShipper {
 		return errors.New("book: the config is not a shipper's")
 	}
+	// The booking goes through the running node, which records it and so
+	// accepts the operator's pushes for it.
+	if cfg.Control == nil {
+		return errors.New("book: the config has no control socket; book through a running node (add control: { socket: ... })")
+	}
 	req, err := readRequest(*reqPath)
 	if err != nil {
 		return err
 	}
-	// Built before asking: a broken key or CA shows up before anyone says
-	// yes, not after.
-	log, _ := logger("text", stderr)
-	a, err := app.New(cfg, log)
-	if err != nil {
-		return err
+	// Checked before asking: a node that isn't running shows up before
+	// anyone says yes, not after.
+	if fi, err := os.Stat(cfg.Control.Socket); err != nil || fi.Mode().Type() != os.ModeSocket {
+		return fmt.Errorf("book: no node listening on %s: start it with ulpnode serve", cfg.Control.Socket)
 	}
 	printSummary(stdout, *operatorDomain, req)
 	if !*yes {
@@ -175,11 +182,20 @@ func book(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			return errNotSent
 		}
 	}
-	conf, err := a.Shipper.Book(context.Background(), *operatorDomain, req)
-	if err != nil {
-		return err
+	var resp shipper.BookResponse
+	// Longer than the node's write timeout, so the node gives up first.
+	code, err := control.Call(control.Client(cfg.Control.Socket, 75*time.Second), "/book",
+		shipper.BookRequest{Operator: *operatorDomain, Request: *req}, &resp)
+	if errors.Is(err, control.ErrNoAnswer) {
+		return fmt.Errorf("book: %w; check the node's log before booking again", err)
 	}
-	out, _ := json.MarshalIndent(conf, "", "  ")
+	if err != nil {
+		return fmt.Errorf("book: %w", err)
+	}
+	if code != http.StatusOK || resp.Confirmation == nil {
+		return fmt.Errorf("book: HTTP %d: %s", code, resp.Error)
+	}
+	out, _ := json.MarshalIndent(resp.Confirmation, "", "  ")
 	_, err = fmt.Fprintf(stdout, "%s\n", out)
 	return err
 }

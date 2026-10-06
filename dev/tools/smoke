@@ -13,132 +13,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# End-to-end smoke test: two real ulpnode processes (an operator and a
-# shipper) on localhost, booking over real sockets.
+# End-to-end smoke tests: real ulpnode processes over real sockets. Runs
+# every executable in dev/smoke (lib.sh is their shared helpers), or only
+# those named:
 #
-# Keys are minted with `ulpnode keygen` into a temp dir; nothing is read
-# from the repo but the source. The nodes run in insecure-dev mode with a
-# peer map (TLS is exercised by the integration tests in internal/node).
+#   dev/tools/smoke            # all
+#   dev/tools/smoke push       # just dev/smoke/push
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
-cd "$(repo_root)"
+dir="$(repo_root)/dev/smoke"
 
-work="$(mktemp -d)"
-pids=()
-cleanup() {
-  for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null || true; done
-  wait 2>/dev/null || true
-  rm -rf "$work"
-}
-trap cleanup EXIT
-
-go build -o "$work/ulpnode" ./cmd/ulpnode
-
-# Below the Linux ephemeral range (32768+), so an outgoing connection can't
-# already hold the port.
-base=$((10000 + RANDOM % 10000))
-op_port=$base
-sh_port=$((base + 1))
-
-"$work/ulpnode" keygen --kid ob-smoke-1 --out "$work/ob.pem" >/dev/null
-"$work/ulpnode" keygen --kid cy-smoke-1 --out "$work/cy.pem" >/dev/null
-
-peers="  ocean-blue.example: 127.0.0.1:$op_port
-  cymbal-shoes.example: 127.0.0.1:$sh_port"
-
-cat >"$work/operator.yaml" <<EOF
-domain: ocean-blue.example
-name: Ocean Blue
-role: operator
-listen: 127.0.0.1:$op_port
-tls: { mode: insecure-dev }
-keys:
-  - kid: ob-smoke-1
-    privateKeyFile: $work/ob.pem
-peers:
-$peers
-partners: [cymbal-shoes.example]
-operator:
-  refPrefix: OB-BKG
-  containerPrefix: OCBU
-  vessel: Ocean Blue Aurora
-  voyage: 42W
-  departureHour: 18
-  transit: 134h
-EOF
-
-cat >"$work/shipper.yaml" <<EOF
-domain: cymbal-shoes.example
-name: Cymbal Shoes
-role: shipper
-listen: 127.0.0.1:$sh_port
-tls: { mode: insecure-dev }
-keys:
-  - kid: cy-smoke-1
-    privateKeyFile: $work/cy.pem
-peers:
-$peers
-partners: [ocean-blue.example]
-EOF
-
-cat >"$work/booking.json" <<'EOF'
-{
-  "shipperRef": "CY-PO-55120",
-  "origin":      { "unLocode": "NLRTM", "name": "Rotterdam" },
-  "destination": { "unLocode": "USEWR", "name": "Newark" },
-  "equipment":   [{ "isoType": "45G1", "label": "40HC", "count": 1 }],
-  "cargo":       { "description": "Footwear (sneakers)", "hsCode": "6404" },
-  "earliestDeparture": "2026-10-06",
-  "subscription": {
-    "endpoint": "http://cymbal-shoes.example/ulp",
-    "intents":  ["ulp.tnt.event", "ulp.tnt.alert"]
-  }
-}
-EOF
-
-"$work/ulpnode" serve --config "$work/operator.yaml" --log-format json 2>"$work/operator.log" &
-pids+=($!)
-"$work/ulpnode" serve --config "$work/shipper.yaml" --log-format json 2>"$work/shipper.log" &
-pids+=($!)
-
-wait_up() {
-  local port=$1 pid=$2
-  for _ in $(seq 1 100); do
-    if curl -fsS "http://127.0.0.1:$port/.well-known/ulp" >/dev/null 2>&1; then return 0; fi
-    if ! kill -0 "$pid" 2>/dev/null; then
-      echo "smoke: the node for port $port exited (port taken?)" >&2
-      cat "$work"/*.log >&2
-      return 1
-    fi
-    sleep 0.1
+tests=()
+if (($#)); then
+  for name in "$@"; do
+    [[ -x "$dir/$name" && "$name" != *.sh ]] || { echo "smoke: no test $name in dev/smoke" >&2; exit 1; }
+    tests+=("$dir/$name")
   done
-  echo "smoke: node on port $port didn't come up" >&2
-  cat "$work"/*.log >&2
-  return 1
-}
-wait_up "$op_port" "${pids[0]}"
-wait_up "$sh_port" "${pids[1]}"
-
-if ! out="$("$work/ulpnode" book --config "$work/shipper.yaml" --operator ocean-blue.example --request "$work/booking.json" --yes 2>"$work/book.log")"; then
-  echo "smoke: booking failed" >&2
-  cat "$work/book.log" "$work"/operator.log >&2
-  exit 1
+else
+  for f in "$dir"/*; do
+    [[ -x "$f" && "$f" != *.sh ]] && tests+=("$f")
+  done
 fi
-echo "$out"
 
-grep -q '"status": "confirmed"' <<<"$out" || { echo "smoke: no confirmation" >&2; exit 1; }
-grep -q '"outcome":"accepted"' "$work/operator.log" || { echo "smoke: operator logged no accepted request" >&2; cat "$work/operator.log" >&2; exit 1; }
-grep -q '"verified":true' "$work/operator.log" || { echo "smoke: operator logged no verified request" >&2; exit 1; }
-
-# A booking nobody confirmed must not be sent: answering anything but "y"
-# exits non-zero, and the operator receives nothing more.
-if out="$(echo n | "$work/ulpnode" book --config "$work/shipper.yaml" --operator ocean-blue.example --request "$work/booking.json" 2>/dev/null)"; then
-  echo "smoke: declining exited 0" >&2
-  exit 1
-fi
-grep -q "Not sent." <<<"$out" || { echo "smoke: declining didn't say so" >&2; exit 1; }
-sleep 0.5 # anything sent would have arrived by now
-accepted="$(grep -c '"outcome":"accepted"' "$work/operator.log" || true)"
-[[ "$accepted" == 1 ]] || { echo "smoke: the operator accepted $accepted requests, want 1" >&2; exit 1; }
-
-echo "✓ smoke: two ulpnode processes booked over REST, verified both ways"
+for t in "${tests[@]}"; do
+  printf '\n· smoke/%s\n' "$(basename "$t")"
+  "$t"
+done

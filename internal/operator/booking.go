@@ -58,6 +58,10 @@ type BookingService struct {
 	ContainerPrefix string
 	Voyage          Voyage
 	Now             func() time.Time
+	// OnBooked runs for each booking stored, before its confirmation is
+	// sent: the hook the simulator starts a voyage from. Optional; it must
+	// not block.
+	OnBooked func(store.Booking)
 
 	mu     sync.Mutex
 	next   int
@@ -147,6 +151,12 @@ func (s *BookingService) Handle(_ context.Context, req *node.Request) (*node.Rep
 		}}, nil
 	} else if err != nil {
 		return nil, err
+	}
+	if s.OnBooked != nil {
+		// The store's copy, which shares nothing with the reply.
+		if stored, err := s.Bookings.Get(req.Envelope.Header.Receiver, conf.BookingRef); err == nil {
+			s.OnBooked(stored)
+		}
 	}
 	return &node.Reply{Body: conf, BookingRef: conf.BookingRef}, nil
 }

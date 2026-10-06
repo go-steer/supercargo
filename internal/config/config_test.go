@@ -55,6 +55,7 @@ llm: { provider: fake, model: m, apiKeyEnv: LLM_API_KEY }
 skills: { dir: /etc/ulp/skills }
 mcp: { connectors: [{ name: tms, url: "https://tms.internal.ocean-blue.example/mcp" }] }
 simulator: { hoursPerSecond: 1 }
+control: { socket: /run/ulp/ocean-blue.sock }
 `
 
 func TestParse(t *testing.T) {
@@ -80,6 +81,25 @@ keys: [{kid: cy-1, privateKeyFile: k.pem}]}`
 	}
 	if c.Security.MaxSkew != 5*time.Minute || c.Security.ReplayRetention != 15*time.Minute {
 		t.Errorf("defaults: %+v", c.Security)
+	}
+	if c.Simulator != nil || c.Control != nil {
+		t.Error("a shipper got simulator or control settings")
+	}
+	// A shipper has no simulator, but may have a control socket.
+	if _, err := Parse([]byte(strings.TrimSuffix(minimal, "}") + ", simulator: {hoursPerSecond: 1}}")); err == nil {
+		t.Error("a shipper with a simulator was accepted")
+	}
+	c, err = Parse([]byte(strings.TrimSuffix(minimal, "}") + ", control: {socket: /tmp/cy/ulp.sock}}"))
+	if err != nil || c.Control.Socket != "/tmp/cy/ulp.sock" {
+		t.Errorf("a shipper's control socket: %+v, %v", c, err)
+	}
+	// An operator's clock defaults to 1h/s.
+	c, err = Parse([]byte(strings.Replace(operatorYAML, "simulator: { hoursPerSecond: 1 }\n", "", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Simulator.HoursPerSecond != 1 || c.Control.Socket != "/run/ulp/ocean-blue.sock" {
+		t.Errorf("operator defaults: %+v %+v", c.Simulator, c.Control)
 	}
 }
 
@@ -108,6 +128,13 @@ func TestParseRejects(t *testing.T) {
 		"bad departure hour":         {"departureHour: 18", "departureHour: 24"},
 		"no transit":                 {"transit: 134h", "transit: 0s"},
 		"deny entry not a domain":    {"deny: [mallory.example]", "deny: [\"*\"]"},
+		"negative clock":             {"hoursPerSecond: 1", "hoursPerSecond: -1"},
+		"clock over the cap":         {"hoursPerSecond: 1", "hoursPerSecond: 3601"},
+		"NaN clock":                  {"hoursPerSecond: 1", "hoursPerSecond: .nan"},
+		"relative control socket":    {"socket: /run/ulp/ocean-blue.sock", "socket: ulp.sock"},
+		"unclean control socket":     {"socket: /run/ulp/ocean-blue.sock", "socket: /run/ulp/../ulp.sock"},
+		"long control socket":        {"socket: /run/ulp/ocean-blue.sock", "socket: /" + strings.Repeat("x", 100)},
+		"empty control socket":       {"socket: /run/ulp/ocean-blue.sock", `socket: ""`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			in := strings.Replace(operatorYAML, edit[0], edit[1], 1)

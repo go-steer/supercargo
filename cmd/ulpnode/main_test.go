@@ -17,11 +17,17 @@ package main
 import (
 	"bytes"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/go-steer/supercargo/internal/config"
+	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/shipper"
+	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/sig"
 )
 
@@ -72,6 +78,9 @@ func TestKeygen(t *testing.T) {
 func shipperConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	key := filepath.Join(dir, "key.pem")
 	if _, err := runCmd(t, "", "keygen", "--kid", "cy-1", "--out", key); err != nil {
 		t.Fatal(err)
@@ -79,7 +88,8 @@ func shipperConfig(t *testing.T) string {
 	p := filepath.Join(dir, "shipper.yaml")
 	y := "domain: cymbal-shoes.example\nname: Cymbal\nrole: shipper\nlisten: \"127.0.0.1:0\"\ntls: { mode: insecure-dev }\n" +
 		"keys: [{ kid: cy-1, privateKeyFile: \"" + key + "\" }]\n" +
-		"peers: { ocean-blue.example: \"127.0.0.1:1\" }\n" // offline: a refused connection, not a DNS lookup
+		"peers: { ocean-blue.example: \"127.0.0.1:1\" }\n" + // offline: a refused connection, not a DNS lookup
+		"control: { socket: \"" + filepath.Join(dir, "cy.sock") + "\" }\n"
 	if err := os.WriteFile(p, []byte(y), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -98,9 +108,54 @@ func writeFile(t *testing.T, name, data string) string {
 	return p
 }
 
+// fakeNode stands in for the running shipper node behind a config's
+// control socket: it answers POST /book with a fixed status (a
+// confirmation if 200) and records what it was sent.
+type fakeNode struct {
+	mu   sync.Mutex
+	sent []shipper.BookRequest
+}
+
+func (f *fakeNode) calls() []shipper.BookRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]shipper.BookRequest(nil), f.sent...)
+}
+
+func startNode(t *testing.T, cfg string, status int) *fakeNode {
+	t.Helper()
+	c, err := config.Load(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := control.Listen(c.Control.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeNode{}
+	srv := control.Server(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req shipper.BookRequest
+		if err := control.Decode(r, &req); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		f.mu.Lock()
+		f.sent = append(f.sent, req)
+		f.mu.Unlock()
+		if status != http.StatusOK {
+			control.Answer(w, status, shipper.BookResponse{Error: "node: partner refused"})
+			return
+		}
+		control.Answer(w, status, shipper.BookResponse{Confirmation: &intents.BookingConfirmationBody{BookingRef: "OB-BKG-1042", Status: intents.StatusConfirmed}})
+	}), nil)
+	go func() { _ = srv.Serve(l) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return f
+}
+
 // TestBookNeedsAYes: anything but "y" sends nothing.
 func TestBookNeedsAYes(t *testing.T) {
 	cfg := shipperConfig(t)
+	node := startNode(t, cfg, http.StatusOK)
 	req := writeFile(t, "req.json", requestJSON)
 	for _, answer := range []string{"n\n", "\n", "yes please\n", ""} {
 		out, err := runCmd(t, answer, "book", "--config", cfg, "--operator", "ocean-blue.example", "--request", req)
@@ -108,12 +163,35 @@ func TestBookNeedsAYes(t *testing.T) {
 			t.Errorf("answer %q: %q, %v; want errNotSent", answer, out, err)
 		}
 	}
+	if n := len(node.calls()); n != 0 {
+		t.Errorf("the node was asked to book %d times", n)
+	}
+}
+
+// TestBookSends: a "y" (or --yes) sends the booking through the running
+// node, and prints the confirmation.
+func TestBookSends(t *testing.T) {
+	cfg := shipperConfig(t)
+	node := startNode(t, cfg, http.StatusOK)
+	req := writeFile(t, "req.json", requestJSON)
+	out, err := runCmd(t, "y\n", "book", "--config", cfg, "--operator", "ocean-blue.example", "--request", req)
+	if err != nil || !strings.Contains(out, `"bookingRef": "OB-BKG-1042"`) {
+		t.Fatalf("book: %q, %v", out, err)
+	}
+	if _, err := runCmd(t, "", "book", "--config", cfg, "--operator", "ocean-blue.example", "--request", req, "--yes"); err != nil {
+		t.Fatal(err)
+	}
+	calls := node.calls()
+	if len(calls) != 2 || calls[0].Operator != "ocean-blue.example" || calls[0].Request.ShipperRef != "P1" {
+		t.Errorf("node was sent %+v", calls)
+	}
 }
 
 // TestBookSummary: the person sees where updates go and who the consignee
 // is before saying yes.
 func TestBookSummary(t *testing.T) {
 	cfg := shipperConfig(t)
+	startNode(t, cfg, http.StatusOK)
 	withAll := strings.Replace(requestJSON, `"earliestDeparture":"2026-10-06"`,
 		`"earliestDeparture":"2026-10-06","consignee":{"name":"Cymbal Footwear","domain":"cymbal-footwear.example"},`+
 			`"subscription":{"endpoint":"https://cymbal-shoes.example/ulp","intents":["ulp.tnt.event"]}`, 1)
@@ -145,6 +223,7 @@ func TestBookRejects(t *testing.T) {
 	opCfg := writeFile(t, "op.yaml", strings.Replace(mustRead(t, cfg), "role: shipper",
 		"role: operator\noperator: { refPrefix: OB, containerPrefix: OCBU, vessel: V, voyage: 1W, departureHour: 1, transit: 1h }", 1))
 	good := writeFile(t, "req.json", requestJSON)
+	noControl := writeFile(t, "nc.yaml", strings.Split(mustRead(t, cfg), "control:")[0])
 	for name, args := range map[string][]string{
 		"no flags":          {"book"},
 		"missing config":    {"book", "--config", filepath.Join(t.TempDir(), "none.yaml"), "--operator", "o.example", "--request", good},
@@ -154,11 +233,18 @@ func TestBookRejects(t *testing.T) {
 		"invalid body":      {"book", "--config", cfg, "--operator", "o.example", "--request", writeFile(t, "r.json", strings.Replace(requestJSON, "NLRTM", "nowhere", 1))},
 		"not JSON":          {"book", "--config", cfg, "--operator", "o.example", "--request", writeFile(t, "r.json", "{")},
 		"bad flag":          {"book", "--nope"},
-		"unreachable, sent": {"book", "--config", cfg, "--operator", "ocean-blue.example", "--request", good, "--yes"},
+		"node not running":  {"book", "--config", cfg, "--operator", "ocean-blue.example", "--request", good, "--yes"},
+		"no control socket": {"book", "--config", noControl, "--operator", "ocean-blue.example", "--request", good, "--yes"},
 	} {
 		if _, err := runCmd(t, "", args...); err == nil {
 			t.Errorf("%s: succeeded", name)
 		}
+	}
+	// The node couldn't book: an error, not a confirmation.
+	startNode(t, cfg, http.StatusBadGateway)
+	if out, err := runCmd(t, "", "book", "--config", cfg, "--operator", "ocean-blue.example", "--request", good, "--yes"); err == nil ||
+		!strings.Contains(err.Error(), "partner refused") {
+		t.Errorf("a failed booking: %q, %v", out, err)
 	}
 }
 

@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/config"
+	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/operator"
 	"github.com/go-steer/supercargo/internal/shipper"
@@ -57,6 +58,12 @@ type App struct {
 	Events *store.EventLog
 	Server *http.Server
 	Logger *slog.Logger
+
+	// The operator's push path and simulator, and the presenter's control
+	// API (nil unless configured).
+	Publisher *operator.Publisher
+	Simulator *operator.Simulator
+	Control   *http.Server
 }
 
 // New builds an App from cfg.
@@ -104,18 +111,13 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	a := &App{Config: cfg, Bookings: store.NewBookings(), Events: store.NewEventLog(0), Keys: cache, Logger: logger}
 	handlers := map[string]node.Handler{}
 	if cfg.Role == config.RoleOperator {
-		o := cfg.Operator
-		deny := map[string]bool{}
-		for _, d := range o.Deny {
-			deny[d] = true
-		}
-		handlers[intents.BookingRequest] = &operator.BookingService{
-			Bookings: a.Bookings, Deny: deny, RefPrefix: o.RefPrefix, ContainerPrefix: o.ContainerPrefix, Now: time.Now,
-			Voyage: operator.Voyage{Vessel: o.Vessel, Number: o.Voyage, DepartureHour: o.DepartureHour, Transit: o.Transit},
-		}
+		a.operatorRole(handlers)
 	}
 	if cfg.Role == config.RoleShipper {
-		inbound := &shipper.Inbound{Bookings: a.Bookings, Log: a.Events, Now: time.Now}
+		inbound := &shipper.Inbound{Bookings: a.Bookings, Log: a.Events, Now: time.Now,
+			OnEvent: func(b store.Booking, e *intents.TnTEventBody) { logEvent(logger, "event recorded", b.Ref, e) },
+			OnAlert: func(b store.Booking, al *intents.TnTAlertBody) { logAlert(logger, "alert recorded", b.Ref, al) },
+		}
 		handlers[intents.TnTEvent] = inbound
 		handlers[intents.TnTAlert] = inbound
 	}
@@ -137,8 +139,18 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		return nil, err
 	}
 	a.Node = n
+	if a.Publisher != nil {
+		a.Publisher.Pusher = n
+	}
 	if cfg.Role == config.RoleShipper {
 		a.Shipper = &shipper.Shipper{Node: n, Bookings: a.Bookings, Now: time.Now}
+	}
+	if cfg.Control != nil {
+		h := operator.ControlHandler(a.Simulator)
+		if a.Shipper != nil {
+			h = shipper.ControlHandler(a.Shipper)
+		}
+		a.Control = control.Server(h, slog.NewLogLogger(logger.Handler(), slog.LevelInfo))
 	}
 	a.Server = &http.Server{
 		Addr:    cfg.Listen,
@@ -173,7 +185,17 @@ func (a *App) Serve(ctx context.Context) error {
 			a.Logger.Warn("peer map entry: connecting to this address instead of resolving the domain", "domain", d, "target", cfg.Peers[d])
 		}
 	}
-	errc := make(chan error, 1)
+	errc := make(chan error, 2)
+	if a.Control != nil {
+		// Opened first: a socket that can't be opened stops the node before
+		// it serves anything.
+		l, err := control.Listen(cfg.Control.Socket)
+		if err != nil {
+			return err
+		}
+		a.Logger.Info("control API listening (local only: whoever can reach the socket controls this node)", "socket", cfg.Control.Socket)
+		go func() { errc <- fmt.Errorf("control API: %w", a.Control.Serve(l)) }()
+	}
 	go func() {
 		var err error
 		if cfg.TLS.Mode == config.TLSLocalCA {
@@ -183,19 +205,96 @@ func (a *App) Serve(ctx context.Context) error {
 		}
 		errc <- err
 	}()
-	select {
-	case err := <-errc:
-		return err
-	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		err := a.Server.Shutdown(shutdown) //nolint:contextcheck // shutdown must outlive the cancelled ctx
-		if errors.Is(err, http.ErrServerClosed) {
-			err = nil
-		}
-		a.Logger.Info("node stopped")
-		return err
+	if a.Simulator != nil {
+		go a.Simulator.Run()
 	}
+	var err error
+	select {
+	case err = <-errc:
+	case <-ctx.Done():
+	}
+	a.shutdown() //nolint:contextcheck // shutdown must outlive the cancelled ctx
+	if errors.Is(err, http.ErrServerClosed) {
+		err = nil
+	}
+	a.Logger.Info("node stopped")
+	return err
+}
+
+// shutdown stops the simulator (no new events), then the publisher (what
+// is still queued is reported as dropped), then the servers.
+func (a *App) shutdown() {
+	if a.Simulator != nil {
+		a.Simulator.Close()
+	}
+	if a.Publisher != nil {
+		a.Publisher.Close()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if a.Control != nil {
+		_ = a.Control.Shutdown(ctx)
+	}
+	_ = a.Server.Shutdown(ctx)
+}
+
+// operatorRole sets up the booking service, the publisher and simulator
+// behind it. The publisher's Pusher is the node, set once it exists.
+func (a *App) operatorRole(handlers map[string]node.Handler) {
+	cfg, log := a.Config, a.Logger
+	o := cfg.Operator
+	a.Publisher = &operator.Publisher{Domain: cfg.Domain, Log: a.Events, Now: time.Now,
+		OnDrop: func(ref, id string, err error) {
+			log.Warn("push dropped", "booking", ref, "id", id, "err", err)
+		},
+	}
+	a.Simulator = &operator.Simulator{Publisher: a.Publisher, HoursPerSecond: cfg.Simulator.HoursPerSecond,
+		OnError: func(ref string, err error) { log.Warn("event not published", "booking", ref, "err", err) },
+		OnPublish: func(ref string, body intents.Body) {
+			switch b := body.(type) {
+			case *intents.TnTEventBody:
+				logEvent(log, "event published", ref, b)
+			case *intents.TnTAlertBody:
+				logAlert(log, "alert published", ref, b)
+			}
+		},
+	}
+	deny := map[string]bool{}
+	for _, d := range o.Deny {
+		deny[d] = true
+	}
+	handlers[intents.BookingRequest] = &operator.BookingService{
+		Bookings: a.Bookings, Deny: deny, RefPrefix: o.RefPrefix, ContainerPrefix: o.ContainerPrefix, Now: time.Now,
+		Voyage: operator.Voyage{Vessel: o.Vessel, Number: o.Voyage, DepartureHour: o.DepartureHour, Transit: o.Transit},
+		OnBooked: func(b store.Booking) {
+			if err := a.Simulator.Start(b); err != nil {
+				log.Warn("no voyage for booking", "booking", b.Ref, "err", err)
+				return
+			}
+			log.Info("voyage started", "booking", b.Ref, "departure", b.Confirmation.PlannedDeparture,
+				"arrival", b.Confirmation.PlannedArrival, "hoursPerSecond", cfg.Simulator.HoursPerSecond)
+		},
+	}
+}
+
+// logEvent logs a validated event's fields: codes from fixed sets, and
+// text the intent's rules already cleaned.
+func logEvent(log *slog.Logger, msg, ref string, e *intents.TnTEventBody) {
+	attrs := []any{"booking", ref, "eventId", e.EventID, "event", e.EventType + " " + e.EventCode + " " + e.EventClassifierCode,
+		"at", e.EventDateTime, "location", e.Location.UNLocode}
+	if e.EquipmentRef != "" {
+		attrs = append(attrs, "container", e.EquipmentRef)
+	}
+	if e.Transport != nil {
+		attrs = append(attrs, "vessel", e.Transport.Vessel+" "+e.Transport.Voyage)
+	}
+	log.Info(msg, attrs...)
+}
+
+// logAlert logs a validated alert, at Warn: it is news.
+func logAlert(log *slog.Logger, msg, ref string, al *intents.TnTAlertBody) {
+	log.Warn(msg, "booking", ref, "alertId", al.AlertID, "kind", al.Kind, "severity", al.Severity,
+		"summary", al.Summary, "previousEta", al.PreviousETA, "newEta", al.NewETA, "causeEventIds", al.CauseEventIDs)
 }
 
 func loadPool(path string) (*x509.CertPool, error) {

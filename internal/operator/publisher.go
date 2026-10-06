@@ -93,6 +93,9 @@ var (
 	// booking. Each update needs its own ID: the subscriber keeps the
 	// first body it sees under an ID.
 	ErrDuplicate = errors.New("operator: ID already published for this booking")
+	// ErrNotQueued reports a push recorded in the log but not queued for
+	// delivery (a queue or the worker cap was full); OnDrop has been told.
+	ErrNotQueued = errors.New("recorded, not queued")
 )
 
 func (p *Publisher) init() {
@@ -180,7 +183,7 @@ func (p *Publisher) Publish(b store.Booking, body intents.Body) error {
 // dropped reports a push not queued and returns the error for Publish.
 func (p *Publisher) dropped(booking, id string, err error) error {
 	p.drop(booking, id, err)
-	return fmt.Errorf("operator: %s: %w", id, err)
+	return fmt.Errorf("operator: %s: %w: %w", id, ErrNotQueued, err)
 }
 
 // Close stops the workers and waits for them. Pushes still queued or
