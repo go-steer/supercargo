@@ -264,7 +264,25 @@ The specs leave these open; the demo decides:
 - **Replay protection:** `messageId` (UUID) must be unique per sender (a seen-ID store with a 24 h retention), and `sentAt` must be within ±5 minutes of the receiver's clock.
 - **Authorization** is separate from authentication. See [A.6](#a6-authorization-rules).
 
+- **Outbound requests go only to public addresses.** Every request a node makes to a host someone else named goes through one guarded client: fetching a sender's profile, posting to a partner's endpoint, delivering a webhook. That client:
+  - resolves the name and refuses it if any address is loopback, private, link-local (cloud metadata included) or another special-purpose range;
+  - connects to the address it checked, so DNS rebinding gets nowhere;
+  - uses no proxy and follows no redirect.
+
+  Sender domains come from unauthenticated envelopes and subscription endpoints from partners, so without this a node would fetch whatever an attacker names.
+- **Key cache.** A fetched profile is used for its TTL (default 1 h) and never after, even if refetching fails, so a withdrawn key stops verifying within the TTL. An unknown `kid` (a rotated key) triggers a refetch, but no domain is fetched more than once per refresh floor (default 1 min), successful or not, because anyone can put a made-up `kid` in an envelope.
+  - **Bounded.** The cache holds a bounded number of domains, and only a bounded number of fetches run at once. Beyond that, lookups fail rather than queue, so envelopes naming many unknown domains can't turn a node into a source of outbound traffic.
+  - **Junk can't push out partners.** A newcomer only replaces an entry without a valid profile (failed, never fetched, or expired). If every entry is valid, the newcomer's profile answers its callers but isn't kept. The domains a node works with by configuration (its partners, and the peer map's domains) are **pinned**: never evicted, and their fetches don't count against the cap. A flood of unknown sender domains can neither evict nor starve them.
+  - **Shared fetches.** Concurrent lookups for one domain share one fetch.
+
 For local runs, `docker compose` gives each company a hostname. TLS can be off in dev (`--insecure-dev`) with a big warning in the logs, or use a local CA (e.g. mkcert) to show the real thing.
+
+Those hostnames resolve to private addresses, which the outbound guard refuses. The answer is an explicit **static peer map** in each node's configuration (`peers`, [A.12](#a12-configuration-per-company)). It maps a domain to the `host:port` to connect to for it, and it changes nothing else:
+- the URL, and so the TLS name verified, stays `https://{domain}/...`;
+- profiles and keys are still fetched;
+- every envelope is still verified.
+
+It is deliberately not an "allow private networks" switch: only the listed domains are exempt, and the node logs the map at startup.
 
 ### A.3 Discovery documents
 
@@ -295,6 +313,13 @@ For local runs, `docker compose` gives each company a hostname. TLS can be off i
 ```
 
 Each entry in `keys` is a public JWK: `kty`, `crv` and `x` per RFC 8037 for Ed25519, plus a `kid` unique within the document and a required `alg`. A key that carries private material (`d`) or no `alg` is rejected.
+
+Fetching and validating a profile:
+- **The request.** `GET https://{domain}/.well-known/ulp`, through the guarded client ([A.2](#a2-identity-keys-and-trust-design-decisions)). The response must be `200` (redirects aren't followed) with `Content-Type: application/json`, and at most 64 KiB.
+- **The document.** `protocolVersion` is the node's, `party.domain` is the domain it was fetched from, the roles are known ones, and there is at least one service.
+  - **Endpoints.** `transports.rest` is required, because every party receives envelopes over REST. Every endpoint is an `https` URL on the party's own domain (exactly, lowercase), with no port, userinfo, query or fragment. The standard port is the endpoint; in a local deployment the peer map says where that is.
+  - **Keys.** 1–16 of them.
+- **Strict parsing, room to grow.** Members this version doesn't define are ignored, so profiles can grow. Duplicate members, and members that differ from a defined one only in case, are rejected.
 
 Shipper and receiver nodes publish the same document (with `roles: ["shipper"]` and only the intents they accept, e.g. `ulp.tnt.event` and `ulp.tnt.alert`), so operators can verify *their* signatures and push to them.
 
@@ -397,6 +422,24 @@ All payloads are **demo designs**, loosely modeled on DCSA where noted. None are
 | `ulp.error` | any | same as the request | as a response | n/a |
 
 The binding column is the **default**. Every intent is a signed envelope, so any binding can carry any intent ([A.7](#a7-transport-bindings)); a node must accept structured intents over REST and may also accept them over A2A.
+
+**Header rules per intent.** Each intent fixes which optional header fields and attachments it carries; anything else is `invalid_body`:
+
+| Intent | `bookingRef` | `inReplyTo` | `attachments.delegation` |
+|---|---|---|---|
+| `booking.request` | absent (no booking yet) | absent | absent |
+| `booking.confirmation` | required, equal to the body's `bookingRef` | required | absent |
+| `tnt.event`, `tnt.alert` | required | absent | absent |
+| `tnt.inquiry` | required | absent | optional (a receiver's delegation) |
+| `tnt.inquiry.response` | required | required | absent |
+| `ulp.error` | optional | required | absent |
+
+**Body rules.** Bodies are decoded with exact member names: a member the intent doesn't define, a duplicate, or one that differs from a defined member only in case is `invalid_body`. Otherwise one implementation could read `"Question"` where another reads `"question"`.
+- **Identifiers** (`shipperRef`, `bookingRef`, voyage, subscription IDs) are 1–64 characters of `[A-Za-z0-9._-]` (no `/`, so a reference can never become a path).
+- **Free text** has a length cap and none of: control characters, format characters (bidirectional overrides, zero-width characters, the U+E0000 tag block used to smuggle hidden instructions to models), private-use code points, noncharacters, or line and paragraph separators. Free text reaches logs and model prompts, and what a person reviews must be all there is.
+- **Subscription endpoints** follow the profile-endpoint rules: an http(s) URL on a lowercase domain, no port, userinfo, query or fragment. The authorization rule that it is the subscriber's own domain ([A.6](#a6-authorization-rules)) compares that canonical host.
+- **Codes** follow their standards' forms: UN/LOCODE, ISO 6346 size-type and container number, HS code.
+- **Times** are RFC 3339 UTC in whole seconds, and dates are `YYYY-MM-DD`.
 
 **`ulp.booking.request`**
 ```json
@@ -533,6 +576,7 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 **REST binding:**
 - `POST /ulp` with the serialized envelope as the JSON request body. Sync responses (`booking.confirmation`, `ulp.error`) come back as the response body, also signed envelopes.
 - Webhooks: the operator `POST`s signed `tnt.event`/`tnt.alert` envelopes to the subscriber's registered endpoint (its own `/ulp`). A 2xx response is the ack; the publisher retries with backoff otherwise.
+- A request that can't be parsed as an envelope (bad JSON, bad base64url, malformed header) gets an HTTP `400` with no body: there's no verified `messageId` to answer, and `ulp.error` requires `inReplyTo`. Everything that parses gets a signed response, a `ulp.error` included.
 - HTTP status codes report transport-level outcomes; protocol outcomes are in the signed response envelope, so a proxy can't forge a protocol decision.
 
 **A2A binding:**
@@ -678,6 +722,11 @@ tls: { mode: local-ca }          # or insecure-dev
 keys:
   - kid: ob-2026-1
     privateKeyFile: /keys/ob-2026-1.pem
+peers:                           # local deployments only (A.2): domain → host:port to connect to
+  cymbal-shoes.example: cymbal-shoes:8443
+discovery:
+  ttl: 1h                        # profiles are never used past this
+  refreshFloor: 1m               # at most one fetch per domain per floor
 llm:
   provider: anthropic            # anthropic | gemini | fake
   model: <model id>

@@ -1,0 +1,189 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package discovery
+
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/go-steer/supercargo/pkg/sig"
+)
+
+const domain = "ocean-blue.example"
+
+// jwk mints an Ed25519 key in-process and returns its public JWK.
+func jwk(t testing.TB, kid string) json.RawMessage {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := sig.Ed25519JWK(pub, kid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return j
+}
+
+// profileMap is the DESIGN.md §A.3 example, as a map to edit.
+func profileMap(t testing.TB, kids ...string) map[string]any {
+	t.Helper()
+	if len(kids) == 0 {
+		kids = []string{"ob-2026-1"}
+	}
+	var keys []any
+	for _, k := range kids {
+		var m map[string]any
+		_ = json.Unmarshal(jwk(t, k), &m)
+		keys = append(keys, m)
+	}
+	return map[string]any{
+		"protocolVersion": "0.2-demo",
+		"party":           map[string]any{"domain": domain, "name": "Ocean Blue", "roles": []any{"operator"}},
+		"services": []any{map[string]any{
+			"name":       "ulp.freight",
+			"intents":    []any{"ulp.booking.request", "ulp.tnt.event", "ulp.tnt.alert", "ulp.tnt.inquiry"},
+			"extensions": []any{},
+		}},
+		"transports": map[string]any{"a2a": "https://ocean-blue.example/a2a", "rest": "https://ocean-blue.example/ulp"},
+		"keys":       keys,
+	}
+}
+
+func encode(t testing.TB, m map[string]any) []byte {
+	t.Helper()
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestParseProfile(t *testing.T) {
+	d, err := ParseProfile(encode(t, profileMap(t, "ob-2026-1", "ob-2026-2")), ParseOptions{Domain: domain})
+	if err != nil {
+		t.Fatalf("ParseProfile: %v", err)
+	}
+	if d.Profile.Party.Name != "Ocean Blue" || d.Profile.Transports.REST != "https://ocean-blue.example/ulp" {
+		t.Errorf("parsed %+v", d.Profile)
+	}
+	for _, kid := range []string{"ob-2026-1", "ob-2026-2"} {
+		if v, ok := d.Key(kid); !ok || v.Alg() != sig.Ed25519 {
+			t.Errorf("Key(%s) = %v, %v", kid, v, ok)
+		}
+	}
+	if _, ok := d.Key("ob-2025-9"); ok {
+		t.Error("Key found a kid the profile doesn't publish")
+	}
+	if !d.Accepts("ulp.tnt.inquiry") || d.Accepts("ulp.payment") {
+		t.Error("Accepts disagrees with services")
+	}
+
+	// Members a later version adds are ignored; A2A is optional; http is
+	// accepted in insecure mode.
+	m := profileMap(t)
+	m["supportedSince"] = "2026"
+	m["party"].(map[string]any)["logo"] = "https://ocean-blue.example/logo.png"
+	delete(m["transports"].(map[string]any), "a2a")
+	m["transports"].(map[string]any)["rest"] = "http://ocean-blue.example/ulp"
+	if _, err := ParseProfile(encode(t, m), ParseOptions{Domain: domain, AllowHTTP: true}); err != nil {
+		t.Errorf("ParseProfile(grown, insecure): %v", err)
+	}
+}
+
+func TestParseProfileRejects(t *testing.T) {
+	party := func(m map[string]any) map[string]any { return m["party"].(map[string]any) }
+	transports := func(m map[string]any) map[string]any { return m["transports"].(map[string]any) }
+	service := func(m map[string]any) map[string]any { return m["services"].([]any)[0].(map[string]any) }
+	for _, tc := range []struct {
+		name string
+		edit func(m map[string]any)
+	}{
+		{"wrong version", func(m map[string]any) { m["protocolVersion"] = "0.1" }},
+		{"other party domain", func(m map[string]any) { party(m)["domain"] = "mallory.example" }},
+		{"party domain uppercase", func(m map[string]any) { party(m)["domain"] = "Ocean-Blue.example" }},
+		{"empty name", func(m map[string]any) { party(m)["name"] = "" }},
+		{"name with newline", func(m map[string]any) { party(m)["name"] = "Ocean\nBlue" }},
+		{"name with bidi override", func(m map[string]any) { party(m)["name"] = "Ocean Blue\u202e" }},
+		{"name with line separator", func(m map[string]any) { party(m)["name"] = "Ocean\u2028Blue" }},
+		{"name too long", func(m map[string]any) { party(m)["name"] = strings.Repeat("O", 129) }},
+		{"no roles", func(m map[string]any) { party(m)["roles"] = []any{} }},
+		{"unknown role", func(m map[string]any) { party(m)["roles"] = []any{"admin"} }},
+		{"no services", func(m map[string]any) { m["services"] = []any{} }},
+		{"service without name", func(m map[string]any) { service(m)["name"] = "" }},
+		{"intent without prefix", func(m map[string]any) { service(m)["intents"] = []any{"booking.request"} }},
+		{"no rest endpoint", func(m map[string]any) { delete(transports(m), "rest") }},
+		{"rest over http", func(m map[string]any) { transports(m)["rest"] = "http://ocean-blue.example/ulp" }},
+		{"rest on another domain", func(m map[string]any) { transports(m)["rest"] = "https://mallory.example/ulp" }},
+		{"rest on a subdomain", func(m map[string]any) { transports(m)["rest"] = "https://api.ocean-blue.example/ulp" }},
+		{"rest with userinfo", func(m map[string]any) { transports(m)["rest"] = "https://ocean-blue.example@mallory.example/ulp" }},
+		{"rest with query", func(m map[string]any) { transports(m)["rest"] = "https://ocean-blue.example/ulp?x=1" }},
+		{"rest relative", func(m map[string]any) { transports(m)["rest"] = "/ulp" }},
+		{"rest with userinfo on its own host", func(m map[string]any) { transports(m)["rest"] = "https://user@ocean-blue.example/ulp" }},
+		{"rest with fragment", func(m map[string]any) { transports(m)["rest"] = "https://ocean-blue.example/ulp#x" }},
+		{"rest with port", func(m map[string]any) { transports(m)["rest"] = "https://ocean-blue.example:8443/ulp" }},
+		{"rest with empty port", func(m map[string]any) { transports(m)["rest"] = "https://ocean-blue.example:/ulp" }},
+		{"rest uppercase host", func(m map[string]any) { transports(m)["rest"] = "https://OCEAN-BLUE.example/ulp" }},
+		{"rest too long", func(m map[string]any) {
+			transports(m)["rest"] = "https://ocean-blue.example/" + strings.Repeat("p", 512)
+		}},
+		{"service name with zero-width space", func(m map[string]any) { service(m)["name"] = "ulp.freight\u200b" }},
+		{"empty extension", func(m map[string]any) { service(m)["extensions"] = []any{""} }},
+		{"extension with tag characters", func(m map[string]any) { service(m)["extensions"] = []any{"x\U000E0041"} }},
+		{"a2a on another domain", func(m map[string]any) { transports(m)["a2a"] = "https://mallory.example/a2a" }},
+		{"no keys", func(m map[string]any) { m["keys"] = []any{} }},
+		{"too many keys", func(m map[string]any) {
+			var ks []any
+			for i := range MaxKeys + 1 {
+				var k map[string]any
+				_ = json.Unmarshal(jwk(t, "k"+strings.Repeat("x", i)), &k)
+				ks = append(ks, k)
+			}
+			m["keys"] = ks
+		}},
+		{"duplicate kid", func(m map[string]any) { m["keys"] = []any{m["keys"].([]any)[0], m["keys"].([]any)[0]} }},
+		{"private key published", func(m map[string]any) { m["keys"].([]any)[0].(map[string]any)["d"] = "AAAA" }},
+		{"key without alg", func(m map[string]any) { delete(m["keys"].([]any)[0].(map[string]any), "alg") }},
+		{"case variant member", func(m map[string]any) { m["Keys"] = m["keys"]; delete(m, "keys") }},
+		{"nested case variant", func(m map[string]any) { party(m)["Domain"] = party(m)["domain"]; delete(party(m), "domain") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := profileMap(t)
+			tc.edit(m)
+			if d, err := ParseProfile(encode(t, m), ParseOptions{Domain: domain}); err == nil {
+				t.Errorf("ParseProfile succeeded: %+v", d.Profile)
+			}
+		})
+	}
+	good := encode(t, profileMap(t))
+	for name, in := range map[string][]byte{
+		"duplicate member": []byte(strings.Replace(string(good), `"protocolVersion":"0.2-demo"`, `"protocolVersion":"0.1","protocolVersion":"0.2-demo"`, 1)),
+		"not JSON":         []byte("profile"),
+		"oversize":         append(good[:len(good)-1], []byte(`,"pad":"`+strings.Repeat("x", MaxProfileSize)+`"}`)...),
+	} {
+		if _, err := ParseProfile(in, ParseOptions{Domain: domain}); err == nil {
+			t.Errorf("%s: ParseProfile succeeded", name)
+		}
+	}
+	if _, err := ParseProfile(good, ParseOptions{Domain: "not a domain"}); err == nil {
+		t.Error("ParseProfile accepted an invalid domain option")
+	}
+	if _, err := ParseProfile(good, ParseOptions{Domain: domain, Algorithms: sig.Algorithms{}}); err == nil {
+		t.Error("ParseProfile accepted a key whose algorithm is not in the set")
+	}
+}

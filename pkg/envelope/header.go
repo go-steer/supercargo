@@ -177,6 +177,11 @@ func isUUIDv4(s string) bool {
 	return s[14] == '4' && strings.IndexByte("89ab", s[19]) >= 0
 }
 
+// ValidDomain reports whether s is well formed as a party identity: the
+// rule sender and receiver follow (see isDomain). Form only; where the name
+// resolves is the fetcher's to check.
+func ValidDomain(s string) bool { return isDomain(s) }
+
 // isDomain accepts a lowercase DNS name of at least two labels, each 1-63
 // characters of [a-z0-9-] not starting or ending with '-', 253 characters
 // at most, with no trailing dot, and a top-level label that starts with a
