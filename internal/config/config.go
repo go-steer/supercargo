@@ -114,7 +114,13 @@ type Operator struct {
 	Deny            []string      `yaml:"deny"`
 }
 
-// LLM configures the model (milestone 4).
+// LLM providers.
+const (
+	ProviderFake = "fake" // deterministic, no API key: tests and rehearsal
+)
+
+// LLM configures the model. Without it, an operator answers inquiries
+// from a deterministic template.
 type LLM struct {
 	Provider  string `yaml:"provider"`
 	Model     string `yaml:"model"`
@@ -261,6 +267,9 @@ func (c *Config) validate() error {
 				return fmt.Errorf("operator: deny entry %q is not a lowercase domain", d)
 			}
 		}
+	}
+	if c.LLM != nil && c.LLM.Provider != ProviderFake {
+		return fmt.Errorf("llm: provider %q is not available (supported: %s)", c.LLM.Provider, ProviderFake)
 	}
 	if c.Role != RoleOperator && c.Simulator != nil {
 		return errors.New("simulator: for operator nodes only")

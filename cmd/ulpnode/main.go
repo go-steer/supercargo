@@ -18,6 +18,8 @@
 //	ulpnode keygen --kid cy-2026-1 --out key.pem    mint a signing key; print its public JWK
 //	ulpnode book   --config node.yaml --operator ocean-blue.example --request booking.json
 //	                                                send a booking (after an explicit y)
+//	ulpnode ask    --config node.yaml --booking OB-BKG-1042 "Why the delay?"
+//	                                                ask the booking's operator a question
 package main
 
 import (
@@ -56,6 +58,7 @@ func main() {
 const usage = `usage:
   ulpnode serve  --config FILE [--log-format text|json]
   ulpnode keygen --kid KID --out FILE
+  ulpnode ask    --config FILE --booking REF [--operator DOMAIN] QUESTION...
   ulpnode book   --config FILE --operator DOMAIN --request FILE [--yes]`
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -69,6 +72,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return keygen(args[1:], stdout)
 	case "book":
 		return book(args[1:], stdin, stdout, stderr)
+	case "ask":
+		return ask(args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unknown command %q\n%s", args[0], usage)
 	}
@@ -241,4 +246,58 @@ func readRequest(path string) (*intents.BookingRequestBody, error) {
 		return nil, fmt.Errorf("book: %s: %w", path, err)
 	}
 	return &req, nil
+}
+
+// ask sends an inquiry through the running shipper node and prints the
+// operator's answer, marking the cited records this shipper holds signed.
+func ask(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("ask", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path := fs.String("config", "", "the shipper node's configuration (YAML)")
+	booking := fs.String("booking", "", "the booking reference")
+	operatorDomain := fs.String("operator", "", "the operator (needed only if several have that reference)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	question := strings.Join(fs.Args(), " ")
+	if *path == "" || *booking == "" || question == "" {
+		return errors.New("ask: --config, --booking and a question are required")
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	if cfg.Role != config.RoleShipper || cfg.Control == nil {
+		return errors.New("ask: the config must be a shipper's, with a control socket")
+	}
+	var resp shipper.AskResponse
+	code, err := control.Call(control.Client(cfg.Control.Socket, 75*time.Second), "/ask",
+		shipper.AskRequest{Operator: *operatorDomain, BookingRef: *booking, Question: question}, &resp)
+	if err != nil {
+		return fmt.Errorf("ask: %w", err)
+	}
+	if code != http.StatusOK || resp.Answer == nil {
+		return fmt.Errorf("ask: HTTP %d: %s", code, resp.Error)
+	}
+	a := resp.Answer
+	fmt.Fprintf(stdout, "%s answered (%s, from %d records of %s):\n\n", resp.Operator, a.GeneratedBy, a.DataScope.EventsConsidered, a.DataScope.BookingRef)
+	for _, line := range strings.Split(a.Answer, "\n") {
+		fmt.Fprintf(stdout, "  %s\n", line)
+	}
+	if len(a.CitedEventIDs) > 0 {
+		held := map[string]bool{}
+		for _, id := range resp.Held {
+			held[id] = true
+		}
+		var sources []string
+		for _, id := range a.CitedEventIDs {
+			if held[id] {
+				sources = append(sources, id+" (held, signed)")
+			} else {
+				sources = append(sources, id+" (not held)")
+			}
+		}
+		fmt.Fprintf(stdout, "\n  Sources: %s\n", strings.Join(sources, ", "))
+	}
+	return nil
 }

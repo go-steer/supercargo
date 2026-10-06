@@ -131,6 +131,7 @@ func TestParseRejects(t *testing.T) {
 		"negative clock":             {"hoursPerSecond: 1", "hoursPerSecond: -1"},
 		"clock over the cap":         {"hoursPerSecond: 1", "hoursPerSecond: 3601"},
 		"NaN clock":                  {"hoursPerSecond: 1", "hoursPerSecond: .nan"},
+		"unknown llm provider":       {"provider: fake", "provider: oracle"},
 		"relative control socket":    {"socket: /run/ulp/ocean-blue.sock", "socket: ulp.sock"},
 		"unclean control socket":     {"socket: /run/ulp/ocean-blue.sock", "socket: /run/ulp/../ulp.sock"},
 		"long control socket":        {"socket: /run/ulp/ocean-blue.sock", "socket: /" + strings.Repeat("x", 100)},

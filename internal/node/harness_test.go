@@ -34,6 +34,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/llm/fake"
 	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/operator"
 	"github.com/go-steer/supercargo/internal/shipper"
@@ -231,6 +232,10 @@ type demo struct {
 	shipLog   *store.EventLog
 	rival     *company
 
+	// The inquiry path: the operator's responder and its (fake) model.
+	inquiry *operator.InquiryService
+	model   *fake.Model
+
 	dropMu  sync.Mutex
 	dropped []string
 }
@@ -260,7 +265,12 @@ func newDemo(t *testing.T) *demo {
 		Deny:   map[string]bool{"blocked.example": true},
 		Voyage: operator.Voyage{Vessel: "Ocean Blue Aurora", Number: "42W", DepartureHour: 18, Transit: 134 * time.Hour},
 	}
-	d.nw.wire(t, d.operator, "Ocean Blue", "operator", map[string]node.Handler{"ulp.booking.request": d.booking})
+	d.opLog = store.NewEventLog(0)
+	d.model = operator.FakeInquiryModel()
+	d.inquiry = &operator.InquiryService{Bookings: d.bookings, Log: d.opLog, Model: d.model, Name: "Ocean Blue"}
+	d.nw.wire(t, d.operator, "Ocean Blue", "operator", map[string]node.Handler{
+		"ulp.booking.request": d.booking, "ulp.tnt.inquiry": d.inquiry,
+	})
 	shipBookings := store.NewBookings()
 	d.shipLog = store.NewEventLog(0)
 	d.inbound = &shipper.Inbound{Bookings: shipBookings, Log: d.shipLog, Now: time.Now}
@@ -269,8 +279,7 @@ func newDemo(t *testing.T) *demo {
 	})
 	d.nw.wire(t, d.mallory, "Mallory", "shipper", nil)
 	d.nw.wire(t, d.rival, "Other Carrier", "operator", nil)
-	d.ship = &shipper.Shipper{Node: d.shipper.node, Bookings: shipBookings, Now: time.Now}
-	d.opLog = store.NewEventLog(0)
+	d.ship = &shipper.Shipper{Node: d.shipper.node, Bookings: shipBookings, Events: d.shipLog, Now: time.Now}
 	d.publisher = &operator.Publisher{
 		Pusher: d.operator.node, Domain: operatorDomain, Log: d.opLog, Now: time.Now,
 		Backoff: []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond},

@@ -90,14 +90,16 @@ type spec struct {
 	newBody    func() Body
 }
 
-// specs are the intents this package decodes. Inquiry and
-// delegation bodies join with the milestones that use them.
+// specs are the intents this package decodes. Delegation bodies join with
+// the milestone that uses them.
 var specs = map[string]spec{
 	BookingRequest:      {bookingRef: forbidden, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &BookingRequestBody{} }},
 	BookingConfirmation: {bookingRef: required, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &BookingConfirmationBody{} }},
 	Error:               {bookingRef: optional, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &ErrorBody{} }},
 	TnTEvent:            {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &TnTEventBody{} }},
 	TnTAlert:            {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &TnTAlertBody{} }},
+	TnTInquiry:          {bookingRef: required, inReplyTo: forbidden, delegation: optional, newBody: func() Body { return &TnTInquiryBody{} }},
+	TnTInquiryResponse:  {bookingRef: required, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &TnTInquiryResponseBody{} }},
 }
 
 // Supported reports whether Decode has a body type for intent.
@@ -138,6 +140,9 @@ func Decode(e *envelope.Envelope) (Body, error) {
 func crossCheck(h *envelope.Header, b Body) error {
 	if c, ok := b.(*BookingConfirmationBody); ok && c.BookingRef != *h.BookingRef {
 		return fmt.Errorf("body.bookingRef %s is not header.bookingRef %s", logsafe.Quote(c.BookingRef), logsafe.Quote(*h.BookingRef))
+	}
+	if r, ok := b.(*TnTInquiryResponseBody); ok && r.DataScope.BookingRef != *h.BookingRef {
+		return fmt.Errorf("body.dataScope.bookingRef %s is not header.bookingRef %s", logsafe.Quote(r.DataScope.BookingRef), logsafe.Quote(*h.BookingRef))
 	}
 	return nil
 }

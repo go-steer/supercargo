@@ -112,8 +112,9 @@ func writeFile(t *testing.T, name, data string) string {
 // control socket: it answers POST /book with a fixed status (a
 // confirmation if 200) and records what it was sent.
 type fakeNode struct {
-	mu   sync.Mutex
-	sent []shipper.BookRequest
+	mu    sync.Mutex
+	sent  []shipper.BookRequest
+	asked []shipper.AskRequest
 }
 
 func (f *fakeNode) calls() []shipper.BookRequest {
@@ -134,6 +135,23 @@ func startNode(t *testing.T, cfg string, status int) *fakeNode {
 	}
 	f := &fakeNode{}
 	srv := control.Server(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ask" {
+			var req shipper.AskRequest
+			if err := control.Decode(r, &req); err != nil {
+				t.Errorf("decode: %v", err)
+			}
+			f.mu.Lock()
+			f.asked = append(f.asked, req)
+			f.mu.Unlock()
+			if status != http.StatusOK {
+				control.Answer(w, status, shipper.AskResponse{Error: "no booking " + req.BookingRef})
+				return
+			}
+			control.Answer(w, status, shipper.AskResponse{Operator: "ocean-blue.example", Held: []string{"EV-1"},
+				Answer: &intents.TnTInquiryResponseBody{Answer: "Departed Rotterdam.\nArriving the 16th.", CitedEventIDs: []string{"EV-1", "AL-2"},
+					GeneratedBy: intents.GeneratedByLLM, DataScope: intents.DataScope{BookingRef: req.BookingRef, EventsConsidered: 3}}})
+			return
+		}
 		var req shipper.BookRequest
 		if err := control.Decode(r, &req); err != nil {
 			t.Errorf("decode: %v", err)
@@ -276,5 +294,51 @@ func TestLogger(t *testing.T) {
 		if _, err := logger(f, &bytes.Buffer{}); err != nil {
 			t.Errorf("logger(%s): %v", f, err)
 		}
+	}
+}
+
+// TestAsk: the question goes through the running node; the answer prints
+// with its sources, marked held or not.
+func TestAsk(t *testing.T) {
+	cfg := shipperConfig(t)
+	node := startNode(t, cfg, http.StatusOK)
+	out, err := runCmd(t, "", "ask", "--config", cfg, "--booking", "OB-BKG-1042", "Why", "the", "delay?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ocean-blue.example answered (llm, from 3 records of OB-BKG-1042)", "  Departed Rotterdam.\n  Arriving the 16th.",
+		"Sources: EV-1 (held, signed), AL-2 (not held)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	node.mu.Lock()
+	asked := node.asked
+	node.mu.Unlock()
+	if len(asked) != 1 || asked[0].BookingRef != "OB-BKG-1042" || asked[0].Question != "Why the delay?" || asked[0].Operator != "" {
+		t.Errorf("node was asked %+v", asked)
+	}
+}
+
+func TestAskRejects(t *testing.T) {
+	cfg := shipperConfig(t)
+	opCfg := writeFile(t, "op.yaml", strings.Replace(mustRead(t, cfg), "role: shipper",
+		"role: operator\noperator: { refPrefix: OB, containerPrefix: OCBU, vessel: V, voyage: 1W, departureHour: 1, transit: 1h }", 1))
+	for name, args := range map[string][]string{
+		"no question":      {"ask", "--config", cfg, "--booking", "B"},
+		"no booking":       {"ask", "--config", cfg, "Where?"},
+		"no config":        {"ask", "--booking", "B", "Where?"},
+		"missing config":   {"ask", "--config", "/nonexistent.yaml", "--booking", "B", "Where?"},
+		"operator config":  {"ask", "--config", opCfg, "--booking", "B", "Where?"},
+		"bad flag":         {"ask", "--nope"},
+		"node not running": {"ask", "--config", cfg, "--booking", "B", "Where?"},
+	} {
+		if _, err := runCmd(t, "", args...); err == nil {
+			t.Errorf("%s: succeeded", name)
+		}
+	}
+	startNode(t, cfg, http.StatusNotFound)
+	if _, err := runCmd(t, "", "ask", "--config", cfg, "--booking", "B", "Where?"); err == nil || !strings.Contains(err.Error(), "no booking B") {
+		t.Errorf("unknown booking: %v", err)
 	}
 }

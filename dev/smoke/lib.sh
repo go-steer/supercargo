@@ -71,6 +71,8 @@ operator:
   transit: 134h
 simulator:
   hoursPerSecond: $hps
+llm:
+  provider: fake   # deterministic answers, no API key
 control:
   socket: $dir/ob.sock
 EOF

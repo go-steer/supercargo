@@ -72,6 +72,7 @@ tls: { mode: insecure-dev }
 keys: [{ kid: ob-1, privateKeyFile: "` + keyFile(t) + `" }]
 ` + peers + `operator: { refPrefix: OB-BKG, containerPrefix: OCBU, vessel: Ocean Blue Aurora, voyage: 42W, departureHour: 18, transit: 400h } # arrival 23s in: room to disrupt
 simulator: { hoursPerSecond: 20 }
+llm: { provider: fake }
 control: { socket: "` + opSock + `" }
 `))
 	if err != nil {
@@ -179,6 +180,22 @@ control: { socket: "` + shSock + `" }
 	var got intents.TnTAlertBody
 	if err := json.Unmarshal(alert.Body, &got); err != nil || got.AlertID != dr.Alert.AlertID || got.NewETA != dr.Alert.NewETA {
 		t.Errorf("shipper's alert %+v (%v), operator's %+v", got, err, dr.Alert)
+	}
+
+	// Scene 5: the shipper asks why, through its node; the operator's
+	// (fake) model answers from this booking's records, citing them.
+	var ar shipper.AskResponse
+	code, err = control.Call(control.Client(shSock, 10*time.Second), "/ask",
+		shipper.AskRequest{BookingRef: ref, Question: "What caused the delay, and how firm is the new ETA?"}, &ar)
+	if err != nil || code != http.StatusOK || ar.Answer == nil {
+		t.Fatalf("ask: HTTP %d %+v, %v", code, ar, err)
+	}
+	if ar.Answer.GeneratedBy != intents.GeneratedByLLM || !strings.Contains(ar.Answer.Answer, "Halifax") ||
+		len(ar.Held) == 0 || len(ar.Held) != len(ar.Answer.CitedEventIDs) {
+		t.Errorf("answer %+v, held %v", ar.Answer, ar.Held)
+	}
+	if !strings.Contains(opLog.String(), `"msg":"model call"`) || !strings.Contains(opLog.String(), `"outcome":"ok"`) {
+		t.Error("the operator didn't log the model call")
 	}
 
 	// The logs tell the story: the operator published, the shipper

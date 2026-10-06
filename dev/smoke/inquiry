@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Smoke: Scene 5, the inquiry. After a disruption, the shipper asks why
+# with `ulpnode ask`; the operator verifies, authorizes, answers from that
+# booking's records with its (fake) model, and signs the answer, which
+# cites events and an alert the shipper holds signed.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+work="$(mktemp -d)"
+trap 'smoke_stop; rm -rf "$work"' EXIT
+
+demo_build "$work"
+demo_ports
+demo_setup "$work" 10
+smoke_start "$work"
+
+if ! out="$("$work/bin/ulpnode" book --config "$work/shipper.yaml" --operator ocean-blue.example --request "$work/booking.json" --yes 2>"$work/book.log")"; then
+  smoke_fail "$work" "booking failed"
+fi
+ref="$(sed -n 's/.*"bookingRef": "\([^"]*\)".*/\1/p' <<<"$out")"
+[[ -n "$ref" ]] || smoke_fail "$work" "no booking reference in: $out"
+
+smoke_wait_for "$work" "$work/shipper.log" '"msg":"event recorded".*"event":"TRANSPORT ARRI EST"' 15
+"$work/bin/ulpctl" disrupt --config "$work/operator.yaml" --booking "$ref" --delay 72h \
+  --reason "Engine repair, unscheduled call at Halifax." >/dev/null || smoke_fail "$work" "ulpctl disrupt failed"
+smoke_wait_for "$work" "$work/shipper.log" '"msg":"alert recorded"' 10
+
+if ! answer="$("$work/bin/ulpnode" ask --config "$work/shipper.yaml" --booking "$ref" \
+  "What caused the delay on this shipment, and how firm is the new ETA?" 2>&1)"; then
+  smoke_fail "$work" "ulpnode ask failed: $answer"
+fi
+echo "$answer"
+grep -q "ocean-blue.example answered (llm" <<<"$answer" || smoke_fail "$work" "the answer wasn't the model's"
+grep -q "Halifax" <<<"$answer" || smoke_fail "$work" "the answer doesn't mention the cause"
+grep -q "(held, signed)" <<<"$answer" || smoke_fail "$work" "the answer cites nothing the shipper holds"
+if grep -q "(not held)" <<<"$answer"; then smoke_fail "$work" "the answer cites records the shipper doesn't hold"; fi
+
+grep -qE '"intent":"ulp.tnt.inquiry".*"verified":true.*"outcome":"accepted"' "$work/operator.log" ||
+  smoke_fail "$work" "the operator logged no verified, accepted inquiry"
+grep -qE '"msg":"model call".*"booking":"'"$ref"'".*"outcome":"ok"' "$work/operator.log" ||
+  smoke_fail "$work" "the operator logged no model call"
+
+# Asking about a booking the shipper doesn't hold never leaves its node.
+if "$work/bin/ulpnode" ask --config "$work/shipper.yaml" --booking OB-BKG-9999 "Where is it?" >/dev/null 2>&1; then
+  smoke_fail "$work" "asked about a booking the shipper doesn't hold"
+fi
+inquiries="$(grep -c '"intent":"ulp.tnt.inquiry"' "$work/operator.log" || true)"
+[[ "$inquiries" == 1 ]] || smoke_fail "$work" "the operator received $inquiries inquiries, want 1"
+
+echo "✓ smoke/inquiry: a signed question, a grounded and signed answer citing held events"

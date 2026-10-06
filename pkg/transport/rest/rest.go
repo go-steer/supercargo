@@ -123,8 +123,13 @@ type ClientOptions struct {
 	AllowHTTP bool
 	// TLSConfig adds trusted roots (a local CA).
 	TLSConfig *tls.Config
-	// Timeout bounds one exchange. Zero means 10s.
+	// Timeout bounds an exchange whose context has no deadline. Zero means
+	// 10s.
 	Timeout time.Duration
+	// MaxTimeout bounds every exchange, whatever its context's deadline.
+	// Zero means Timeout. A caller expecting a slow answer (an inquiry
+	// waiting on a model) sets a context deadline up to this.
+	MaxTimeout time.Duration
 	// Resolver replaces net.DefaultResolver (tests).
 	Resolver netguard.Resolver
 }
@@ -136,20 +141,26 @@ type Client struct {
 	http      *http.Client
 	profiles  Profiles
 	allowHTTP bool
+	timeout   time.Duration
 }
 
 // NewClient returns a Client that finds endpoints in profiles.
 func NewClient(profiles Profiles, opts ClientOptions) (*Client, error) {
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	ceiling := max(opts.MaxTimeout, timeout)
 	hc, err := netguard.NewClient(netguard.Options{
 		Peers:     opts.Peers,
 		TLSConfig: opts.TLSConfig,
-		Timeout:   opts.Timeout,
+		Timeout:   ceiling,
 		Resolver:  opts.Resolver,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("rest: %w", err)
 	}
-	return &Client{http: hc, profiles: profiles, allowHTTP: opts.AllowHTTP}, nil
+	return &Client{http: hc, profiles: profiles, allowHTTP: opts.AllowHTTP, timeout: timeout}, nil
 }
 
 // ErrNoResponse reports a 204: the receiver accepted the message and sent
@@ -222,6 +233,11 @@ func (c *Client) PostTo(ctx context.Context, receiver, endpoint string, msg []by
 		// Profiles and subscriptions are already validated this way; a
 		// post never goes anywhere but the receiver's own domain.
 		return nil, fmt.Errorf("rest: endpoint %s is not on %s", logsafe.Quote(endpoint), receiver)
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(msg))
 	if err != nil {

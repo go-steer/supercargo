@@ -108,7 +108,7 @@ func TestNewRoles(t *testing.T) {
 func TestRoleProfiles(t *testing.T) {
 	for role, want := range map[string][]string{
 		config.RoleShipper:  {intents.TnTEvent, intents.TnTAlert},
-		config.RoleOperator: {intents.BookingRequest},
+		config.RoleOperator: {intents.BookingRequest, intents.TnTInquiry},
 	} {
 		a, err := New(cfg(t, role), quiet())
 		if err != nil {

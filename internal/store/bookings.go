@@ -93,6 +93,21 @@ func (s *Bookings) Get(operator, ref string) (Booking, error) {
 	return clone(b), nil
 }
 
+// Operators returns the operators that hold a booking under ref, sorted: a
+// shipper names a booking by its reference, which two operators may share.
+func (s *Bookings) Operators(ref string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for k := range s.m {
+		if k.ref == ref {
+			out = append(out, k.operator)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // Len is the number of bookings held.
 func (s *Bookings) Len() int {
 	s.mu.Lock()
