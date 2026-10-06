@@ -150,5 +150,8 @@ are in:
   (authorize, then load one booking, then the model, then validate, else
   the template), and `ulpnode ask`.
 
-Next in milestone 4: the A2A binding for the inquiry, then the Anthropic
-adapter (ported from mast) and agent skills.
+- The A2A binding (milestone 4, part 2): `pkg/transport/a2a`, the agent
+  card, and `node.ExchangeA2A` (falls back to REST).
+
+Next in milestone 4: the Anthropic adapter (ported from mast) and agent
+skills.

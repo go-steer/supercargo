@@ -58,7 +58,7 @@ func (s *Shipper) Ask(ctx context.Context, operator, ref, question string) (*Ans
 	// The operator may spend two model attempts on the answer.
 	ctx, cancel := context.WithTimeout(ctx, AskTimeout)
 	defer cancel()
-	resp, err := s.Node.Exchange(ctx, h, body, intents.TnTInquiryResponse)
+	resp, err := s.Node.ExchangeA2A(ctx, h, body, intents.TnTInquiryResponse)
 	if err != nil {
 		return nil, err
 	}

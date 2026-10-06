@@ -125,6 +125,16 @@ func TestRoleProfiles(t *testing.T) {
 				t.Errorf("the %s profile doesn't accept %s", role, i)
 			}
 		}
+		// Operators' agents serve the shipment-inquiry skill over A2A.
+		rec = httptest.NewRecorder()
+		a.Server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/.well-known/agent-card.json", nil))
+		if role == config.RoleOperator && (doc.Profile.Transports.A2A != "http://cymbal-shoes.example/a2a" || rec.Code != http.StatusOK ||
+			!strings.Contains(rec.Body.String(), `"shipment-inquiry"`)) {
+			t.Errorf("operator: a2a %q, card HTTP %d %s", doc.Profile.Transports.A2A, rec.Code, rec.Body)
+		}
+		if role == config.RoleShipper && (doc.Profile.Transports.A2A != "" || rec.Code != http.StatusNotFound) {
+			t.Errorf("shipper: a2a %q, card HTTP %d", doc.Profile.Transports.A2A, rec.Code)
+		}
 	}
 }
 

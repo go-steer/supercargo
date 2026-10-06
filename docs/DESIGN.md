@@ -609,9 +609,12 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 
 **A2A binding:**
 - Each skill in the agent card is served by an agent. A request is a JSON-RPC **`message/send`** whose message carries **one data part with the full signed envelope**, plus optionally a text part with a human-readable rendering of the question for generic A2A clients.
-- The reply carries the signed response envelope (`tnt.inquiry.response` or `ulp.error`) in a data part.
+- The reply carries the signed response envelope (`tnt.inquiry.response` or `ulp.error`) in a data part. A message accepted with no response gets a reply message with no parts.
+- A refusal made before the sender is verified is a JSON-RPC error carrying the bare HTTP status the REST binding would have answered with (`data: {"status": 403}`; a `503` maps to code `-32000`, retry later), and nothing signed. Clients map it back to the REST binding's errors, so callers treat both bindings alike.
+- The JSON-RPC request is unauthenticated, so it is parsed strictly: duplicate or case-variant members are refused, so two readers can't see two different envelopes. The data part's bytes reach the pipeline as they arrived, and envelopes are written into A2A messages verbatim, never re-encoded. A part that mixes text and data is refused, so an observer can't be shown a different envelope. Only `message/send` is served, and the request must be a user message with exactly one data part (text parts are ignored).
+- A node publishes `transports.a2a` and its agent card only when it has agentic skills: the operator, for `shipment-inquiry`. The shipper sends an inquiry over A2A when the operator publishes an endpoint, and over REST otherwise. Each node log line names the binding (`via`).
 - The demo's inquiry is a single request/response. Longer conversations (negotiation, exception workflows) map onto A2A **tasks**, with `input-required` for steps that wait on a person.
-- Implementation: evaluate the official A2A Go SDK first; otherwise a small JSON-RPC client and server. The envelope stays independent of the binding.
+- Implementation: `pkg/transport/a2a`, a small stdlib JSON-RPC client and server (A2A v0.3: the agent card, `message/send`, data and text parts). Its wire types are derived from go-steer/mast's A2A package, which had already evaluated and turned down the official SDK; the binding needs one method and one part kind, which doesn't justify the SDK's dependency tree in `pkg/`. The envelope stays independent of the binding.
 
 **MCP binding (later):** the node as an MCP server, in two forms. Both use the official MCP Go SDK, and the tools call the node's core operations.
 

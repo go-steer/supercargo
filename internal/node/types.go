@@ -101,6 +101,8 @@ type Event struct {
 	Verified bool
 	Code     string // the ulp.error code, when rejected
 	Reason   string // why, for this node's log; never sent
+	// Via is the binding a request came or went over: "rest" or "a2a".
+	Via string
 }
 
 // Observer receives events. It must not block.
@@ -118,6 +120,7 @@ func SlogObserver(l *slog.Logger) Observer {
 			slog.String("intent", e.Intent),
 			slog.String("sender", e.Sender),
 			slog.String("receiver", e.Receiver),
+			slog.String("via", e.Via),
 			slog.String("messageId", e.MessageID),
 			slog.String("kid", e.KID),
 			slog.Bool("verified", e.Verified),

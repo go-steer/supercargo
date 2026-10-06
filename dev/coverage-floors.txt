@@ -60,6 +60,7 @@ github.com/go-steer/supercargo/internal/store          100.0
 github.com/go-steer/supercargo/internal/llm            100.0
 github.com/go-steer/supercargo/internal/llm/fake       100.0
 github.com/go-steer/supercargo/pkg/transport/rest       90.0  # 91.8
+github.com/go-steer/supercargo/pkg/transport/a2a        95.0  # 96.2
 
 # Configuration, the control socket and the binaries. config, control and
 # app fall short for file-system and socket failures that are hard to

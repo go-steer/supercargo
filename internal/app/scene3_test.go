@@ -197,6 +197,9 @@ control: { socket: "` + shSock + `" }
 	if !strings.Contains(opLog.String(), `"msg":"model call"`) || !strings.Contains(opLog.String(), `"outcome":"ok"`) {
 		t.Error("the operator didn't log the model call")
 	}
+	if !strings.Contains(opLog.String(), `"intent":"ulp.tnt.inquiry","sender":"cymbal-shoes.example","receiver":"ocean-blue.example","via":"a2a"`) {
+		t.Error("the inquiry didn't arrive over A2A")
+	}
 
 	// The logs tell the story: the operator published, the shipper
 	// verified and accepted, and showed the alert.
