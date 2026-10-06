@@ -14,6 +14,9 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- `pkg/transport/rest`: the REST binding. `Handler` serves `POST /ulp` (size-capped while reading) for any `Processor`, and `Client` posts to the endpoint in the receiver's profile, always through the guarded outbound client.
+- The ULP node (`internal/node`): its profile, the inbound pipeline (parse → receiver and intent → key → verify → skew → replay → body → authorize → handle → signed reply, with nothing signed in answer to an unverified message: refusals before verification are bare HTTP statuses, after it signed `ulp.error` replies with fixed details), `Exchange` for outbound requests with full response checks, and a structured event per decision.
+- The operator's booking service and the shipper's `Book`, with in-memory replay and booking stores. Two nodes now book over REST and TLS, which is milestone 2's demo.
 - `pkg/discovery`: party profiles at `/.well-known/ulp`.
   - `Fetcher` connects only to public addresses (or an explicit static peer map), follows no redirects and validates the profile strictly.
   - `Cache` resolves (domain, kid) to a verifier with a TTL, a per-domain refresh floor, single-flight fetches and a cap on concurrent fetches. It never serves an expired profile. Unknown domains can't evict a valid profile, and pinned partner domains are never evicted or starved.

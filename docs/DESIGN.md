@@ -252,6 +252,20 @@ Every company runs the same **ULP node** binary with role-specific modules. This
 | `cmd/ulpchat` | Shipper chat CLI; talks to the local node's internal API and the LLM |
 | `cmd/ulpctl` | Presenter console: `disrupt`, `attack`, `reset`, `show` |
 
+**The pipeline, step by step** (`internal/node`). Each step either passes or ends the message. **Nothing is signed in answer to a message until its signature has verified:** refusals before that point are bare HTTP statuses with no body. Signing them would hand anyone a fresh, node-signed statement with a `correlationId`, `bookingRef` or receiver of their choosing. After verification, refusals are signed `ulp.error` replies.
+
+1. **Parse** the JWS and payload strictly. Anything unparseable gets a bare HTTP 400 ([A.7](#a7-transport-bindings)).
+2. **Addressed here, and an intent this node serves.** Both are checked on the claimed header *before* any key is fetched, so misdirected and unsupported traffic costs no outbound request (bare `421` and `400`). Once the message is verified the claim is the signed value, so checking early changes nothing else.
+3. **Resolve the sender's key and verify.** An unknown key or a bad signature gets a bare `403`; a sender whose profile can't be fetched right now gets a bare `503` (retry later).
+4. **Clock skew** (`stale`), then **replay** (`replay`). Only verified, fresh messages are recorded. A replay store that is full, overall or for that sender, refuses messages rather than admitting them unrecorded.
+5. **Decode and validate** the body against its intent (`invalid_body`).
+6. **Authorize, then handle.** Each handler has an `Authorize` step, called before its `Handle` step, which may load only what the decision needs (`forbidden`). A handler's own error text never reaches the sender: rejections carry fixed details, and the reason stays in the node's log. A handler failure is `internal`: retryable if it happened in `Authorize`, not retryable once `Handle` has run, because `Handle` may have changed state and re-sending could do the work twice. The node also never signs a reply whose sender isn't itself, or one larger than a receiver accepts.
+7. **Sign the reply,** or answer 204 when there's none.
+
+Responses to the node's own requests get the same checks, plus that they answer that message: from its receiver, addressed back, with a matching `inReplyTo` and `correlationId`, and an expected intent.
+
+Every decision is a structured **event** (direction, intent, parties, `messageId`, verified, outcome, code, reason). The log line is rendered from it, and anything else, such as a future UI or metrics, can consume the same events.
+
 ### A.2 Identity, keys and trust (design decisions)
 
 The specs leave these open; the demo decides:
@@ -261,7 +275,7 @@ The specs leave these open; the demo decides:
 - **Signature format: JWS** (RFC 7515), flattened JSON serialization, with the envelope content as the payload. The signature covers the exact bytes sent, so there is no canonical form for implementations to reproduce: any language with a JOSE library interoperates. (Earlier drafts signed Python-`json.dumps`-compatible canonical JSON, copying an incidental choice of the Python prototype; a protocol must not depend on one runtime's serializer.)
 - **Signature algorithm: Ed25519**, JOSE `alg` `"Ed25519"` (the fully-specified identifier of RFC 9864, which deprecates the polymorphic `"EdDSA"`). It is approved under FIPS 186-5, so it can run inside a FIPS 140-3 validated module (Go's included: `crypto/ed25519` allows pure Ed25519 in FIPS-only mode); it is in the Go standard library; and it has no parameters to get wrong.
 - **Algorithms are pluggable, and the key decides.** Every published key names one `alg`; a verifier accepts a message only if the JWS header's `alg` equals the resolved key's `alg`, so the sender never chooses how it is verified (no `alg: none`, no algorithm confusion). Adding an algorithm means a new signer/verifier implementation and a JWK type, with no change to the envelope. The planned next one is **ML-DSA-65** (FIPS 204, post-quantum), once Go exposes it publicly (it exists today only inside Go's FIPS module, `crypto/internal/fips140/mldsa`), which keeps every algorithm inside a validated module. Quantum risk to signatures is forgery once a large quantum computer exists, not harvest-now-decrypt-later; envelopes live ±5 minutes, and transport confidentiality is already post-quantum (Go's TLS defaults to hybrid `X25519MLKEM768`).
-- **Replay protection:** `messageId` (UUID) must be unique per sender (a seen-ID store with a 24 h retention), and `sentAt` must be within ±5 minutes of the receiver's clock.
+- **Replay protection:** `messageId` (UUID) must be unique per sender, and `sentAt` must be within ±5 minutes of the receiver's clock. The seen-ID store keeps entries for just over twice the skew (default 15 min): an older message is refused as stale anyway. Entries expire in recording order, so pruning never scans the whole store. Each sender has a quota, so one verified sender (and anyone with a profile is one) can exhaust only its own share.
 - **Authorization** is separate from authentication. See [A.6](#a6-authorization-rules).
 
 - **Outbound requests go only to public addresses.** Every request a node makes to a host someone else named goes through one guarded client: fetching a sender's profile, posting to a partner's endpoint, delivering a webhook. That client:
@@ -539,7 +553,7 @@ The `kid` resolves against the issuer's profile. The distinct `typ` means a dele
 ```json
 { "code": "forbidden", "detail": "Sender is not a party to OB-BKG-1042", "retryable": false }
 ```
-Codes: `bad_signature`, `unknown_key`, `replay`, `stale`, `invalid_body`, `forbidden`, `not_found`, `unsupported_intent`, `internal`. `detail` never contains internal error text.
+Codes: `bad_signature`, `unknown_key`, `replay`, `stale`, `invalid_body`, `forbidden`, `not_found`, `unsupported_intent`, `internal`. `detail` never contains internal error text. `bad_signature` and `unknown_key` (and `unsupported_intent` or a wrong receiver caught before verification) appear in the node's log, but never in a signed reply: refusals of unverified messages are bare HTTP statuses ([A.1](#a1-architecture)).
 
 ### A.6 Authorization rules
 
@@ -574,9 +588,21 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 **Only signed intents commit.** That rule covers every binding and integration, not just A2A. MCP tool calls, agent conversations and partner integrations may look things up, propose and draft. Anything that binds two companies (a booking, an amendment, a grant of access) happens only as a signed intent, built and signed by the node.
 
 **REST binding:**
-- `POST /ulp` with the serialized envelope as the JSON request body. Sync responses (`booking.confirmation`, `ulp.error`) come back as the response body, also signed envelopes.
+- `POST /ulp` with the serialized envelope as the JSON request body (`Content-Type: application/json`, at most `envelope.MaxSize`). Sync responses (`booking.confirmation`, `ulp.error`) come back as the response body, also signed envelopes.
+- **Status codes:**
+  - `200`: the body is a signed envelope, and may be a `ulp.error`;
+  - `204`: accepted, no response (pushes);
+  - `400`: not an envelope, or an intent the receiver doesn't serve; no body;
+  - `403`: the sender's key is unknown, or the signature doesn't verify; no body;
+  - `421`: addressed to another party; no body;
+  - `503`: the sender's profile can't be fetched right now; retry later;
+  - `405`, `413`, `415`: wrong method, too large, wrong content type;
+  - `500`: the receiver couldn't sign a response.
+
+  Redirects are never followed.
+- The REST client always uses the guarded outbound client ([A.2](#a2-identity-keys-and-trust-design-decisions)) and finds the endpoint in the receiver's profile. There's no way to hand it an unguarded HTTP client.
 - Webhooks: the operator `POST`s signed `tnt.event`/`tnt.alert` envelopes to the subscriber's registered endpoint (its own `/ulp`). A 2xx response is the ack; the publisher retries with backoff otherwise.
-- A request that can't be parsed as an envelope (bad JSON, bad base64url, malformed header) gets an HTTP `400` with no body: there's no verified `messageId` to answer, and `ulp.error` requires `inReplyTo`. Everything that parses gets a signed response, a `ulp.error` included.
+- Until a message's signature verifies, refusals are bare statuses (above): the receiver signs nothing in answer to an unverified message ([A.1](#a1-architecture)). Every verified message gets a signed response, a `ulp.error` included, or a 204.
 - HTTP status codes report transport-level outcomes; protocol outcomes are in the signed response envelope, so a proxy can't forge a protocol decision.
 
 **A2A binding:**
@@ -741,7 +767,7 @@ simulator:
   hoursPerSecond: 1
 security:
   maxSkew: 5m
-  replayRetention: 24h
+  replayRetention: 15m            # must exceed 2 × maxSkew
 ```
 
 ### A.13 Testing
