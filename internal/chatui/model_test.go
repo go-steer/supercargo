@@ -48,6 +48,9 @@ func (node) Ask(context.Context, string, string, string) (*shipper.AskResponse, 
 func (node) Book(context.Context, shipper.BookRequest) (*shipper.BookResponse, error) {
 	return nil, errors.New("no")
 }
+func (node) Status(context.Context, string, string) (*shipper.StatusResponse, error) {
+	return nil, errors.New("no")
+}
 
 var noon = time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 
