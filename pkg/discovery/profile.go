@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -46,6 +47,16 @@ const (
 
 	// MaxKeys bounds the keys one profile may publish.
 	MaxKeys = 16
+
+	// MaxCapabilities, MaxTags and MaxDialects bound the optional
+	// capabilities, each one's tags, and supported_dialects.
+	MaxCapabilities = 32
+	MaxTags         = 32
+	MaxDialects     = 16
+
+	// MaxServices and MaxIntents bound services and each one's intents.
+	MaxServices = 16
+	MaxIntents  = 64
 )
 
 // Roles a party may have.
@@ -57,12 +68,18 @@ const (
 // Profile is the published document. Members this version doesn't define
 // are ignored, so profiles can grow; members that differ from a defined one
 // only in case are rejected.
+//
+// Capabilities and SupportedDialects are optional, and named as in the
+// ULP payload specification's discovery document (snake_case); the rest
+// of the profile is ours.
 type Profile struct {
-	ProtocolVersion string            `json:"protocolVersion"`
-	Party           Party             `json:"party"`
-	Services        []Service         `json:"services"`
-	Transports      Transports        `json:"transports"`
-	Keys            []json.RawMessage `json:"keys"`
+	ProtocolVersion   string            `json:"protocolVersion"`
+	Party             Party             `json:"party"`
+	Services          []Service         `json:"services"`
+	Capabilities      []Capability      `json:"capabilities,omitempty"`
+	SupportedDialects []string          `json:"supported_dialects,omitempty"`
+	Transports        Transports        `json:"transports"`
+	Keys              []json.RawMessage `json:"keys"`
 }
 
 // Party names the publisher.
@@ -79,11 +96,23 @@ type Service struct {
 	Extensions []string `json:"extensions"`
 }
 
+// Capability is a named area of service, with tags saying what it covers
+// and over which transports ("ulp:dcsa:track-and-trace",
+// "ulp:transport:rest"). It describes; Services' intents are what a party
+// accepts. SpecURL is informative and never fetched.
+type Capability struct {
+	Name    string   `json:"name"`
+	Version string   `json:"version"`
+	SpecURL string   `json:"spec_url,omitempty"`
+	Tags    []string `json:"tags,omitempty"`
+}
+
 // Transports are a party's endpoints, one per binding (docs/DESIGN.md,
 // section A.7).
 type Transports struct {
 	REST string `json:"rest"`
 	A2A  string `json:"a2a,omitempty"`
+	MCP  string `json:"mcp,omitempty"`
 }
 
 // Document is a validated profile with its keys parsed.
@@ -111,6 +140,22 @@ func (d *Document) Accepts(intent string) bool {
 		}
 	}
 	return false
+}
+
+// Capability returns the profile's capability called name.
+func (d *Document) Capability(name string) (Capability, bool) {
+	for _, c := range d.Profile.Capabilities {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return Capability{}, false
+}
+
+// SupportsDialect reports whether the profile lists standard (a header
+// dialect's standard, such as "DCSA_TNT") in supported_dialects.
+func (d *Document) SupportsDialect(standard string) bool {
+	return slices.Contains(d.Profile.SupportedDialects, standard)
 }
 
 // ParseOptions configures ParseProfile.
@@ -164,8 +209,8 @@ func (d *Document) validate(opts ParseOptions, algs sig.Algorithms) error {
 			return fmt.Errorf("party.roles: %s is not a role", logsafe.Quote(r))
 		}
 	}
-	if len(p.Services) == 0 {
-		return errors.New("services is empty")
+	if len(p.Services) == 0 || len(p.Services) > MaxServices {
+		return fmt.Errorf("services has %d entries, want 1-%d", len(p.Services), MaxServices)
 	}
 	for _, s := range p.Services {
 		if s.Name == "" || len(s.Name) > 64 || strings.ContainsFunc(s.Name, isControl) {
@@ -176,8 +221,11 @@ func (d *Document) validate(opts ParseOptions, algs sig.Algorithms) error {
 				return errors.New("services: an extension must be 1-64 characters without control characters")
 			}
 		}
+		if len(s.Intents) > MaxIntents {
+			return fmt.Errorf("services: %d intents, over %d", len(s.Intents), MaxIntents)
+		}
 		for _, in := range s.Intents {
-			if !strings.HasPrefix(in, "ulp.") || len(in) > 64 {
+			if len(in) > 64 || !intentName.MatchString(in) {
 				return fmt.Errorf("services: %s is not an intent name", logsafe.Quote(in))
 			}
 		}
@@ -189,6 +237,17 @@ func (d *Document) validate(opts ParseOptions, algs sig.Algorithms) error {
 		if err := checkEndpoint("transports.a2a", p.Transports.A2A, opts); err != nil {
 			return err
 		}
+	}
+	if p.Transports.MCP != "" {
+		if err := checkEndpoint("transports.mcp", p.Transports.MCP, opts); err != nil {
+			return err
+		}
+	}
+	if err := checkCapabilities(p.Capabilities); err != nil {
+		return err
+	}
+	if err := checkDialects(p.SupportedDialects); err != nil {
+		return err
 	}
 	if len(p.Keys) == 0 || len(p.Keys) > MaxKeys {
 		return fmt.Errorf("keys has %d entries, want 1-%d", len(p.Keys), MaxKeys)
@@ -202,6 +261,83 @@ func (d *Document) validate(opts ParseOptions, algs sig.Algorithms) error {
 			return fmt.Errorf("keys: kid %s appears twice", logsafe.Quote(kid))
 		}
 		d.keys[kid] = v
+	}
+	return nil
+}
+
+var (
+	// capabilityName is a reverse-DNS name, "dev.ulp.logistics.shipment".
+	// Each label starts and ends with a letter or digit.
+	capabilityName = regexp.MustCompile(`^[a-z]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9_-]*[a-z0-9])?)+$`)
+	// intentName is "ulp.tnt.inquiry.response".
+	intentName = regexp.MustCompile(`^ulp(\.[a-z0-9_]+)+$`)
+	// capabilityVersion is "0.0.1", "v2" or "2026-01-11".
+	capabilityVersion = regexp.MustCompile(`^[A-Za-z0-9._-]{1,32}$`)
+	// tagPattern is colon-separated lowercase words, "ulp:transport:rest".
+	tagPattern = regexp.MustCompile(`^[a-z0-9]+(:[a-z0-9-]+)+$`)
+	// dialectStandard is a header dialect's standard (pkg/envelope).
+	dialectStandard = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,31}$`)
+)
+
+func checkCapabilities(cs []Capability) error {
+	if len(cs) > MaxCapabilities {
+		return fmt.Errorf("capabilities has %d entries, over %d", len(cs), MaxCapabilities)
+	}
+	names := map[string]bool{}
+	for i, c := range cs {
+		f := fmt.Sprintf("capabilities[%d]", i)
+		if len(c.Name) > 128 || !capabilityName.MatchString(c.Name) {
+			return fmt.Errorf("%s.name: %s is not a reverse-DNS name of at most 128 characters", f, logsafe.Quote(c.Name))
+		}
+		if names[c.Name] {
+			return fmt.Errorf("%s.name: %s appears twice", f, c.Name)
+		}
+		names[c.Name] = true
+		if !capabilityVersion.MatchString(c.Version) {
+			return fmt.Errorf("%s.version: %s is not 1-32 of [A-Za-z0-9._-]", f, logsafe.Quote(c.Version))
+		}
+		if c.SpecURL != "" && !validSpecURL(c.SpecURL) {
+			return fmt.Errorf("%s.spec_url: %s is not an https URL of at most 256 characters without query, fragment or spaces", f, logsafe.Quote(c.SpecURL))
+		}
+		if len(c.Tags) > MaxTags {
+			return fmt.Errorf("%s.tags has %d entries, over %d", f, len(c.Tags), MaxTags)
+		}
+		tags := map[string]bool{}
+		for _, t := range c.Tags {
+			if len(t) > 64 || !tagPattern.MatchString(t) {
+				return fmt.Errorf("%s.tags: %s is not a tag such as ulp:transport:rest", f, logsafe.Quote(t))
+			}
+			if tags[t] {
+				return fmt.Errorf("%s.tags: %s appears twice", f, t)
+			}
+			tags[t] = true
+		}
+	}
+	return nil
+}
+
+// validSpecURL is the rule for a header dialect's schema_url (pkg/envelope).
+func validSpecURL(s string) bool {
+	if len(s) > 256 || !strings.HasPrefix(s, "https://") || strings.ContainsFunc(s, func(r rune) bool { return r <= ' ' || isControl(r) }) {
+		return false
+	}
+	u, err := url.Parse(s)
+	return err == nil && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && u.Opaque == ""
+}
+
+func checkDialects(ds []string) error {
+	if len(ds) > MaxDialects {
+		return fmt.Errorf("supported_dialects has %d entries, over %d", len(ds), MaxDialects)
+	}
+	seen := map[string]bool{}
+	for _, d := range ds {
+		if !dialectStandard.MatchString(d) {
+			return fmt.Errorf("supported_dialects: %s is not 1-32 characters of [A-Z0-9_]", logsafe.Quote(d))
+		}
+		if seen[d] {
+			return fmt.Errorf("supported_dialects: %s appears twice", d)
+		}
+		seen[d] = true
 	}
 	return nil
 }

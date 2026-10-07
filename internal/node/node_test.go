@@ -25,6 +25,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -495,6 +496,59 @@ func TestProfileServed(t *testing.T) {
 	}
 	if resp, _ := http.Post(srv.URL+discovery.Path, "application/json", bytes.NewReader(nil)); resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("POST to the profile: HTTP %d", resp.StatusCode)
+	}
+	// The capabilities follow the handled intents; the dialects are the
+	// ones this node decodes.
+	c, ok := doc.Capability("dev.ulp.logistics.shipment")
+	if !ok || !slices.Equal(c.Tags, []string{"ulp:service", "ulp:dcsa:container-booking", "ulp:transport:rest"}) || c.SpecURL != "" {
+		t.Errorf("shipment capability %+v, %v", c, ok)
+	}
+	if _, ok := doc.Capability("dev.ulp.logistics.tracking"); ok || len(doc.Profile.Capabilities) != 1 {
+		t.Errorf("capabilities %+v", doc.Profile.Capabilities)
+	}
+	if !doc.SupportsDialect("DCSA_TNT") || !doc.SupportsDialect("DCSA_OCEAN_CONTAINER") {
+		t.Errorf("supported_dialects %v", doc.Profile.SupportedDialects)
+	}
+}
+
+// TestProfileCapabilities: a tracking operator serving A2A tags the
+// inquiry's transport, and a subscriber lists what it receives.
+func TestProfileCapabilities(t *testing.T) {
+	op := newParty(t, "ob-2026-1")
+	h := handlerFunc{handle: func(context.Context, *node.Request) (*node.Reply, error) { return nil, nil }}
+	profile := func(handled []string, a2a string) *discovery.Document {
+		t.Helper()
+		c := baseConfig(t, op, staticKeys{}, h)
+		c.Handlers = map[string]node.Handler{}
+		for _, in := range handled {
+			c.Handlers[in] = h
+		}
+		c.A2AURL = a2a
+		n, err := node.New(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		n.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, discovery.Path, nil))
+		doc, err := discovery.ParseProfile(rec.Body.Bytes(), discovery.ParseOptions{Domain: operatorDomain})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return doc
+	}
+	doc := profile([]string{intents.TnTInquiry, intents.OceanTnTRequest}, "https://"+operatorDomain+"/a2a")
+	c, ok := doc.Capability("dev.ulp.logistics.tracking")
+	if !ok || !slices.Contains(c.Tags, "ulp:transport:a2a") || c.SpecURL != intents.DialectDCSATnT.SchemaURL {
+		t.Errorf("tracking capability %+v, %v", c, ok)
+	}
+	if c, _ := profile([]string{intents.OceanTnTRequest}, "https://"+operatorDomain+"/a2a").Capability("dev.ulp.logistics.tracking"); slices.Contains(c.Tags, "ulp:transport:a2a") {
+		t.Error("A2A tagged without the inquiry")
+	}
+	if c, _ := profile([]string{intents.TnTInquiry}, "").Capability("dev.ulp.logistics.tracking"); c.SpecURL != "" {
+		t.Errorf("an inquiry-only node claims the status pull's schema: %+v", c)
+	}
+	if c, ok := profile([]string{intents.TnTEvent}, "").Capability("dev.ulp.logistics.tracking.subscriber"); !ok || !slices.Contains(c.Tags, "ulp:subscriber") {
+		t.Errorf("subscriber capability %+v, %v", c, ok)
 	}
 }
 

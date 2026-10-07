@@ -235,17 +235,38 @@ type Profile struct {
 	Intents []string `json:"intents"`
 	REST    string   `json:"rest"`
 	A2A     string   `json:"a2a,omitempty"`
+	MCP     string   `json:"mcp,omitempty"`
 	Keys    []string `json:"keys"` // kids
+	// Capabilities are the profile's capability names with their tags
+	// ("dev.ulp.logistics.tracking (ulp:service, ulp:transport:rest)").
+	Capabilities []string `json:"capabilities,omitempty"`
+	Dialects     []string `json:"supportedDialects,omitempty"`
 }
 
-// SummarizeProfile sums up a parsed, validated profile.
+// The summary's caps: a partner writes its profile, and the summary reaches
+// the assistant's model, so it carries a bounded amount of that text.
+const (
+	summaryIntents      = 32
+	summaryCapabilities = 8
+	summaryTags         = 8
+)
+
+// SummarizeProfile sums up a parsed, validated profile, within the caps.
 func SummarizeProfile(doc *discovery.Document) *Profile {
 	p := doc.Profile
 	out := &Profile{Domain: p.Party.Domain, Name: p.Party.Name, Roles: p.Party.Roles, REST: p.Transports.REST,
-		A2A: p.Transports.A2A, Intents: []string{}, Keys: doc.KIDs()}
+		A2A: p.Transports.A2A, MCP: p.Transports.MCP, Intents: []string{}, Keys: doc.KIDs(), Dialects: p.SupportedDialects}
+	for _, c := range p.Capabilities[:min(len(p.Capabilities), summaryCapabilities)] {
+		line := c.Name
+		if len(c.Tags) > 0 {
+			line += " (" + strings.Join(c.Tags[:min(len(c.Tags), summaryTags)], ", ") + ")"
+		}
+		out.Capabilities = append(out.Capabilities, line)
+	}
 	for _, svc := range p.Services {
 		out.Intents = append(out.Intents, svc.Intents...)
 	}
+	out.Intents = out.Intents[:min(len(out.Intents), summaryIntents)]
 	return out
 }
 

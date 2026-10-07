@@ -189,6 +189,50 @@ func New(cfg Config) (*Node, error) {
 // Domain is the node's identity.
 func (n *Node) Domain() string { return n.cfg.Domain }
 
+// capabilityTable names the areas of service a profile lists, after the
+// ULP payload specification's discovery document: each is listed when the
+// node accepts one of its intents. Its spec URL is the dialect schema of
+// the first accepted intent that has one.
+var capabilityTable = []struct {
+	name    string
+	intents []string
+	tags    []string
+}{
+	{"dev.ulp.logistics.shipment", []string{intents.BookingRequest}, []string{"ulp:service", "ulp:dcsa:container-booking"}},
+	{"dev.ulp.logistics.tracking", []string{intents.OceanTnTRequest, intents.TnTInquiry}, []string{"ulp:service", "ulp:dcsa:track-and-trace"}},
+	{"dev.ulp.logistics.tracking.subscriber", []string{intents.TnTEvent, intents.TnTAlert}, []string{"ulp:subscriber", "ulp:dcsa:track-and-trace"}},
+}
+
+// capabilities are the capabilityTable entries for the accepted intents,
+// tagged with the transports that carry them: REST always, A2A for the
+// inquiry when the node serves A2A.
+func capabilities(accepted []string, a2a bool) []discovery.Capability {
+	var out []discovery.Capability
+	for _, c := range capabilityTable {
+		var has []string
+		for _, in := range c.intents {
+			if slices.Contains(accepted, in) {
+				has = append(has, in)
+			}
+		}
+		if has == nil {
+			continue
+		}
+		cp := discovery.Capability{Name: c.name, Version: envelope.Version, Tags: append(slices.Clone(c.tags), "ulp:transport:rest")}
+		if a2a && slices.Contains(has, intents.TnTInquiry) {
+			cp.Tags = append(cp.Tags, "ulp:transport:a2a")
+		}
+		for _, in := range has {
+			if d, ok := intents.DialectFor(in); ok {
+				cp.SpecURL = d.SchemaURL
+				break
+			}
+		}
+		out = append(out, cp)
+	}
+	return out
+}
+
 // buildProfile renders the published profile and checks it with the same
 // parser partners will use, so a misconfigured node fails at startup rather
 // than in a partner's logs.
@@ -198,11 +242,13 @@ func (n *Node) buildProfile() ([]byte, error) {
 		accepted = []string{}
 	}
 	p := discovery.Profile{
-		ProtocolVersion: envelope.Version,
-		Party:           discovery.Party{Domain: n.cfg.Domain, Name: n.cfg.Name, Roles: n.cfg.Roles},
-		Services:        []discovery.Service{{Name: "ulp.freight", Intents: accepted, Extensions: []string{}}},
-		Transports:      discovery.Transports{REST: n.cfg.RESTURL, A2A: n.cfg.A2AURL},
-		Keys:            []json.RawMessage{n.cfg.PublicJWK},
+		ProtocolVersion:   envelope.Version,
+		Party:             discovery.Party{Domain: n.cfg.Domain, Name: n.cfg.Name, Roles: n.cfg.Roles},
+		Services:          []discovery.Service{{Name: "ulp.freight", Intents: accepted, Extensions: []string{}}},
+		Capabilities:      capabilities(accepted, n.cfg.A2AURL != ""),
+		SupportedDialects: intents.Dialects(),
+		Transports:        discovery.Transports{REST: n.cfg.RESTURL, A2A: n.cfg.A2AURL},
+		Keys:              []json.RawMessage{n.cfg.PublicJWK},
 	}
 	b, err := json.Marshal(p)
 	if err != nil {

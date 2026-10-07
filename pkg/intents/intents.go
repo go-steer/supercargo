@@ -26,6 +26,8 @@ package intents
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/go-steer/supercargo/pkg/envelope"
@@ -176,6 +178,26 @@ func SetDialect(h *envelope.Header) {
 		d := *s.dialect
 		h.Dialect = &d
 	}
+}
+
+// DialectFor is the dialect intent's header carries, if it has one.
+func DialectFor(intent string) (envelope.Dialect, bool) {
+	if s, ok := specs[intent]; ok && s.dialect != nil {
+		return *s.dialect, true
+	}
+	return envelope.Dialect{}, false
+}
+
+// Dialects are the standards of the dialects this package decodes, sorted:
+// what a profile's supported_dialects lists.
+func Dialects() []string {
+	set := map[string]bool{}
+	for _, s := range specs {
+		if s.dialect != nil {
+			set[s.dialect.Standard] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(set))
 }
 
 // crossCheck applies rules that tie a body to its header.
