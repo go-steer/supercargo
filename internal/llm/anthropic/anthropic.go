@@ -15,8 +15,8 @@
 // Derived from go-steer/mast@603b826132aaef26b1615809ebe5e7154d6b4b3f
 // (pkg/providers/anthropic: convert.go's system blocks and JSON-schema
 // projection, stream.go's usage mapping), ported from ADK's model.LLM and
-// genai types onto internal/llm's Model, without streaming or tool calls,
-// which this module's callers don't use yet.
+// genai types onto internal/llm's Model, without streaming, which this
+// module's callers don't use.
 
 // Package anthropic is the llm.Model for Anthropic's Claude models
 // (docs/DESIGN.md, A.10).
