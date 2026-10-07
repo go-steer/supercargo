@@ -291,6 +291,7 @@ func (n *Node) sealReply(ctx context.Context, h *envelope.Header, reply *Reply, 
 		}
 	}
 	rh := h.Reply(reply.Body.Intent(), n.cfg.Now())
+	intents.SetDialect(&rh)
 	if rh.Sender != n.cfg.Domain {
 		// Unreachable through Process, which only replies to envelopes
 		// addressed here; the node never signs for another domain.

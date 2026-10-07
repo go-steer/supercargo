@@ -12,6 +12,10 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **Protocol change: track & trace events and alerts in the ULP payload schema** (#64, tracking #68). `ulp.tnt.event` carries pf's DCSA Track & Trace event (`event_id`, `event_type` now including `SHIPMENT`, `event_classifier_code`, `event_date_time`, `event_type_code`, `description`, `un_location_code`, `facility_name`, `vessel_name`, `voyage_number`, `equipment_reference`), and `ulp.tnt.alert` uses snake_case (`alert_id`, `previous_eta`, `new_eta`, `cause_event_ids`). The envelope header gains an optional `dialect` (`standard`, `version`, `schema_url`), required as `DCSA_TNT 2.2.0` on events and refused on extension intents. In `pkg/`: `envelope.Header.Dialect` and `envelope.Dialect`, `intents.HeaderFor`, `intents.SetDialect` and `intents.DialectDCSATnT` are new; `intents.TnTEventBody`'s fields changed and `intents.Transport` is gone. The protocol version is now `0.3-demo` (envelopes and profiles), so a mixed-version pair fails plainly. Golden vectors regenerated, with a dialect-bearing event and its malformed variants.
+
 ### Added
 
 - Metrics (#47): envelopes by direction, intent, binding, outcome, refusal code and partner; pipeline latency; model call latency, tokens and verdicts (GenAI conventions); alert summaries; records; publisher drops, retries and queue depth; voyages in progress. Labels are low-cardinality by construction. They export with the traces, or to `telemetry.metricsEndpoint`; `dev/demo/otel up` now starts Prometheus too.

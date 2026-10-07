@@ -17,6 +17,7 @@ package envelope
 import (
 	"crypto/rand"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -28,8 +29,9 @@ import (
 const TimeLayout = "2006-01-02T15:04:05Z"
 
 // Header is the envelope header. Every member is always present on the
-// wire; InReplyTo and BookingRef are null when unset. The signing key and
-// algorithm are not here: they are the JWS protected header's.
+// wire, except Dialect, which is absent when unset; InReplyTo and
+// BookingRef are null when unset. The signing key and algorithm are not
+// here: they are the JWS protected header's.
 type Header struct {
 	ULPVersion    string  `json:"ulpVersion"`
 	Intent        string  `json:"intent"`
@@ -40,6 +42,17 @@ type Header struct {
 	Sender        string  `json:"sender"`
 	Receiver      string  `json:"receiver"`
 	BookingRef    *string `json:"bookingRef"`
+	// Dialect names the standard payload schema the body follows
+	// (docs/DESIGN.md, A.5), for intents that have one.
+	Dialect *Dialect `json:"dialect,omitempty"`
+}
+
+// Dialect is a payload schema: a standard, its version, and where it is
+// defined. Member names follow the ULP payload specification.
+type Dialect struct {
+	Standard  string `json:"standard"`
+	Version   string `json:"version"`
+	SchemaURL string `json:"schema_url"`
 }
 
 // NewHeader starts a conversation: a fresh messageId, a correlationId equal
@@ -133,7 +146,32 @@ func (h Header) validate() error {
 	if h.BookingRef != nil && !bookingRefPattern.MatchString(*h.BookingRef) {
 		return fmt.Errorf("bookingRef: %s is not 1-64 characters of [A-Za-z0-9._-]", logsafe.Quote(*h.BookingRef))
 	}
+	if d := h.Dialect; d != nil {
+		switch {
+		case !dialectStandardPattern.MatchString(d.Standard):
+			return fmt.Errorf("dialect.standard: %s is not 1-32 characters of [A-Z0-9_]", logsafe.Quote(d.Standard))
+		case !dialectVersionPattern.MatchString(d.Version):
+			return fmt.Errorf("dialect.version: %s is not a version (e.g. 2.2.0)", logsafe.Quote(d.Version))
+		case !validSchemaURL(d.SchemaURL):
+			return fmt.Errorf("dialect.schema_url: %s is not an https URL", logsafe.Quote(d.SchemaURL))
+		}
+	}
 	return nil
+}
+
+var (
+	dialectStandardPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,31}$`)
+	dialectVersionPattern  = regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,3}$`)
+)
+
+// validSchemaURL accepts an https URL of at most 256 bytes with a host
+// and no userinfo, query or fragment: a reference, never fetched.
+func validSchemaURL(s string) bool {
+	if len(s) > 256 || !strings.HasPrefix(s, "https://") {
+		return false
+	}
+	u, err := url.Parse(s)
+	return err == nil && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && !strings.ContainsAny(s, " \t\n")
 }
 
 func parseSentAt(s string) (time.Time, error) {

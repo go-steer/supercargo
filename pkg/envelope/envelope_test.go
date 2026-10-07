@@ -423,7 +423,7 @@ func TestParseRejects(t *testing.T) {
 		{"number header member", signedPayload(`"sentAt":"2026-10-09T14:03:11Z"`, `"sentAt":1760018591`)},
 		{"array nullable header member", signedPayload(`"inReplyTo":null`, `"inReplyTo":["a"]`)},
 		{"bad header value", signedPayload(`"sender":"cymbal-shoes.example"`, `"sender":"evil.example:8443"`)},
-		{"wrong version", signedPayload(`"0.2-demo"`, `"0.1"`)},
+		{"wrong version", signedPayload(`"0.3-demo"`, `"0.1"`)},
 		{"body array", signedPayload(`"body":{"question":"What caused the delay?","n":1,"f":17.0}`, `"body":[]`)},
 		{"body null", signedPayload(`"body":{"question":"What caused the delay?","n":1,"f":17.0}`, `"body":null`)},
 		{"attachments null", signedPayload(`"attachments":{"delegation":null}`, `"attachments":null`)},
@@ -576,6 +576,22 @@ func TestHeaderValidate(t *testing.T) {
 		{"valid no bookingRef", func(h *Header) { h.BookingRef = nil }, true},
 		{"valid 64-char bookingRef", func(h *Header) { h.BookingRef = ptr(long) }, true},
 		{"valid long intent", func(h *Header) { h.Intent = "ulp.tnt.inquiry.response" }, true},
+		{"valid dialect", func(h *Header) {
+			h.Dialect = &Dialect{"DCSA_TNT", "2.2.0", "https://dcsa.org/standards/track-and-trace"}
+		}, true},
+
+		{"dialect lowercase standard", func(h *Header) { h.Dialect = &Dialect{"dcsa_tnt", "2.2.0", "https://dcsa.org/x"} }, false},
+		{"dialect empty standard", func(h *Header) { h.Dialect = &Dialect{"", "2.2.0", "https://dcsa.org/x"} }, false},
+		{"dialect long standard", func(h *Header) { h.Dialect = &Dialect{"D" + strings.Repeat("A", 32), "2.2.0", "https://dcsa.org/x"} }, false},
+		{"dialect word version", func(h *Header) { h.Dialect = &Dialect{"DCSA_TNT", "latest", "https://dcsa.org/x"} }, false},
+		{"dialect http schema", func(h *Header) { h.Dialect = &Dialect{"DCSA_TNT", "2.2.0", "http://dcsa.org/x"} }, false},
+		{"dialect schema with query", func(h *Header) { h.Dialect = &Dialect{"DCSA_TNT", "2.2.0", "https://dcsa.org/x?a=1"} }, false},
+		{"dialect schema with userinfo", func(h *Header) { h.Dialect = &Dialect{"DCSA_TNT", "2.2.0", "https://u@dcsa.org/x"} }, false},
+		{"dialect schema with space", func(h *Header) { h.Dialect = &Dialect{"DCSA_TNT", "2.2.0", "https://dcsa.org/a b"} }, false},
+		{"dialect long schema", func(h *Header) {
+			h.Dialect = &Dialect{"DCSA_TNT", "2.2.0", "https://dcsa.org/" + strings.Repeat("x", 250)}
+		}, false},
+		{"dialect empty schema", func(h *Header) { h.Dialect = &Dialect{"DCSA_TNT", "2.2.0", ""} }, false},
 
 		{"empty version", func(h *Header) { h.ULPVersion = "" }, false},
 		{"other version", func(h *Header) { h.ULPVersion = "0.1" }, false},
@@ -782,7 +798,7 @@ func TestSignatureTrailingBits(t *testing.T) {
 // before any key is resolved, so this is the per-message cost an anonymous
 // sender can impose.
 func BenchmarkParseHostile(b *testing.B) {
-	payload := `{"header":{"ulpVersion":"0.2-demo","intent":"ulp.tnt.inquiry","messageId":"8f1c2e9a-5b7d-4f0e-9c3a-2d6b8e1f4a77","correlationId":"8f1c2e9a-5b7d-4f0e-9c3a-2d6b8e1f4a77","inReplyTo":null,"sentAt":"2026-10-09T14:03:11Z","sender":"mallory.example","receiver":"ocean-blue.example","bookingRef":null},"body":{"a":[` +
+	payload := `{"header":{"ulpVersion":"0.3-demo","intent":"ulp.tnt.inquiry","messageId":"8f1c2e9a-5b7d-4f0e-9c3a-2d6b8e1f4a77","correlationId":"8f1c2e9a-5b7d-4f0e-9c3a-2d6b8e1f4a77","inReplyTo":null,"sentAt":"2026-10-09T14:03:11Z","sender":"mallory.example","receiver":"ocean-blue.example","bookingRef":null},"body":{"a":[` +
 		strings.TrimSuffix(strings.Repeat("1,", (MaxSize-1000)*3/4/2), ",") + `]},"attachments":{"delegation":null}}`
 	w, _ := json.Marshal(wire{Protected: b64(goodProtected), Payload: b64(payload), Signature: strings.Repeat("A", 86)})
 	if len(w) > MaxSize {
@@ -816,6 +832,7 @@ func TestGoSealedEnvelopesForPython(t *testing.T) {
 		"numbers": `{"n":1,"f":17.0,"big":1e16,"small":1e-05,"huge":123456789012345678901234567890,"neg":-0.0}`,
 		"unicode": `{"q":"Café 東京 😀 <&> \"quoted\"\n\t\u007f\u0001 — ETA?","é":[],"z":{}}`,
 		"reply":   `{"a":{"b":[null,true,false,{"c":[1.5,"s"]}]}}`,
+		"dialect": `{"event_id":"EV-1"}`,
 	}
 	type item struct {
 		Name    string `json:"name"`
@@ -826,6 +843,10 @@ func TestGoSealedEnvelopesForPython(t *testing.T) {
 	for name, body := range bodies {
 		e := newInquiry()
 		e.Body = json.RawMessage(body)
+		if name == "dialect" {
+			e.Header.Intent = "ulp.tnt.event"
+			e.Header.Dialect = &Dialect{"DCSA_TNT", "2.2.0", "https://dcsa.org/standards/track-and-trace"}
+		}
 		if name == "reply" {
 			e.Header = e.Header.Reply("ulp.tnt.inquiry.response", now)
 			e.Attachments.Delegation = json.RawMessage(`{"protected":"e30","payload":"e30","signature":"AA"}`)
@@ -841,4 +862,74 @@ func TestGoSealedEnvelopesForPython(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("wrote %d envelopes to %s", len(items), out)
+}
+
+// TestDialectShape: the optional dialect member is an object of exactly
+// three strings, once, named exactly; anything else is malformed before
+// any key is consulted.
+func TestDialectShape(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	s, _ := sig.NewEd25519Signer(priv)
+	e := newInquiry()
+	e.Header.Dialect = &Dialect{"DCSA_TNT", "2.2.0", "https://dcsa.org/x"}
+	good := seal(t, e, s)
+	if _, err := Parse(good); err != nil {
+		t.Fatalf("a valid dialect: %v", err)
+	}
+	var w wire
+	_ = json.Unmarshal(good, &w)
+	payload, _ := sig.DecodeBase64URL(w.Payload)
+	const d = `"dialect":{"standard":"DCSA_TNT","version":"2.2.0","schema_url":"https://dcsa.org/x"}`
+	if !strings.Contains(string(payload), d) {
+		t.Fatalf("payload %s", payload)
+	}
+	for name, repl := range map[string]string{
+		"case variant":        strings.Replace(d, `"dialect"`, `"Dialect"`, 1),
+		"member case variant": strings.Replace(d, `"standard"`, `"Standard"`, 1),
+		"missing member":      `"dialect":{"standard":"DCSA_TNT","version":"2.2.0"}`,
+		"extra member":        strings.Replace(d, `}`, `,"x":"y"}`, 1),
+		"string":              `"dialect":"DCSA_TNT"`,
+		"array":               `"dialect":["DCSA_TNT"]`,
+		"null":                `"dialect":null`,
+		"duplicate":           d + "," + d,
+		"bad standard":        strings.Replace(d, `"DCSA_TNT"`, `"dcsa"`, 1),
+	} {
+		forged := strings.Replace(string(payload), d, repl, 1)
+		msg := resign(t, w.Protected, []byte(forged), s)
+		if _, err := Parse(msg); !errors.Is(err, ErrMalformed) {
+			t.Errorf("%s: Parse = %v, want ErrMalformed", name, err)
+		}
+	}
+}
+
+// TestClaimedHeaderDialectCopy: changing the claimed header's dialect
+// changes nothing Verify returns.
+func TestClaimedHeaderDialectCopy(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	s, _ := sig.NewEd25519Signer(priv)
+	v, _ := sig.NewEd25519Verifier(pub)
+	e := newInquiry()
+	e.Header.Dialect = &Dialect{"DCSA_TNT", "2.2.0", "https://dcsa.org/x"}
+	u, err := Parse(seal(t, e, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.ClaimedHeader().Dialect.Version = "9.9"
+	env, err := u.Verify(v)
+	if err != nil || env.Header.Dialect.Version != "2.2.0" {
+		t.Errorf("verified dialect %+v, %v", env.Header.Dialect, err)
+	}
+}
+
+// resign signs payload under the protected header b64, as a forger with
+// the key would: shape checks must hold even for signed input.
+func resign(t *testing.T, protectedB64 string, payload []byte, s sig.Signer) []byte {
+	t.Helper()
+	p := base64.RawURLEncoding.EncodeToString(payload)
+	signature, err := s.Sign([]byte(protectedB64 + "." + p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := json.Marshal(map[string]string{"protected": protectedB64, "payload": p, "signature": base64.RawURLEncoding.EncodeToString(signature)})
+	return out
 }

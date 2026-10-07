@@ -304,7 +304,7 @@ It is deliberately not an "allow private networks" switch: only the listed domai
 
 ```json
 {
-  "protocolVersion": "0.2-demo",
+  "protocolVersion": "0.3-demo",
   "party": { "domain": "ocean-blue.example", "name": "Ocean Blue", "roles": ["operator"] },
   "services": [{
     "name": "ulp.freight",
@@ -364,7 +364,7 @@ The **payload** (base64url JSON) is the envelope content:
 ```json
 {
   "header": {
-    "ulpVersion": "0.2-demo",
+    "ulpVersion": "0.3-demo",
     "intent": "ulp.tnt.inquiry",
     "messageId": "8f1c2e9a-5b7d-4f0e-9c3a-2d6b8e1f4a77",
     "correlationId": "8f1c2e9a-…",
@@ -388,7 +388,7 @@ The **payload** (base64url JSON) is the envelope content:
 | `sentAt` | RFC 3339 UTC, ±5 min skew |
 | `sender` / `receiver` | Domains. `receiver` must equal the receiving node's domain (prevents forwarding a message to a different node) |
 | `bookingRef` | Present for every intent except `booking.request` |
-| `dialect` | The payload schema the body follows: `{ "standard": "DCSA_TNT", "version": "2.2.0", "schema_url": "…" }` ([A.5](#a5-intents-and-bodies)). Required for intents with a standard payload, absent for ULP extensions. Planned with the payload alignment (#68); signed like every header field |
+| `dialect` | The payload schema the body follows: `{ "standard": "DCSA_TNT", "version": "2.2.0", "schema_url": "…" }` ([A.5](#a5-intents-and-bodies)). The one optional header member: present (an object with exactly those three strings; standard `[A-Z][A-Z0-9_]{0,31}`, a dotted numeric version, an https schema URL) for intents with a standard payload, absent for ULP extensions. Signed like every header field |
 
 The **signature** is the JWS signature over `ASCII(protected || "." || payload)`, so it covers the header, body and attachments exactly as sent. Receiving, in order:
 
@@ -418,6 +418,13 @@ type Header struct {
 	Sender        string  `json:"sender"`
 	Receiver      string  `json:"receiver"`
 	BookingRef    *string `json:"bookingRef"`
+	Dialect       *Dialect `json:"dialect,omitempty"` // absent for ULP extensions
+}
+
+type Dialect struct {
+	Standard  string `json:"standard"`
+	Version   string `json:"version"`
+	SchemaURL string `json:"schema_url"`
 }
 ```
 
@@ -456,14 +463,15 @@ The binding column is the **default**. Every intent is a signed envelope, so any
 
 **Header rules per intent.** Each intent fixes which optional header fields and attachments it carries; anything else is `invalid_body`:
 
-| Intent | `bookingRef` | `inReplyTo` | `attachments.delegation` |
-|---|---|---|---|
-| `booking.request` | absent (no booking yet) | absent | absent |
-| `booking.confirmation` | required, equal to the body's `bookingRef` | required | absent |
-| `tnt.event`, `tnt.alert` | required | absent | absent |
-| `tnt.inquiry` | required | absent | optional (a receiver's delegation) |
-| `tnt.inquiry.response` | required | required | absent |
-| `ulp.error` | optional | required | absent |
+| Intent | `bookingRef` | `inReplyTo` | `attachments.delegation` | `dialect` |
+|---|---|---|---|---|
+| `booking.request` | absent (no booking yet) | absent | absent | absent (until #66) |
+| `booking.confirmation` | required, equal to the body's `bookingRef` | required | absent | absent (until #66) |
+| `tnt.event` | required | absent | absent | required: `DCSA_TNT` `2.2.0` (the schema URL is informative) |
+| `tnt.alert` | required | absent | absent | absent |
+| `tnt.inquiry` | required | absent | optional (a receiver's delegation) | absent |
+| `tnt.inquiry.response` | required | required | absent | absent |
+| `ulp.error` | optional | required | absent | absent |
 
 **Body rules.** Bodies are decoded with exact member names: a member the intent doesn't define, a duplicate, or one that differs from a defined member only in case is `invalid_body`. Otherwise one implementation could read `"Question"` where another reads `"question"`.
 - **Identifiers** (`shipperRef`, `bookingRef`, voyage, subscription IDs) are 1–64 characters of `[A-Za-z0-9._-]` (no `/`, so a reference can never become a path).
@@ -505,40 +513,44 @@ The shipper's required delivery date is **deliberately not sent**. It's private 
 ```
 `status` is `confirmed` | `rejected` | `alternative_proposed` ("if the vessel is full, propose an alternative voyage"; out of scope for the demo, but reserved).
 
-**`ulp.tnt.event`** (DCSA-inspired subset)
+**`ulp.tnt.event`**: the standard payload, pf's DCSA Track & Trace event, with header `dialect` `{ "standard": "DCSA_TNT", "version": "2.2.0", "schema_url": "https://dcsa.org/standards/track-and-trace" }`
 ```json
 {
-  "eventId": "EV-0014",
-  "eventType": "EQUIPMENT",
-  "eventClassifierCode": "ACT",
-  "eventCode": "LOAD",
-  "eventDateTime": "2026-10-07T11:20:00Z",
-  "location": { "unLocode": "NLRTM", "name": "Rotterdam" },
-  "equipmentRef": "OCBU1234565",
-  "transport": { "vessel": "Ocean Blue Aurora", "voyage": "42W" }
+  "event_id": "EV-0014",
+  "event_type": "EQUIPMENT",
+  "event_classifier_code": "ACT",
+  "event_date_time": "2026-10-07T11:20:00Z",
+  "event_type_code": "LOAD",
+  "description": "Container OCBU1234565 loaded at Port of Rotterdam",
+  "un_location_code": "NLRTM",
+  "facility_name": "Port of Rotterdam",
+  "vessel_name": "Ocean Blue Aurora",
+  "voyage_number": "42W",
+  "equipment_reference": "OCBU1234565"
 }
 ```
 
-| `eventType` | `eventCode` used in the demo | Meaning |
+| `event_type` | `event_type_code` accepted (the demo uses the first ones) | Meaning |
 |---|---|---|
-| `EQUIPMENT` | `GTIN`, `LOAD`, `DISC`, `GTOT` | Gate-in, loaded, discharged, gate-out |
+| `EQUIPMENT` | `GTIN`, `LOAD`, `DISC`, `GTOT`; also `STUF`, `STRP`, `PICK`, `DROP`, `INSP`, `RSEA`, `RMVD` | Gate-in, loaded, discharged, gate-out, … |
 | `TRANSPORT` | `DEPA`, `ARRI` | Departure, arrival |
+| `SHIPMENT` | `RECE`, `DRFT`, `PENA`, `PENU`, `REJE`, `APPR`, `ISSU`, `SURR`, `SUBM`, `VOID`, `CONF`, `REQS`, `CMPL`, `HOLD`, `RELS` | Document and booking milestones |
 
-`eventClassifierCode`: `ACT` (actual), `EST` (estimated), `PLN` (planned). The codes mirror DCSA Track & Trace conventions. Check them against the DCSA T&T version you target before claiming conformance. An `EQUIPMENT` event names its container (`equipmentRef`, ISO 6346); a `TRANSPORT` event names its vessel and voyage (`transport`).
+`event_classifier_code`: `ACT` (actual), `EST` (estimated), `PLN` (planned). `description` (required, plain text, at most 280 characters) and `un_location_code` (required) are pf's. `facility_name`, `vessel_name`, `voyage_number` and `equipment_reference` are optional, and absent or `null` when unset (pf writes `null`). **Stricter than pf** (pf's models accept extra members and looser values): unknown members are refused, `description` must be non-empty, `event_date_time` is whole-second UTC (`Z`), `event_type_code` must be one of its type's codes, and an `EQUIPMENT` event must name its container in ISO 6346 form. Our rules for every body ([below](#a5-intents-and-bodies)) apply to the standard payloads too. The codes mirror DCSA Track & Trace, whose published schema is camelCase and splits the code into `equipmentEventTypeCode` / `transportEventTypeCode` / `shipmentEventTypeCode`: pf merges them into `event_type_code`, and we follow pf.
 
-**`ulp.tnt.alert`**
+**`ulp.tnt.alert`** (a ULP extension; no dialect)
 ```json
 {
-  "alertId": "AL-0003",
+  "alert_id": "AL-0003",
   "kind": "delay",
   "severity": "high",
   "summary": "Unscheduled call at Halifax for engine repair",
-  "previousEta": "2026-10-13T08:00:00Z",
-  "newEta":      "2026-10-16T14:00:00Z",
-  "causeEventIds": ["EV-0019", "EV-0021"]
+  "previous_eta": "2026-10-13T08:00:00Z",
+  "new_eta":      "2026-10-16T14:00:00Z",
+  "cause_event_ids": ["EV-0019", "EV-0021"]
 }
 ```
-`kind` is `delay`, `early` or `exception`, and `severity` is `low`, `medium` or `high`. A `delay` or `early` alert carries both ETAs, and `newEta` is later (or earlier) accordingly. `summary` is one line of at most 280 characters, and an alert cites at most 20 cause events.
+`kind` is `delay`, `early` or `exception`, and `severity` is `low`, `medium` or `high`. A `delay` or `early` alert carries both ETAs, and `new_eta` is later (or earlier) accordingly. `summary` is one line of at most 280 characters, and an alert cites at most 20 cause events (any event type).
 
 **`ulp.tnt.inquiry`** → **`ulp.tnt.inquiry.response`**
 ```json
@@ -741,7 +753,7 @@ Each model call logs the agent skills it ran with (name and content hash).
 
 **Alert summarizer** (`internal/shipper`, the shipper's model, no tools): each new alert becomes a short notification for the shipper's own staff saying what it means for them. It stays on the node (an `alert summary` log line and a `summary` entry on the activity stream) and never goes into an envelope.
 - **Trigger:** the inbound handler records the alert, then queues it. Two workers write notifications; an alert that finds the queue (16) full gets the template at once, so the push that carried it never waits on a model. At shutdown, the call in progress is cancelled and what is queued gets the template.
-- **Cause check, before the model:** the alert's `causeEventIds` are the operator's claims. Each is checked against the shipper's own log for that booking. Only the events it holds signed copies of reach the model, in the alert and in every earlier alert shown. The rest are reported as `unheldCauses`; their count goes into the impact block, and the notification says some cited events haven't arrived.
+- **Cause check, before the model:** the alert's `cause_event_ids` are the operator's claims. Each is checked against the shipper's own log for that booking. Only the events it holds signed copies of reach the model, in the alert and in every earlier alert shown. The rest are reported as `unheldCauses`; their count goes into the impact block, and the notification says some cited events haven't arrived.
 - **Impact, computed:** the alert's new ETA (its UTC date; ETAs are UTC) is compared with the shipment's receiving-slot date and its `requiredBy` date, from the business context, and the worse result counts (the slot, on a tie). After a date is `misses`, on that day or the day before is `tight`, earlier is `ok`, and no ETA or no dates is `unknown`. The precision is a day: the business dates are compared as written, not in the warehouse's time zone, and the slot's window is not used. The model is told the assessment is authoritative; the entry carries it whatever the text says.
 - **Prompt layout:** `<booking>` (route, vessel, planned arrival, cargo), `<records>` (the latest 20, plus the alert and its causes), `<alert>`, `<business>` (this shipment's dates and notes, and the general notes) and `<impact>`, each as JSON, so the operator's text can't close its block. The system prompt says the carrier's text is data. The built-in `alert-summary` skill, then the company's, follow the rules.
 - **Output and validation:** `{notification, citedEventIds}`, read as strictly as the inquiry answer; plain text of at most 600 characters, no control or format characters; every citation one of this booking's records shown, once. Retry once, then the template, e.g. "Delay on OB-BKG-1042: arrival in Newark moves from 2026-10-13 08:00 UTC to 2026-10-16 08:00 UTC (AL-…). ocean-blue.example gives the reason: “…”. Arriving on 2026-10-16, it misses your receiving slot on 2026-10-15 (08:00-12:00 at Cymbal Newark DC, dock 4). It is also after your required-by date of 2026-10-15." The model is asked for plain text without Markdown, but only control and format characters are refused. The fake model writes the template through the same validation path.

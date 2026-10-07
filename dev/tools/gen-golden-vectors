@@ -80,7 +80,7 @@ def seal(payload: bytes, key, alg=ALG, kid=KID, typ=TYP):
 def header(intent, sender, receiver, booking_ref=None, in_reply_to=None, correlation_id=None):
     mid = str(uuid.uuid4())
     return {
-        "ulpVersion": "0.2-demo",
+        "ulpVersion": "0.3-demo",
         "intent": intent,
         "messageId": mid,
         "correlationId": correlation_id or mid,
@@ -119,11 +119,23 @@ def payloads():
         "body": {"question": "Café 東京 \U0001F600 <&> \"quoted\"\n\ttab \u007f\u0001 — ETA?"},
         "attachments": {"delegation": {"protected": "e30", "payload": "e30", "signature": "AA"}},
     }
-    return request, confirmation, inquiry
+    event_header = header("ulp.tnt.event", ob, cy, booking_ref="OB-BKG-1042")
+    event_header["dialect"] = {"standard": "DCSA_TNT", "version": "2.2.0",
+                               "schema_url": "https://dcsa.org/standards/track-and-trace"}
+    event = {
+        "header": event_header,
+        "body": {"event_id": "EV-0014", "event_type": "EQUIPMENT", "event_classifier_code": "ACT",
+                 "event_date_time": "2026-10-07T11:20:00Z", "event_type_code": "LOAD",
+                 "description": "Container OCBU1234565 loaded at Port of Rotterdam",
+                 "un_location_code": "NLRTM", "facility_name": "Port of Rotterdam",
+                 "vessel_name": None, "voyage_number": None, "equipment_reference": "OCBU1234565"},
+        "attachments": {"delegation": None},
+    }
+    return request, confirmation, inquiry, event
 
 
 def vectors(key, other):
-    request, confirmation, inquiry = payloads()
+    request, confirmation, inquiry, event = payloads()
     out = []
 
     def add(name, wire_obj, payload_text, error):
@@ -136,6 +148,7 @@ def vectors(key, other):
         ("confirmation_numbers", confirmation, lambda o: json.dumps(o)),
         ("inquiry_unicode_raw_utf8_indented", inquiry, lambda o: json.dumps(o, ensure_ascii=False, indent=2)),
         ("inquiry_escaped_ascii", inquiry, lambda o: json.dumps(o, ensure_ascii=True)),
+        ("tnt_event_with_dialect", event, lambda o: json.dumps(o)),
     ]:
         text = dump(obj)
         add(name, seal(text.encode("utf-8"), key), text, None)
@@ -167,6 +180,13 @@ def vectors(key, other):
     extra = json.loads(req_text)
     extra["header"]["priority"] = "high"
     add("signed_unknown_header_member", seal(json.dumps(extra).encode("utf-8"), key), None, "malformed")
+    # The optional dialect member, signed, but not as the profile allows.
+    for name, dialect in [("signed_dialect_unknown_member", dict(event["header"]["dialect"], extra="x")),
+                          ("signed_dialect_null", None),
+                          ("signed_dialect_number_version", dict(event["header"]["dialect"], version=2.2))]:
+        bad = json.loads(json.dumps(event))
+        bad["header"]["dialect"] = dialect
+        add(name, seal(json.dumps(bad).encode("utf-8"), key), None, "malformed")
     # A second "body" member, signed: parsers disagree on which one wins.
     dup = req_text.replace('"attachments":', '"body":{},"attachments":', 1)
     add("signed_duplicate_member", seal(dup.encode("utf-8"), key), None, "malformed")

@@ -17,6 +17,7 @@ package activity
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -43,13 +44,13 @@ func SlogSink(l *slog.Logger) func(Entry) {
 		case e.Record != nil && e.Record.Event != nil:
 			r, ev := e.Record, e.Record.Event
 			attrs := []slog.Attr{slog.String("booking", r.Booking), slog.String("eventId", ev.EventID),
-				slog.String("event", ev.EventType+" "+ev.EventCode+" "+ev.EventClassifierCode),
-				slog.String("at", ev.EventDateTime), slog.String("location", ev.Location.UNLocode)}
-			if ev.EquipmentRef != "" {
-				attrs = append(attrs, slog.String("container", ev.EquipmentRef))
+				slog.String("event", ev.EventType+" "+ev.EventTypeCode+" "+ev.EventClassifierCode),
+				slog.String("at", ev.EventDateTime), slog.String("location", ev.UNLocationCode)}
+			if ev.EquipmentReference != "" {
+				attrs = append(attrs, slog.String("container", ev.EquipmentReference))
 			}
-			if ev.Transport != nil {
-				attrs = append(attrs, slog.String("vessel", ev.Transport.Vessel+" "+ev.Transport.Voyage))
+			if ev.VesselName != "" {
+				attrs = append(attrs, slog.String("vessel", strings.TrimSpace(ev.VesselName+" "+ev.VoyageNumber)))
 			}
 			l.LogAttrs(ctx, slog.LevelInfo, "event "+r.Action, attrs...)
 		case e.Record != nil && e.Record.Alert != nil:

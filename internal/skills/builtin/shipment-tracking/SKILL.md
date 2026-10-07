@@ -10,7 +10,7 @@ description: How to tell a shipper's staff where their shipments are, from the s
 - `list_shipments` gives each booking at a glance: status, ETA, latest
   event, number of alerts. `get_events` gives one booking's signed events
   and alerts, oldest first.
-- An event's `eventClassifierCode` says what kind of fact it is: `ACT`
+- An event's `event_classifier_code` says what kind of fact it is: `ACT`
   happened, `EST` is an estimate, `PLN` a plan. Never present an estimate
   as a certainty.
 - Event codes: `GTIN` gate-in, `LOAD` loaded, `DEPA` departed, `ARRI`

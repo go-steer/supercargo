@@ -48,7 +48,7 @@ import (
 
 const (
 	// Version is the ulpVersion this package produces and accepts.
-	Version = "0.2-demo"
+	Version = "0.3-demo"
 
 	// Type is the JWS "typ" of an envelope. A distinct typ keeps any other
 	// JWS, a delegation token in particular, from being taken for one.
@@ -100,6 +100,8 @@ var (
 	payloadMembers     = []string{"header", "body", "attachments"}
 	headerMembers      = []string{"ulpVersion", "intent", "messageId", "correlationId", "inReplyTo", "sentAt", "sender", "receiver", "bookingRef"}
 	nullableHeader     = map[string]bool{"inReplyTo": true, "bookingRef": true}
+	optionalHeader     = []string{"dialect"} // absent when unset; an object when present
+	dialectMembers     = []string{"standard", "version", "schema_url"}
 	attachmentsMembers = []string{"delegation"}
 )
 
@@ -133,6 +135,10 @@ func (u *Unverified) Alg() string { return u.alg }
 // decide anything.
 func (u *Unverified) ClaimedHeader() Header {
 	h := u.env.Header
+	if h.Dialect != nil {
+		d := *h.Dialect
+		h.Dialect = &d
+	}
 	h.InReplyTo = clone(h.InReplyTo)
 	h.BookingRef = clone(h.BookingRef)
 	return h
@@ -299,9 +305,20 @@ func checkPayloadShape(payload []byte) error {
 	if err != nil {
 		return err
 	}
-	header, err := rawObject(top["header"], "header", headerMembers)
+	header, err := rawObject(top["header"], "header", headerMembers, optionalHeader...)
 	if err != nil {
 		return err
+	}
+	if d, ok := header["dialect"]; ok {
+		dm, err := rawObject(d, "header.dialect", dialectMembers)
+		if err != nil {
+			return err
+		}
+		for _, k := range dialectMembers {
+			if kind(dm[k]) != '"' {
+				return fmt.Errorf("header.dialect.%s is not a string", k)
+			}
+		}
 	}
 	for _, k := range headerMembers {
 		switch kind(header[k]) {
@@ -331,7 +348,8 @@ func checkPayloadShape(payload []byte) error {
 
 // rawObject decodes one level of a JSON object that strictjson.Valid has
 // accepted (so its keys are unique) and checks its member names exactly.
-func rawObject(data json.RawMessage, name string, members []string) (map[string]json.RawMessage, error) {
+// Members in optional may be absent; every other member must be present.
+func rawObject(data json.RawMessage, name string, members []string, optional ...string) (map[string]json.RawMessage, error) {
 	if kind(data) != '{' {
 		return nil, fmt.Errorf("%s is not a JSON object", name)
 	}
@@ -339,7 +357,7 @@ func rawObject(data json.RawMessage, name string, members []string) (map[string]
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
-	if err := exactMembers(m, name, members); err != nil {
+	if err := exactMembers(m, name, members, optional...); err != nil {
 		return nil, err
 	}
 	return m, nil
@@ -355,10 +373,11 @@ func kind(v json.RawMessage) byte {
 	return v[0]
 }
 
-// exactMembers asserts that m has exactly the given members.
-func exactMembers[V any](m map[string]V, name string, members []string) error {
+// exactMembers asserts that m has exactly the given members, and at most
+// the optional ones besides.
+func exactMembers[V any](m map[string]V, name string, members []string, optional ...string) error {
 	for k := range m {
-		if !slices.Contains(members, k) {
+		if !slices.Contains(members, k) && !slices.Contains(optional, k) {
 			return fmt.Errorf("%s has unknown member %s", name, logsafe.Quote(k))
 		}
 	}

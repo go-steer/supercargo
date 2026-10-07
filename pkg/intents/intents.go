@@ -26,6 +26,7 @@ package intents
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/internal/logsafe"
@@ -87,7 +88,10 @@ type spec struct {
 	bookingRef presence
 	inReplyTo  presence
 	delegation presence
-	newBody    func() Body
+	// dialect is the payload schema the header must name, for an intent
+	// with a standard payload; nil forbids a dialect (a ULP extension).
+	dialect *envelope.Dialect
+	newBody func() Body
 }
 
 // specs are the intents this package decodes. Delegation bodies join with
@@ -96,7 +100,7 @@ var specs = map[string]spec{
 	BookingRequest:      {bookingRef: forbidden, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &BookingRequestBody{} }},
 	BookingConfirmation: {bookingRef: required, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &BookingConfirmationBody{} }},
 	Error:               {bookingRef: optional, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &ErrorBody{} }},
-	TnTEvent:            {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &TnTEventBody{} }},
+	TnTEvent:            {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, dialect: &DialectDCSATnT, newBody: func() Body { return &TnTEventBody{} }},
 	TnTAlert:            {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &TnTAlertBody{} }},
 	TnTInquiry:          {bookingRef: required, inReplyTo: forbidden, delegation: optional, newBody: func() Body { return &TnTInquiryBody{} }},
 	TnTInquiryResponse:  {bookingRef: required, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &TnTInquiryResponseBody{} }},
@@ -120,6 +124,7 @@ func Decode(e *envelope.Envelope) (Body, error) {
 		s.bookingRef.check(e.Header.BookingRef != nil, "bookingRef"),
 		s.inReplyTo.check(e.Header.InReplyTo != nil, "inReplyTo"),
 		s.delegation.check(len(e.Attachments.Delegation) > 0, "attachments.delegation"),
+		checkDialect(s.dialect, e.Header.Dialect),
 	); err != nil {
 		return nil, fmt.Errorf("%w: %s: %w", ErrInvalidBody, e.Header.Intent, err)
 	}
@@ -134,6 +139,39 @@ func Decode(e *envelope.Envelope) (Body, error) {
 		return nil, fmt.Errorf("%w: %s: %w", ErrInvalidBody, e.Header.Intent, err)
 	}
 	return b, nil
+}
+
+// checkDialect requires the header to name exactly want (standard and
+// version; the schema URL is informative), or no dialect when want is nil.
+func checkDialect(want, got *envelope.Dialect) error {
+	switch {
+	case want == nil && got != nil:
+		return errors.New("header.dialect is not allowed")
+	case want == nil:
+		return nil
+	case got == nil:
+		return fmt.Errorf("header.dialect is required (%s %s)", want.Standard, want.Version)
+	case got.Standard != want.Standard || got.Version != want.Version:
+		return fmt.Errorf("header.dialect %s %s is not %s %s", logsafe.Quote(got.Standard), logsafe.Quote(got.Version), want.Standard, want.Version)
+	}
+	return nil
+}
+
+// HeaderFor returns a new header for intent from sender to receiver,
+// naming the intent's payload dialect if it has one.
+func HeaderFor(intent, sender, receiver string, now time.Time) envelope.Header {
+	h := envelope.NewHeader(intent, sender, receiver, now)
+	SetDialect(&h)
+	return h
+}
+
+// SetDialect sets h's dialect to the one h's intent requires (or none).
+func SetDialect(h *envelope.Header) {
+	h.Dialect = nil
+	if s, ok := specs[h.Intent]; ok && s.dialect != nil {
+		d := *s.dialect
+		h.Dialect = &d
+	}
 }
 
 // crossCheck applies rules that tie a body to its header.

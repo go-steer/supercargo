@@ -119,10 +119,10 @@ func TestSlowSubscriberIsCutOff(t *testing.T) {
 func TestSlogSink(t *testing.T) {
 	var buf bytes.Buffer
 	sink := SlogSink(slog.New(slog.NewJSONHandler(&buf, nil)))
-	ev := &intents.TnTEventBody{EventID: "EV-1", EventType: "EQUIPMENT", EventCode: "GTIN", EventClassifierCode: "ACT",
-		EventDateTime: "2026-10-07T11:00:00Z", Location: intents.Location{UNLocode: "NLRTM"}, EquipmentRef: "OCBU0000004"}
-	dep := &intents.TnTEventBody{EventID: "EV-2", EventType: "TRANSPORT", EventCode: "DEPA", EventClassifierCode: "ACT",
-		EventDateTime: "2026-10-07T18:00:00Z", Location: intents.Location{UNLocode: "NLRTM"}, Transport: &intents.Transport{Vessel: "Aurora", Voyage: "42W"}}
+	ev := &intents.TnTEventBody{EventID: "EV-1", EventType: "EQUIPMENT", EventTypeCode: "GTIN", EventClassifierCode: "ACT",
+		EventDateTime: "2026-10-07T11:00:00Z", UNLocationCode: "NLRTM", Description: "An event", EquipmentReference: "OCBU0000004"}
+	dep := &intents.TnTEventBody{EventID: "EV-2", EventType: "TRANSPORT", EventTypeCode: "DEPA", EventClassifierCode: "ACT",
+		EventDateTime: "2026-10-07T18:00:00Z", UNLocationCode: "NLRTM", Description: "An event", VesselName: "Aurora", VoyageNumber: "42W"}
 	al := &intents.TnTAlertBody{AlertID: "AL-1", Kind: "delay", Severity: "high", Summary: "Late.", PreviousETA: "a", NewETA: "b", CauseEventIDs: []string{"EV-2"}}
 	for _, e := range []Entry{
 		{Kind: KindEnvelope, Envelope: &Envelope{Direction: "in", Intent: "ulp.tnt.inquiry", Sender: "x.example", Via: "a2a", Verified: true, Outcome: "rejected", Code: "forbidden", Reason: "not a party"}},

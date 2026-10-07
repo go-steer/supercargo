@@ -53,7 +53,7 @@ func profileMap(t testing.TB, kids ...string) map[string]any {
 		keys = append(keys, m)
 	}
 	return map[string]any{
-		"protocolVersion": "0.2-demo",
+		"protocolVersion": "0.3-demo",
 		"party":           map[string]any{"domain": domain, "name": "Ocean Blue", "roles": []any{"operator"}},
 		"services": []any{map[string]any{
 			"name":       "ulp.freight",
@@ -175,7 +175,7 @@ func TestParseProfileRejects(t *testing.T) {
 	}
 	good := encode(t, profileMap(t))
 	for name, in := range map[string][]byte{
-		"duplicate member": []byte(strings.Replace(string(good), `"protocolVersion":"0.2-demo"`, `"protocolVersion":"0.1","protocolVersion":"0.2-demo"`, 1)),
+		"duplicate member": []byte(strings.Replace(string(good), `"protocolVersion":"0.3-demo"`, `"protocolVersion":"0.1","protocolVersion":"0.3-demo"`, 1)),
 		"not JSON":         []byte("profile"),
 		"oversize":         append(good[:len(good)-1], []byte(`,"pad":"`+strings.Repeat("x", MaxProfileSize)+`"}`)...),
 	} {

@@ -62,9 +62,9 @@ func (p *published) list() []intents.Body {
 func summary(b intents.Body) string {
 	switch b := b.(type) {
 	case *intents.TnTEventBody:
-		s := b.EventCode + " " + b.EventClassifierCode
-		if b.EquipmentRef != "" {
-			s += " " + b.EquipmentRef
+		s := b.EventTypeCode + " " + b.EventClassifierCode
+		if b.EquipmentReference != "" {
+			s += " " + b.EquipmentReference
 		}
 		return s
 	case *intents.TnTAlertBody:
@@ -155,10 +155,10 @@ func TestVoyage(t *testing.T) {
 		t.Errorf("voyage:\n got %v\nwant %v", got, want)
 	}
 	evs := s.pub.list()
-	if dep := evs[4].(*intents.TnTEventBody); dep.EventDateTime != "2026-10-07T18:00:00Z" || dep.Transport.Vessel != "Ocean Blue Aurora" || dep.Location.UNLocode != "NLRTM" {
+	if dep := evs[4].(*intents.TnTEventBody); dep.EventDateTime != "2026-10-07T18:00:00Z" || dep.VesselName != "Ocean Blue Aurora" || dep.UNLocationCode != "NLRTM" || dep.Description != "Ocean Blue Aurora 42W departed Port of Rotterdam" {
 		t.Errorf("departure %+v", dep)
 	}
-	if arr := evs[6].(*intents.TnTEventBody); arr.EventDateTime != "2026-10-13T08:00:00Z" || arr.Location.UNLocode != "USEWR" {
+	if arr := evs[6].(*intents.TnTEventBody); arr.EventDateTime != "2026-10-13T08:00:00Z" || arr.UNLocationCode != "USEWR" || arr.FacilityName != "Port of Newark" {
 		t.Errorf("arrival %+v", arr)
 	}
 	// A finished voyage is forgotten.
@@ -204,7 +204,7 @@ func TestDisrupt(t *testing.T) {
 		t.Fatalf("Disrupt published %d bodies, want an estimate and an alert", len(got))
 	}
 	est := got[0].(*intents.TnTEventBody)
-	if est.EventCode != "ARRI" || est.EventClassifierCode != intents.ClassifierEstimated || est.EventDateTime != "2026-10-16T08:00:00Z" {
+	if est.EventTypeCode != "ARRI" || est.EventClassifierCode != intents.ClassifierEstimated || est.EventDateTime != "2026-10-16T08:00:00Z" {
 		t.Errorf("new estimate %+v", est)
 	}
 	if got[1] != intents.Body(alert) || alert.Kind != intents.AlertDelay || alert.Severity != intents.SeverityHigh ||
@@ -221,7 +221,7 @@ func TestDisrupt(t *testing.T) {
 	s.advance(72 * time.Second)
 	last := s.pub.list()
 	arr := last[len(last)-2].(*intents.TnTEventBody)
-	if arr.EventCode != "ARRI" || arr.EventClassifierCode != intents.ClassifierActual || arr.EventDateTime != "2026-10-16T08:00:00Z" {
+	if arr.EventTypeCode != "ARRI" || arr.EventClassifierCode != intents.ClassifierActual || arr.EventDateTime != "2026-10-16T08:00:00Z" {
 		t.Errorf("arrival %+v", arr)
 	}
 	if _, err := s.sim.Disrupt(ref, time.Hour, "Late."); !errors.Is(err, ErrArrived) {
@@ -232,9 +232,9 @@ func TestDisrupt(t *testing.T) {
 	s.advance(30 * time.Second)
 	last = s.pub.list()
 	disc, gtot := last[len(last)-2].(*intents.TnTEventBody), last[len(last)-1].(*intents.TnTEventBody)
-	if disc.EventCode != "DISC" || disc.EventDateTime != "2026-10-16T14:00:00Z" ||
-		gtot.EventCode != "GTOT" || gtot.EventDateTime != "2026-10-17T14:00:00Z" {
-		t.Errorf("after the delay: %s at %s, %s at %s", disc.EventCode, disc.EventDateTime, gtot.EventCode, gtot.EventDateTime)
+	if disc.EventTypeCode != "DISC" || disc.EventDateTime != "2026-10-16T14:00:00Z" ||
+		gtot.EventTypeCode != "GTOT" || gtot.EventDateTime != "2026-10-17T14:00:00Z" {
+		t.Errorf("after the delay: %s at %s, %s at %s", disc.EventTypeCode, disc.EventDateTime, gtot.EventTypeCode, gtot.EventDateTime)
 	}
 }
 
@@ -301,7 +301,7 @@ func TestDisruptRejects(t *testing.T) {
 		s.advance(time.Second)
 	}
 	for _, b := range s.pub.list() {
-		if e := b.(*intents.TnTEventBody); e.EventCode == "ARRI" && e.EventDateTime != "2026-10-13T08:00:00Z" {
+		if e := b.(*intents.TnTEventBody); e.EventTypeCode == "ARRI" && e.EventDateTime != "2026-10-13T08:00:00Z" {
 			t.Errorf("a refused disruption moved the arrival: %+v", e)
 		}
 	}
@@ -411,5 +411,27 @@ func TestRunAndClose(t *testing.T) {
 	(&Simulator{}).Close()
 	if got := fmt.Sprint(len(pub.list())); got != "7" {
 		t.Errorf("%s events", got)
+	}
+}
+
+// TestLongNamesStillPublish: a 128-character place or vessel name (the
+// booking's limits) still makes valid events: the facility and the
+// description are cut to theirs.
+func TestLongNamesStillPublish(t *testing.T) {
+	long := strings.Repeat("x", 128)
+	tl := &timeline{booking: store.Booking{Ref: "OB-1",
+		Request:      intents.BookingRequestBody{Destination: intents.Location{UNLocode: "USEWR", Name: long}},
+		Confirmation: intents.BookingConfirmationBody{Vessel: &intents.Vessel{Name: long, Voyage: "42W"}}},
+		arrival: time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)}
+	s := &Simulator{}
+	ev := s.estimate("EV-1", tl, strings.Repeat("r", 280)).(*intents.TnTEventBody)
+	if err := ev.Validate(); err != nil {
+		t.Errorf("estimate with long names: %v", err)
+	}
+	if f := facility(intents.Location{Name: long}); len([]rune(f)) != 128 || !strings.HasSuffix(f, "…") {
+		t.Errorf("facility %d characters", len([]rune(f)))
+	}
+	if d := describe("%s %s departed %s", long, "42W", facility(intents.Location{Name: long})); len([]rune(d)) > 280 {
+		t.Errorf("description %d characters", len([]rune(d)))
 	}
 }
