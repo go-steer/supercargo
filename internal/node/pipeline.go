@@ -202,6 +202,13 @@ func (n *Node) sealReply(h *envelope.Header, reply *Reply, via string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
+	// Replies are outbound too: the same guard as requests (fail closed:
+	// the sender gets a bare 500, nothing signed).
+	if n.cfg.OutboundGuard != nil {
+		if err := n.cfg.OutboundGuard(b); err != nil {
+			return nil, fmt.Errorf("node: refused to reply %s: %w", reply.Body.Intent(), err)
+		}
+	}
 	rh := h.Reply(reply.Body.Intent(), n.cfg.Now())
 	if rh.Sender != n.cfg.Domain {
 		// Unreachable through Process, which only replies to envelopes

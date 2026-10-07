@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/activity"
+	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/internal/llm"
@@ -63,6 +64,8 @@ type App struct {
 	Events *store.EventLog
 	Server *http.Server
 	Logger *slog.Logger
+	// Business is the shipper's private business context (nil if none).
+	Business *business.Context
 	// Activity is the node's activity stream: the log's source, served live
 	// on the control API at /events.
 	Activity *activity.Bus
@@ -142,6 +145,13 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		handlers[intents.TnTEvent] = inbound
 		handlers[intents.TnTAlert] = inbound
 	}
+	var guard func([]byte) error
+	if cfg.Business != nil {
+		if a.Business, err = business.Load(cfg.Business.File); err != nil {
+			return nil, err
+		}
+		guard = a.Business.Guard()
+	}
 	restURL, a2aURL := "", ""
 	if cfg.Role == config.RoleOperator {
 		// The operator's agent serves the shipment-inquiry skill.
@@ -162,7 +172,11 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		Handlers: handlers,
 		Poster:   client,
 		A2A:      a2aClient,
-		Observer: a.observe,
+		// Defence in depth for the shipper's private business context:
+		// nothing builds an envelope from it, and this refuses any that
+		// would carry its text.
+		OutboundGuard: guard,
+		Observer:      a.observe,
 	})
 	if err != nil {
 		return nil, err

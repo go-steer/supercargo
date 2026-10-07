@@ -111,6 +111,11 @@ func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Bod
 	if err != nil {
 		return nil, err
 	}
+	if n.cfg.OutboundGuard != nil {
+		if err := n.cfg.OutboundGuard(b); err != nil {
+			return nil, fmt.Errorf("node: refused to send %s: %w", h.Intent, err)
+		}
+	}
 	out := &envelope.Envelope{Header: h, Body: b}
 	msg, err := envelope.Seal(out, n.cfg.KID, n.cfg.Signer)
 	if err != nil {

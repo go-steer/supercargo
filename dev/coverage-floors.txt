@@ -58,6 +58,7 @@ github.com/go-steer/supercargo/internal/operator        96.0  # 97.2
 github.com/go-steer/supercargo/internal/shipper         97.0  # 98.2
 github.com/go-steer/supercargo/internal/store          100.0
 github.com/go-steer/supercargo/internal/activity        93.0  # 94.7
+github.com/go-steer/supercargo/internal/business        97.0  # 98.8
 github.com/go-steer/supercargo/internal/llm            100.0
 github.com/go-steer/supercargo/internal/llm/fake       100.0
 github.com/go-steer/supercargo/internal/llm/anthropic   97.0  # 98.5

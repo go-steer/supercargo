@@ -22,9 +22,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/business"
+	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/discovery"
 	"github.com/go-steer/supercargo/pkg/envelope"
@@ -65,6 +68,41 @@ func get(t *testing.T, h http.Handler, path string, v any) int {
 		t.Fatalf("%s: %v (%s)", path, err, rec.Body)
 	}
 	return rec.Code
+}
+
+// TestControlLeakRefusal: a send the business-context guard refuses is a
+// 422 that says why, not a 502 blaming the partner.
+func TestControlLeakRefusal(t *testing.T) {
+	biz, err := business.Parse([]byte(`notes: ["Spring launch stock: shelves full by the 16th"]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := shipperWith(t, func(envelope.Header) (string, any) { return intents.TnTInquiryResponse, nil },
+		func(c *node.Config) { c.OutboundGuard = biz.Guard() })
+	_ = s.Bookings.Add(store.Booking{Ref: "OB-BKG-1", Operator: "ocean-blue.example", Shipper: "cymbal-shoes.example"})
+	h := ControlHandler(s, profiles{})
+	b, _ := json.Marshal(AskRequest{BookingRef: "OB-BKG-1", Question: "Spring launch stock: shelves full by the 16th. Possible?"})
+	req := httptest.NewRequest(http.MethodPost, "/ask", strings.NewReader(string(b)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var resp AskResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(resp.Error, "private business context") {
+		t.Errorf("a leaking question: HTTP %d %q", rec.Code, resp.Error)
+	}
+	bb, _ := json.Marshal(BookRequest{Operator: "ocean-blue.example", Request: func() intents.BookingRequestBody {
+		r := *request()
+		r.Cargo.Description = "Spring launch stock: shelves full by the 16th"
+		return r
+	}()})
+	req = httptest.NewRequest(http.MethodPost, "/book", strings.NewReader(string(bb)))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("a leaking booking: HTTP %d %s", rec.Code, rec.Body)
+	}
 }
 
 func TestControlReads(t *testing.T) {

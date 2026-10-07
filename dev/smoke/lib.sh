@@ -101,6 +101,19 @@ $peers
 partners: [ocean-blue.example]
 control:
   socket: $dir/cy.sock
+business:
+  file: $dir/business.yaml   # private: never in an envelope
+EOF
+
+  # Cymbal's private business context: what the delay will mean to it.
+  cat >"$dir/business.yaml" <<'EOF'
+shipments:
+  - shipperRef: CY-PO-55120
+    requiredBy: 2026-10-15
+    receivingSlot: { date: 2026-10-15, window: "08:00-12:00", warehouse: "Cymbal Newark DC, dock 4" }
+    notes: "Spring launch stock: shelves must be full by Friday the 16th"
+notes:
+  - "Tell the launch team about any delay that puts the receiving slot at risk"
 EOF
 
   cat >"$dir/booking.json" <<'EOF'
