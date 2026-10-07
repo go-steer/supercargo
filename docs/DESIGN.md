@@ -704,16 +704,23 @@ Each model call logs the agent skills it ran with (name and content hash).
 
 **The Anthropic adapter** (`internal/llm/anthropic`, derived from mast's provider) sends the system prompt (cached), the messages, and, for a request with a JSON schema, a single `respond` tool whose input schema is that schema, with `tool_choice` forcing it. The tool call's input is the reply, and it is still validated like any model output. It talks to Anthropic's API directly, not through the outbound guard, because that host comes from the operator's own configuration, not from a partner. The SDK's environment defaults are switched off: they would take a base URL (`ANTHROPIC_BASE_URL`, a profile file), other credentials and extra headers from the environment, any of which could send the key to another host. A JSON reply that stopped early (`max_tokens`) is an error, even if what arrived parses, so the template fallback runs. The key never appears in the config file, only the name of the environment variable holding it, and a node configured for Claude without one doesn't start. A real-model test (`TestRealModelInquiry`) is opt-in (`SUPERCARGO_REAL_LLM=1`) and never part of `dev/tools/ci`.
 
-**LLM #1: shipper assistant** (in `ulpchat`, using tools against the node's internal API)
+**LLM #1: shipper assistant** (`internal/assistant`, behind `ulpchat` and the browser UI's chat; its tools use the node's control API)
 
 | Tool | Effect | Guard |
 |---|---|---|
-| `get_operator_profile(domain)` | Fetch and summarize a profile | Read-only |
-| `draft_booking(fields…)` | Create a draft | **No network send**. Returns a draft ID |
-| *(no tool)* send booking | n/a | **Only the CLI** sends, after an explicit `y` from the user |
-| `list_shipments()`, `get_events(bookingRef)` | Read the local store | Read-only |
-| `ask_operator(bookingRef, question)` | Send `tnt.inquiry` | Booking must exist locally; question length cap |
-| `grant_tracking_access(bookingRef, domain)` | Draft a delegation | CLI confirmation required |
+| `get_operator_profile(domain)` | Fetch a verified profile through the node | Read-only; the user named the domain |
+| `draft_booking(fields…)` | Create a draft | **No network send**. Returns a draft ID and the exact request; the carrier and consignee domains must be ones the user named; the body must validate. `requiredBy` stays in the draft, never in the request |
+| *(no tool)* send booking | n/a | **Only the confirmation dialog** sends (`POST /book`), after an explicit `y` from the user |
+| `list_shipments()`, `get_events(bookingRef)` | Read the node's store | Read-only; our bookings only; the latest 30 records |
+| `ask_operator(bookingRef, question)` | Send `tnt.inquiry` through the node | The booking must be ours; the question passes the body's rules and mentions no private date or note; at most 2 per turn, one per booking; the node's business guard applies too |
+| `grant_tracking_access(bookingRef, domain)` | Draft a delegation (milestone 7) | Dialog confirmation required |
+
+- **The loop:** each turn sends the conversation, the tools and the system prompt (rules first, then the built-in `freight-booking` and `shipment-tracking` skills and the company's). Every call is checked with `llm.ValidateCall` and the tool's own rules before it runs. A refused or failed call goes back to the model as an error result, so it can explain or ask. At most 8 calls per response and 6 model calls per turn; past that the turn stops with a fixed message. Every model call and tool call is reported (for the log and the UI). A model error leaves the conversation as it was.
+- **The counterparty rule, in code:** a domain counts as named only if it is a whole word of the user's own messages in this conversation (split at spaces and punctuation other than `.`, `-` and `_`; trailing dots dropped). Tool results (a profile, an answer) never count.
+- **Private dates stay home, in code:** a question to a carrier is refused if it mentions an open draft's `requiredBy`, or a date or note the caller marks private (the business context), in the usual forms (`2026-10-15`, `Oct 15`, `15 October`, `the 15th`). The node's guard can't catch dates, so this check does.
+- **History:** at most 30 turns are kept, and tool results older than the two previous turns are replaced by a stub (the model can call the tool again), so a long session stays inside the model's context. Calls with a missing or repeated ID get fresh ones, and an input that isn't an object is refused and kept as `{}`, so the history stays valid for the provider. One turn at a time per conversation. A model error rolls the conversation back, but drafts already made are still reported.
+- **Replies** are shown as text: control and format characters are removed, and they are capped at 6,000 characters. Tool names and errors shown to the UI are cleaned the same way; tool inputs are the model's JSON, for the UI to render escaped.
+- **Fake model:** `llm.provider: fake` is a rule-based stand-in for the demo's scenes (discovery, booking, tracking, asking), calling the same tools through the same checks.
 
 **Alert summarizer** (`internal/shipper`, the shipper's model, no tools): each new alert becomes a short notification for the shipper's own staff saying what it means for them. It stays on the node (an `alert summary` log line and a `summary` entry on the activity stream) and never goes into an envelope.
 - **Trigger:** the inbound handler records the alert, then queues it. Two workers write notifications; an alert that finds the queue (16) full gets the template at once, so the push that carried it never waits on a model. At shutdown, the call in progress is cancelled and what is queued gets the template.
