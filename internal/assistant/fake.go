@@ -25,6 +25,7 @@ import (
 
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/llm/fake"
+	"github.com/go-steer/supercargo/internal/ports"
 	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -84,7 +85,7 @@ var (
 	countPattern   = regexp.MustCompile(`(?i)\b([0-9]{1,3}|one|two|three|four|five)\s*(?:x\s*)?(?:20|40|45)`)
 )
 
-var ports = []struct{ name, code string }{
+var portNames = []struct{ name, code string }{
 	{"rotterdam", "NLRTM"}, {"newark", "USEWR"}, {"hamburg", "DEHAM"}, {"antwerp", "BEANR"},
 	{"shanghai", "CNSHA"}, {"singapore", "SGSIN"}, {"felixstowe", "GBFXT"}, {"los angeles", "USLAX"},
 }
@@ -185,18 +186,16 @@ func draftFrom(msgs []llm.Message, user string, now time.Time) map[string]any {
 		name, code string
 	}
 	var found []at
-	for _, p := range ports {
+	for _, p := range portNames {
 		if i := strings.Index(lower, p.name); i >= 0 {
 			found = append(found, at{i, p.name, p.code})
 		}
 	}
 	slices.SortFunc(found, func(a, b at) int { return a.i - b.i })
-	place := func(a at) map[string]string {
-		return map[string]string{"unLocode": a.code, "name": strings.ToUpper(a.name[:1]) + a.name[1:]}
-	}
 	if len(found) >= 2 {
-		in["origin"], in["destination"] = place(found[0]), place(found[1])
+		in["portOfLoading"], in["portOfDischarge"] = found[0].code, found[1].code
 	}
+	in["grossWeightKg"] = 12000 // a plausible estimate for a box of shoes
 	switch {
 	case strings.Contains(lower, "high-cube") || strings.Contains(lower, "high cube") || strings.Contains(lower, "40hc"):
 		in["containerType"] = "40HC"
@@ -279,8 +278,8 @@ func draftReply(content string) llm.GenerateResponse {
 	r := d.Request
 	e := r.Equipment[0]
 	out := fmt.Sprintf("Draft %s is ready: %d × %s of %s, %s (%s) → %s (%s), departing on or after %s, with %s.",
-		d.DraftID, e.Count, e.Label, r.Cargo.Description, r.Origin.Name, r.Origin.UNLocode, r.Destination.Name,
-		r.Destination.UNLocode, r.EarliestDeparture, d.To)
+		d.DraftID, e.Count, ports.SizeLabel(e.ISOType), r.Cargo.Description, ports.Name(r.PortOfLoading), r.PortOfLoading,
+		ports.Name(r.PortOfDischarge), r.PortOfDischarge, r.EarliestDeparture, d.To)
 	if rb := d.NotSent["requiredBy"]; rb != "" {
 		out += fmt.Sprintf(" Your deadline of %s stays with us.", rb)
 	}

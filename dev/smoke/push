@@ -33,7 +33,7 @@ smoke_start "$work"
 if ! out="$("$work/bin/ulpnode" book --config "$work/shipper.yaml" --operator ocean-blue.example --request "$work/booking.json" --yes 2>"$work/book.log")"; then
   smoke_fail "$work" "booking failed"
 fi
-ref="$(sed -n 's/.*"bookingRef": "\([^"]*\)".*/\1/p' <<<"$out")"
+ref="$(sed -n 's/.*"carrier_booking_reference": "\([^"]*\)".*/\1/p' <<<"$out")"
 [[ -n "$ref" ]] || smoke_fail "$work" "no booking reference in: $out"
 
 # Scene 3: the events arrive at the shipper, verified.
@@ -65,7 +65,7 @@ if ! st="$("$work/bin/ulpnode" status --config "$work/shipper.yaml" --booking "$
   smoke_fail "$work" "ulpnode status failed: $st"
 fi
 echo "$st"
-grep -q "reports $ref: IN_TRANSIT" <<<"$st" || smoke_fail "$work" "the status isn't IN_TRANSIT: $st"
+grep -q "reports $ref (transport document OB-TD-[0-9]*): IN_TRANSIT" <<<"$st" || smoke_fail "$work" "the status isn't IN_TRANSIT: $st"
 grep -q "ETA:      2026-10-16T08:00:00Z" <<<"$st" || smoke_fail "$work" "the status lacks the new ETA: $st"
 grep -qE '"intent":"ulp.ocean.tnt.request".*"verified":true.*"outcome":"accepted"' "$work/operator.log" ||
   smoke_fail "$work" "the operator logged no verified, accepted status request"

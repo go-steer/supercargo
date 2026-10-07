@@ -40,7 +40,7 @@ func statusReq(sender, ref string, q intents.TnTRequest) *node.Request {
 func TestStatusAuthorize(t *testing.T) {
 	f := newInquiryFixture(t, nil)
 	s := &StatusService{Bookings: f.svc.Bookings, Log: f.svc.Log}
-	q := intents.TnTRequest{TransportDocumentReference: "OB-BKG-1"}
+	q := intents.TnTRequest{TransportDocumentReference: "OB-TD-1"}
 	if err := s.Authorize(context.Background(), statusReq("cymbal-shoes.example", "OB-BKG-1", q)); err != nil {
 		t.Errorf("the shipper: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestStatusHandle(t *testing.T) {
 		}
 		return body.TnTResponse
 	}
-	st := handle(intents.TnTRequest{TransportDocumentReference: "OB-BKG-1", CarrierBookingReference: "OB-BKG-1"})
+	st := handle(intents.TnTRequest{TransportDocumentReference: "OB-TD-1", CarrierBookingReference: "OB-BKG-1"})
 	// The fixture's log: gate-in, departure, an arrival estimate, an alert.
 	if st.DCSAStatus != intents.StatusInTransit || st.VesselName != "Ocean Blue Aurora" || st.VoyageNumber != "42W" ||
 		st.PortOfLoading != "NLRTM" || st.PortOfDischarge != "USEWR" || st.EstimatedTimeOfArrival != "2026-10-16T08:00:00Z" ||
@@ -90,13 +90,13 @@ func TestStatusHandle(t *testing.T) {
 		}
 	}
 	// Equipment: only that container's equipment events (transport events stay).
-	if st := handle(intents.TnTRequest{TransportDocumentReference: "OB-BKG-1", EquipmentReference: "OCBU0000004"}); len(st.Events) != 3 {
+	if st := handle(intents.TnTRequest{TransportDocumentReference: "OB-TD-1", EquipmentReference: "OCBU0000004"}); len(st.Events) != 3 {
 		t.Errorf("by container: %d events", len(st.Events))
 	}
 	for name, q := range map[string]intents.TnTRequest{
-		"another document":  {TransportDocumentReference: "OB-BKG-2"},
-		"another booking":   {TransportDocumentReference: "OB-BKG-1", CarrierBookingReference: "OB-BKG-2"},
-		"another container": {TransportDocumentReference: "OB-BKG-1", EquipmentReference: "MSKU0000001"},
+		"another document":  {TransportDocumentReference: "OB-TD-2"},
+		"another booking":   {TransportDocumentReference: "OB-TD-1", CarrierBookingReference: "OB-BKG-2"},
+		"another container": {TransportDocumentReference: "OB-TD-1", EquipmentReference: "MSKU0000001"},
 	} {
 		if st := handle(q); st.DCSAStatus != intents.StatusNotFound || len(st.Events) != 0 || st.VesselName != "" {
 			t.Errorf("%s: %+v", name, st)
@@ -130,7 +130,7 @@ func TestStatusProgress(t *testing.T) {
 
 func (s *StatusService) status(t *testing.T, ref, shipper string) intents.TnTStatus {
 	t.Helper()
-	r, err := s.Handle(context.Background(), statusReq(shipper, ref, intents.TnTRequest{TransportDocumentReference: ref}))
+	r, err := s.Handle(context.Background(), statusReq(shipper, ref, intents.TnTRequest{TransportDocumentReference: "OB-TD" + strings.TrimPrefix(ref, "OB-BKG")}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,9 @@ func TestStatusDetails(t *testing.T) {
 	b, _ := f.svc.Bookings.Get("ocean-blue.example", "OB-BKG-2")
 	b2 := b
 	b2.Ref, b2.Shipper = "OB-BKG-3", "third.example"
-	b2.Confirmation.BookingRef, b2.Confirmation.EquipmentRefs = "OB-BKG-3", []string{"OCBU0000004", "OCBU0000015"}
+	b2.Confirmation.BookingRef = "OB-BKG-3"
+	b2.Confirmation.EBL.TransportDocumentReference = "OB-TD-3"
+	b2.Confirmation.EBL.Containers = []intents.ShippingContainer{{ContainerNumber: "OCBU0000004", EquipmentSizeType: "45G1", SealNumber: "S1", GrossWeightKg: 12000}, {ContainerNumber: "OCBU0000015", EquipmentSizeType: "45G1", SealNumber: "S2", GrossWeightKg: 12000}}
 	if err := f.svc.Bookings.Add(b2); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +167,7 @@ func TestStatusDetails(t *testing.T) {
 	conf := &intents.TnTEventBody{EventID: "EV-4", EventType: intents.EventTypeShipment, EventClassifierCode: intents.ClassifierActual,
 		EventTypeCode: "HOLD", EventDateTime: "2026-10-07T12:00:00Z", Description: "Customs hold", UNLocationCode: "BEANR"}
 	add(conf)
-	r, err := s.Handle(context.Background(), statusReq("third.example", "OB-BKG-3", intents.TnTRequest{TransportDocumentReference: "OB-BKG-3", EquipmentReference: "OCBU0000004"}))
+	r, err := s.Handle(context.Background(), statusReq("third.example", "OB-BKG-3", intents.TnTRequest{TransportDocumentReference: "OB-TD-3", EquipmentReference: "OCBU0000004"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +196,7 @@ func TestStatusFitsAnEnvelope(t *testing.T) {
 		raw, _ := json.Marshal(e)
 		_, _ = f.svc.Log.Add("ocean-blue.example", "OB-BKG-2", store.Record{ID: e.EventID, Intent: intents.TnTEvent, Body: raw})
 	}
-	r, err := s.Handle(context.Background(), statusReq("other-shipper.example", "OB-BKG-2", intents.TnTRequest{TransportDocumentReference: "OB-BKG-2"}))
+	r, err := s.Handle(context.Background(), statusReq("other-shipper.example", "OB-BKG-2", intents.TnTRequest{TransportDocumentReference: "OB-TD-2"}))
 	if err != nil {
 		t.Fatal(err)
 	}

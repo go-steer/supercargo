@@ -27,6 +27,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/go-steer/supercargo/internal/ports"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -291,10 +293,10 @@ type bookingFacts struct {
 }
 
 func shipperView(b store.Booking) bookingFacts {
-	v := bookingFacts{BookingRef: b.Ref, Operator: b.Operator, Origin: b.Request.Origin, Destination: b.Request.Destination,
+	v := bookingFacts{BookingRef: b.Ref, Operator: b.Operator, Origin: ports.Location(b.Request.PortOfLoading), Destination: ports.Location(b.Request.PortOfDischarge),
 		PlannedArrival: b.Confirmation.PlannedArrival, Cargo: b.Request.Cargo.Description}
-	if c := b.Confirmation.Vessel; c != nil {
-		v.Vessel = c.Name + " " + c.Voyage
+	if name, voyage := b.Confirmation.Vessel(); name != "" {
+		v.Vessel = name + " " + voyage
 	}
 	return v
 }

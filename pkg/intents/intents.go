@@ -35,8 +35,8 @@ import (
 
 // Intent names (docs/DESIGN.md, section A.5).
 const (
-	BookingRequest      = "ulp.booking.request"
-	BookingConfirmation = "ulp.booking.confirmation"
+	BookingRequest      = "ulp.ocean.booking.request"
+	BookingConfirmation = "ulp.ocean.booking.confirmation"
 	TnTEvent            = "ulp.tnt.event"
 	TnTAlert            = "ulp.tnt.alert"
 	TnTInquiry          = "ulp.tnt.inquiry"
@@ -100,7 +100,7 @@ type spec struct {
 // the milestone that uses them.
 var specs = map[string]spec{
 	BookingRequest:      {bookingRef: forbidden, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &BookingRequestBody{} }},
-	BookingConfirmation: {bookingRef: required, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &BookingConfirmationBody{} }},
+	BookingConfirmation: {bookingRef: required, inReplyTo: required, delegation: forbidden, dialect: &DialectDCSAEBL, newBody: func() Body { return &BookingConfirmationBody{} }},
 	Error:               {bookingRef: optional, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &ErrorBody{} }},
 	TnTEvent:            {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, dialect: &DialectDCSATnT, newBody: func() Body { return &TnTEventBody{} }},
 	TnTAlert:            {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &TnTAlertBody{} }},
@@ -181,7 +181,7 @@ func SetDialect(h *envelope.Header) {
 // crossCheck applies rules that tie a body to its header.
 func crossCheck(h *envelope.Header, b Body) error {
 	if c, ok := b.(*BookingConfirmationBody); ok && c.BookingRef != *h.BookingRef {
-		return fmt.Errorf("body.bookingRef %s is not header.bookingRef %s", logsafe.Quote(c.BookingRef), logsafe.Quote(*h.BookingRef))
+		return fmt.Errorf("body.carrier_booking_reference %s is not header.bookingRef %s", logsafe.Quote(c.BookingRef), logsafe.Quote(*h.BookingRef))
 	}
 	if r, ok := b.(*TnTInquiryResponseBody); ok && r.DataScope.BookingRef != *h.BookingRef {
 		return fmt.Errorf("body.dataScope.bookingRef %s is not header.bookingRef %s", logsafe.Quote(r.DataScope.BookingRef), logsafe.Quote(*h.BookingRef))

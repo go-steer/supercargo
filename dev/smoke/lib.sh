@@ -137,12 +137,13 @@ EOF
 
   cat >"$dir/booking.json" <<'EOF'
 {
-  "shipperRef": "CY-PO-55120",
-  "origin":      { "unLocode": "NLRTM", "name": "Rotterdam" },
-  "destination": { "unLocode": "USEWR", "name": "Newark" },
-  "equipment":   [{ "isoType": "45G1", "label": "40HC", "count": 1 }],
-  "cargo":       { "description": "Footwear (sneakers)", "hsCode": "6404" },
-  "earliestDeparture": "2026-10-06",
+  "shipper_reference": "CY-PO-55120",
+  "shipper_name": "Cymbal Shoes",
+  "port_of_loading": "NLRTM",
+  "port_of_discharge": "USEWR",
+  "containers": [{ "equipment_size_type": "45G1", "count": 1, "gross_weight_kg": 12000 }],
+  "cargo": { "description": "Footwear (sneakers)", "hs_code": "6404" },
+  "earliest_departure": "2026-10-06",
   "subscription": {
     "endpoint": "http://cymbal-shoes.example/ulp",
     "intents":  ["ulp.tnt.event", "ulp.tnt.alert"]

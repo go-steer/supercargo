@@ -16,26 +16,28 @@ package store
 
 import (
 	"encoding/json"
-	"slices"
 	"strings"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/ports"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
 
 // Summary is a booking at a glance, from its record and its events: what
 // a shipments list or a sidebar shows.
 type Summary struct {
-	Operator         string           `json:"operator"`
-	Shipper          string           `json:"shipper"`
-	Ref              string           `json:"bookingRef"`
-	Status           string           `json:"status"`
-	Origin           intents.Location `json:"origin"`
-	Destination      intents.Location `json:"destination"`
-	Vessel           string           `json:"vessel,omitempty"`
-	Voyage           string           `json:"voyage,omitempty"`
-	PlannedDeparture string           `json:"plannedDeparture,omitempty"`
-	PlannedArrival   string           `json:"plannedArrival,omitempty"`
+	Operator string `json:"operator"`
+	Shipper  string `json:"shipper"`
+	Ref      string `json:"bookingRef"`
+	// TransportDocumentReference is the eBL's, once confirmed.
+	TransportDocumentReference string           `json:"transportDocumentReference,omitempty"`
+	Status                     string           `json:"status"`
+	Origin                     intents.Location `json:"origin"`
+	Destination                intents.Location `json:"destination"`
+	Vessel                     string           `json:"vessel,omitempty"`
+	Voyage                     string           `json:"voyage,omitempty"`
+	PlannedDeparture           string           `json:"plannedDeparture,omitempty"`
+	PlannedArrival             string           `json:"plannedArrival,omitempty"`
 	// ETA is the latest arrival on record: the actual arrival, else the
 	// latest estimate, else the plan. ETASource is the event it came from.
 	ETA        string   `json:"eta,omitempty"`
@@ -85,12 +87,11 @@ var statuses = map[string]string{
 func Summarize(b Booking, recs []Record) Summary {
 	c := b.Confirmation
 	s := Summary{Operator: b.Operator, Shipper: b.Shipper, Ref: b.Ref, Status: c.Status,
-		Origin: b.Request.Origin, Destination: b.Request.Destination,
+		TransportDocumentReference: c.TransportDocumentReference(),
+		Origin:                     ports.Location(b.Request.PortOfLoading), Destination: ports.Location(b.Request.PortOfDischarge),
 		PlannedDeparture: c.PlannedDeparture, PlannedArrival: c.PlannedArrival, ETA: c.PlannedArrival,
-		Containers: slices.Clone(c.EquipmentRefs), CreatedAt: b.CreatedAt.UTC().Format(time.RFC3339)}
-	if c.Vessel != nil {
-		s.Vessel, s.Voyage = c.Vessel.Name, c.Vessel.Voyage
-	}
+		Containers: c.EquipmentRefs(), CreatedAt: b.CreatedAt.UTC().Format(time.RFC3339)}
+	s.Vessel, s.Voyage = c.Vessel()
 	if s.Containers == nil {
 		s.Containers = []string{}
 	}

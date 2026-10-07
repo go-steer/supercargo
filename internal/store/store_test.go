@@ -160,6 +160,7 @@ func TestReplayConcurrent(t *testing.T) {
 }
 
 func booking(operator, ref string) Booking {
+	setPoint := 4.0
 	return Booking{
 		Ref: ref, Shipper: "a.example", Operator: operator,
 		Request: intents.BookingRequestBody{
@@ -168,9 +169,8 @@ func booking(operator, ref string) Booking {
 			Subscription: &intents.Subscription{Endpoint: "https://a.example/ulp", Intents: []string{"ulp.tnt.event"}},
 		},
 		Confirmation: intents.BookingConfirmationBody{
-			Vessel:        &intents.Vessel{Name: "V"},
-			EquipmentRefs: []string{"OCBU0000010"},
-			Messages:      []intents.Message{{Code: "c", Detail: "d"}},
+			EBL:      &intents.EBL{VesselName: "V", Containers: []intents.ShippingContainer{{ContainerNumber: "OCBU0000010", IsReefer: true, TargetTemperatureCelsius: &setPoint}}},
+			Messages: []intents.Message{{Code: "c", Detail: "d"}},
 		},
 	}
 }
@@ -207,13 +207,15 @@ func TestBookingsCopyDeeply(t *testing.T) {
 	in.Request.Subscription.Intents[0] = "changed"
 	out, _ := s.Get("ob.example", "OB-1")
 	out.Request.Consignee.Name = "changed"
-	out.Confirmation.Vessel.Name = "changed"
-	out.Confirmation.EquipmentRefs[0] = "changed"
+	out.Confirmation.EBL.VesselName = "changed"
+	out.Confirmation.EBL.Containers[0].ContainerNumber = "changed"
+	*out.Confirmation.EBL.Containers[0].TargetTemperatureCelsius = -20
 	out.Confirmation.Messages[0].Code = "changed"
 	again, _ := s.Get("ob.example", "OB-1")
 	if again.Request.Equipment[0].Count != 1 || again.Request.Subscription.Intents[0] != "ulp.tnt.event" ||
-		again.Request.Consignee.Name != "C" || again.Confirmation.Vessel.Name != "V" ||
-		again.Confirmation.EquipmentRefs[0] != "OCBU0000010" || again.Confirmation.Messages[0].Code != "c" {
+		again.Request.Consignee.Name != "C" || again.Confirmation.EBL.VesselName != "V" ||
+		again.Confirmation.EBL.Containers[0].ContainerNumber != "OCBU0000010" ||
+		*again.Confirmation.EBL.Containers[0].TargetTemperatureCelsius != 4 || again.Confirmation.Messages[0].Code != "c" {
 		t.Errorf("the store shares data with its callers: %+v", again)
 	}
 }

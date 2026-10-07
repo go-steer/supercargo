@@ -34,7 +34,7 @@ SMOKE_PIDS+=($!)
 if ! out="$("$work/bin/ulpnode" book --config "$work/shipper.yaml" --operator ocean-blue.example --request "$work/booking.json" --yes 2>"$work/book.log")"; then
   smoke_fail "$work" "booking failed"
 fi
-ref="$(sed -n 's/.*"bookingRef": "\([^"]*\)".*/\1/p' <<<"$out")"
+ref="$(sed -n 's/.*"carrier_booking_reference": "\([^"]*\)".*/\1/p' <<<"$out")"
 smoke_wait_for "$work" "$work/shipper.log" '"msg":"event recorded".*"event":"TRANSPORT DEPA ACT"' 15
 
 cy() { curl -fsS --max-time "${2:-5}" --unix-socket "$work/cy.sock" "http://control$1"; }

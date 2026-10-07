@@ -47,11 +47,11 @@ notes:
 func summaryBooking() store.Booking {
 	return store.Booking{Ref: "OB-BKG-1042", Operator: "ocean-blue.example", Shipper: "cymbal-shoes.example",
 		Request: intents.BookingRequestBody{ShipperRef: "CY-PO-55120",
-			Origin:      intents.Location{UNLocode: "NLRTM", Name: "Rotterdam"},
-			Destination: intents.Location{UNLocode: "USEWR", Name: "Newark"},
-			Cargo:       intents.Cargo{Description: "Footwear (sneakers)", HSCode: "6404"}},
+			PortOfLoading:   "NLRTM",
+			PortOfDischarge: "USEWR",
+			Cargo:           intents.Cargo{Description: "Footwear (sneakers)", HSCode: "6404"}},
 		Confirmation: intents.BookingConfirmationBody{BookingRef: "OB-BKG-1042", Status: intents.StatusConfirmed,
-			Vessel: &intents.Vessel{Name: "Ocean Blue Aurora", Voyage: "42W"}, PlannedArrival: "2026-10-13T08:00:00Z"}}
+			EBL: &intents.EBL{TransportDocumentReference: "OB-TD-1", VesselName: "Ocean Blue Aurora", VoyageNumber: "42W", PortOfLoading: "NLRTM", PortOfDischarge: "USEWR", ShipperName: "Cymbal Shoes", ConsigneeName: "To order", Status: "BOOKED", Containers: []intents.ShippingContainer{{ContainerNumber: "OCBU0000004", EquipmentSizeType: "45G1", SealNumber: "S1", GrossWeightKg: 12000}}}, PlannedArrival: "2026-10-13T08:00:00Z"}}
 }
 
 func delayAlert(newETA string, causes ...string) *intents.TnTAlertBody {

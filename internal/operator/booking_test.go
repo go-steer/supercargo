@@ -42,10 +42,11 @@ func request(sender string, b *intents.BookingRequestBody) *node.Request {
 func body() *intents.BookingRequestBody {
 	return &intents.BookingRequestBody{
 		ShipperRef: "P1", EarliestDeparture: "2026-10-06",
-		Origin:      intents.Location{UNLocode: "NLRTM", Name: "Rotterdam"},
-		Destination: intents.Location{UNLocode: "USEWR", Name: "Newark"},
-		Equipment:   []intents.Equipment{{ISOType: "45G1", Label: "40HC", Count: 2}, {ISOType: "22G1", Label: "20GP", Count: 1}},
-		Cargo:       intents.Cargo{Description: "Shoes", HSCode: "6404"},
+		ShipperName:     "Cymbal Shoes",
+		PortOfLoading:   "NLRTM",
+		PortOfDischarge: "USEWR",
+		Equipment:       []intents.Equipment{{ISOType: "45G1", Count: 2, GrossWeightKg: 12000}, {ISOType: "22G1", Count: 1, GrossWeightKg: 12000}},
+		Cargo:           intents.Cargo{Description: "Shoes", HSCode: "6404"},
 	}
 }
 
@@ -97,7 +98,7 @@ func TestContainersAreUnique(t *testing.T) {
 	seen := map[string]bool{}
 	for range 5 {
 		b := body()
-		b.Equipment = []intents.Equipment{{ISOType: "45G1", Label: "40HC", Count: 30}, {ISOType: "22G1", Label: "20GP", Count: 20}}
+		b.Equipment = []intents.Equipment{{ISOType: "45G1", Count: 30, GrossWeightKg: 12000}, {ISOType: "22G1", Count: 20, GrossWeightKg: 12000}}
 		reply, err := s.Handle(context.Background(), request("cymbal-shoes.example", b))
 		if err != nil {
 			t.Fatal(err)
@@ -106,7 +107,7 @@ func TestContainersAreUnique(t *testing.T) {
 		if err := c.Validate(); err != nil {
 			t.Fatalf("confirmation doesn't validate: %v", err)
 		}
-		for _, r := range c.EquipmentRefs {
+		for _, r := range c.EquipmentRefs() {
 			if seen[r] {
 				t.Fatalf("container %s assigned twice", r)
 			}
@@ -126,20 +127,20 @@ func TestContainersAreUnique(t *testing.T) {
 func TestTooManyContainersRejected(t *testing.T) {
 	s := service()
 	b := body()
-	b.Equipment = []intents.Equipment{{ISOType: "45G1", Label: "40HC", Count: MaxContainers}, {ISOType: "22G1", Label: "20GP", Count: 1}}
+	b.Equipment = []intents.Equipment{{ISOType: "45G1", Count: MaxContainers, GrossWeightKg: 12000}, {ISOType: "22G1", Count: 1, GrossWeightKg: 12000}}
 	reply, err := s.Handle(context.Background(), request("cymbal-shoes.example", b))
 	if err != nil {
 		t.Fatal(err)
 	}
 	c := reply.Body.(*intents.BookingConfirmationBody)
-	if c.Status != intents.StatusRejected || len(c.EquipmentRefs) != 0 || len(c.Messages) != 1 || c.Validate() != nil {
+	if c.Status != intents.StatusRejected || len(c.EquipmentRefs()) != 0 || len(c.Messages) != 1 || c.Validate() != nil {
 		t.Errorf("over-cap answer %+v", c)
 	}
 	if s.Bookings.Len() != 0 {
 		t.Error("an over-cap request was booked")
 	}
 	reply, _ = s.Handle(context.Background(), request("cymbal-shoes.example", body()))
-	if refs := reply.Body.(*intents.BookingConfirmationBody).EquipmentRefs; refs[0] != containerNumber("OCBU", 0) {
+	if refs := reply.Body.(*intents.BookingConfirmationBody).EquipmentRefs(); refs[0] != containerNumber("OCBU", 0) {
 		t.Errorf("serials were consumed by the rejected request: first is %s", refs[0])
 	}
 }
@@ -175,11 +176,11 @@ func TestHandle(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Errorf("confirmation doesn't validate: %v", err)
 	}
-	if reply.BookingRef != c.BookingRef || c.BookingRef != "OB-BKG-1042" || len(c.EquipmentRefs) != 3 || c.SubscriptionID != "" {
+	if reply.BookingRef != c.BookingRef || c.BookingRef != "OB-BKG-1042" || len(c.EquipmentRefs()) != 3 || c.SubscriptionID != "" {
 		t.Errorf("confirmation %+v", c)
 	}
 	seen := map[string]bool{}
-	for _, r := range c.EquipmentRefs {
+	for _, r := range c.EquipmentRefs() {
 		if seen[r] {
 			t.Errorf("container %s assigned twice", r)
 		}

@@ -49,7 +49,7 @@ func oceanBlueProfile(t *testing.T) *discovery.Document {
 	b, _ := json.Marshal(discovery.Profile{
 		ProtocolVersion: envelope.Version,
 		Party:           discovery.Party{Domain: "ocean-blue.example", Name: "Ocean Blue", Roles: []string{"operator"}},
-		Services:        []discovery.Service{{Name: "ulp.freight", Intents: []string{"ulp.booking.request", "ulp.tnt.inquiry"}, Extensions: []string{}}},
+		Services:        []discovery.Service{{Name: "ulp.freight", Intents: []string{"ulp.ocean.booking.request", "ulp.tnt.inquiry"}, Extensions: []string{}}},
 		Transports:      discovery.Transports{REST: "https://ocean-blue.example/ulp", A2A: "https://ocean-blue.example/a2a"},
 		Keys:            []json.RawMessage{j},
 	})

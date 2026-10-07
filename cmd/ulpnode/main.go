@@ -49,6 +49,7 @@ import (
 	"github.com/go-steer/supercargo/internal/app"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/ports"
 	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/internal/telemetry"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -256,10 +257,11 @@ var errNotSent = errors.New("book: not sent")
 func printSummary(w io.Writer, operator string, r *intents.BookingRequestBody) {
 	fmt.Fprintf(w, "Booking request to %s (ref %s):\n", operator, r.ShipperRef)
 	fmt.Fprintf(w, "  Route:      %s (%s) → %s (%s), earliest departure %s\n",
-		r.Origin.Name, r.Origin.UNLocode, r.Destination.Name, r.Destination.UNLocode, r.EarliestDeparture)
+		ports.Name(r.PortOfLoading), r.PortOfLoading, ports.Name(r.PortOfDischarge), r.PortOfDischarge, r.EarliestDeparture)
 	for _, e := range r.Equipment {
-		fmt.Fprintf(w, "  Equipment:  %d × %s (%s)\n", e.Count, e.Label, e.ISOType)
+		fmt.Fprintf(w, "  Equipment:  %d × %s (%s), %g kg each\n", e.Count, ports.SizeLabel(e.ISOType), e.ISOType, e.GrossWeightKg)
 	}
+	fmt.Fprintf(w, "  Shipper:    %s\n", r.ShipperName)
 	fmt.Fprintf(w, "  Cargo:      %s, HS %s\n", r.Cargo.Description, r.Cargo.HSCode)
 	if r.Consignee != nil {
 		fmt.Fprintf(w, "  Consignee:  %s (%s)\n", r.Consignee.Name, r.Consignee.Domain)
@@ -374,7 +376,7 @@ func status(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("status: HTTP %d: %s", code, resp.Error)
 	}
 	st := resp.Status
-	fmt.Fprintf(stdout, "%s reports %s: %s\n", resp.Operator, st.TransportDocumentReference, st.DCSAStatus)
+	fmt.Fprintf(stdout, "%s reports %s (transport document %s): %s\n", resp.Operator, *booking, st.TransportDocumentReference, st.DCSAStatus)
 	if st.VesselName != "" {
 		fmt.Fprintf(stdout, "  Vessel:   %s %s\n", st.VesselName, st.VoyageNumber)
 	}

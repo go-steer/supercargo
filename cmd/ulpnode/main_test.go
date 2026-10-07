@@ -101,8 +101,8 @@ func shipperConfig(t *testing.T) string {
 	return p
 }
 
-const requestJSON = `{"shipperRef":"P1","origin":{"unLocode":"NLRTM","name":"Rotterdam"},"destination":{"unLocode":"USEWR","name":"Newark"},
-"equipment":[{"isoType":"45G1","label":"40HC","count":1}],"cargo":{"description":"Shoes","hsCode":"6404"},"earliestDeparture":"2026-10-06"}`
+const requestJSON = `{"shipper_reference":"P1","shipper_name":"Cymbal Shoes","port_of_loading":"NLRTM","port_of_discharge":"USEWR",
+"containers":[{"equipment_size_type":"45G1","count":1,"gross_weight_kg":12000}],"cargo":{"description":"Shoes","hs_code":"6404"},"earliest_departure":"2026-10-06"}`
 
 func writeFile(t *testing.T, name, data string) string {
 	t.Helper()
@@ -150,7 +150,7 @@ func startNode(t *testing.T, cfg string, status int) *fakeNode {
 				return
 			}
 			control.Answer(w, status, shipper.StatusResponse{Operator: "ocean-blue.example", Missing: []string{"EV-2"},
-				Status: &intents.TnTStatus{TransportDocumentReference: req.BookingRef, DCSAStatus: intents.StatusInTransit,
+				Status: &intents.TnTStatus{TransportDocumentReference: "OB-TD-1042", DCSAStatus: intents.StatusInTransit,
 					VesselName: "Ocean Blue Aurora", VoyageNumber: "42W", PortOfLoading: "NLRTM", PortOfDischarge: "USEWR",
 					CurrentLocation:        &intents.CurrentLocation{UNLocationCode: "NLRTM", FacilityName: "Port of Rotterdam"},
 					EstimatedTimeOfArrival: "2026-10-16T08:00:00Z", Events: []intents.TnTEventBody{
@@ -217,7 +217,7 @@ func TestBookSends(t *testing.T) {
 	node := startNode(t, cfg, http.StatusOK)
 	req := writeFile(t, "req.json", requestJSON)
 	out, err := runCmd(t, "y\n", "book", "--config", cfg, "--operator", "ocean-blue.example", "--request", req)
-	if err != nil || !strings.Contains(out, `"bookingRef": "OB-BKG-1042"`) {
+	if err != nil || !strings.Contains(out, `"carrier_booking_reference": "OB-BKG-1042"`) {
 		t.Fatalf("book: %q, %v", out, err)
 	}
 	if _, err := runCmd(t, "", "book", "--config", cfg, "--operator", "ocean-blue.example", "--request", req, "--yes"); err != nil {
@@ -234,11 +234,11 @@ func TestBookSends(t *testing.T) {
 func TestBookSummary(t *testing.T) {
 	cfg := shipperConfig(t)
 	startNode(t, cfg, http.StatusOK)
-	withAll := strings.Replace(requestJSON, `"earliestDeparture":"2026-10-06"`,
-		`"earliestDeparture":"2026-10-06","consignee":{"name":"Cymbal Footwear","domain":"cymbal-footwear.example"},`+
+	withAll := strings.Replace(requestJSON, `"earliest_departure":"2026-10-06"`,
+		`"earliest_departure":"2026-10-06","consignee":{"name":"Cymbal Footwear","domain":"cymbal-footwear.example"},`+
 			`"subscription":{"endpoint":"https://cymbal-shoes.example/ulp","intents":["ulp.tnt.event"]}`, 1)
 	out, _ := runCmd(t, "n\n", "book", "--config", cfg, "--operator", "ocean-blue.example", "--request", writeFile(t, "r.json", withAll))
-	for _, want := range []string{"cymbal-footwear.example", "https://cymbal-shoes.example/ulp", "ulp.tnt.event", "1 × 40HC", "Shoes", "NLRTM"} {
+	for _, want := range []string{"cymbal-footwear.example", "https://cymbal-shoes.example/ulp", "ulp.tnt.event", "1 × 40HC", "Shoes", "NLRTM", "Rotterdam", "12000 kg", "Cymbal Shoes"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary lacks %q:\n%s", want, out)
 		}
@@ -271,7 +271,7 @@ func TestBookRejects(t *testing.T) {
 		"missing config":    {"book", "--config", filepath.Join(t.TempDir(), "none.yaml"), "--operator", "o.example", "--request", good},
 		"operator config":   {"book", "--config", opCfg, "--operator", "o.example", "--request", good},
 		"missing request":   {"book", "--config", cfg, "--operator", "o.example", "--request", filepath.Join(t.TempDir(), "none.json")},
-		"unknown field":     {"book", "--config", cfg, "--operator", "o.example", "--request", writeFile(t, "r.json", strings.Replace(requestJSON, `"shipperRef"`, `"deadline":"x","shipperRef"`, 1))},
+		"unknown field":     {"book", "--config", cfg, "--operator", "o.example", "--request", writeFile(t, "r.json", strings.Replace(requestJSON, `"shipper_reference"`, `"deadline":"x","shipper_reference"`, 1))},
 		"invalid body":      {"book", "--config", cfg, "--operator", "o.example", "--request", writeFile(t, "r.json", strings.Replace(requestJSON, "NLRTM", "nowhere", 1))},
 		"not JSON":          {"book", "--config", cfg, "--operator", "o.example", "--request", writeFile(t, "r.json", "{")},
 		"bad flag":          {"book", "--nope"},
@@ -416,7 +416,7 @@ func TestStatusCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"ocean-blue.example reports OB-BKG-1042: IN_TRANSIT", "Vessel:   Ocean Blue Aurora 42W", "Route:    NLRTM → USEWR",
+	for _, want := range []string{"ocean-blue.example reports OB-BKG-1042 (transport document OB-TD-1042): IN_TRANSIT", "Vessel:   Ocean Blue Aurora 42W", "Route:    NLRTM → USEWR",
 		"Now at:   NLRTM Port of Rotterdam", "ETA:      2026-10-16T08:00:00Z", "Departed\n", "Expected  (not received as a push)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)

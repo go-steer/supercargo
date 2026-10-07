@@ -46,8 +46,8 @@ func newInquiryFixture(t *testing.T, model llm.Model) *inquiryFixture {
 		req.Consignee = &intents.Consignee{Name: "Cymbal Footwear Receiving", Domain: "cymbal-footwear.example"}
 		if err := bookings.Add(store.Booking{Ref: ref, Shipper: shipper, Operator: "ocean-blue.example", Request: req,
 			Confirmation: intents.BookingConfirmationBody{BookingRef: ref, Status: intents.StatusConfirmed,
-				Vessel: &intents.Vessel{Name: "Ocean Blue Aurora", Voyage: "42W"}, PlannedDeparture: "2026-10-07T18:00:00Z",
-				PlannedArrival: "2026-10-13T08:00:00Z", EquipmentRefs: []string{"OCBU0000004"}}}); err != nil {
+				EBL: &intents.EBL{TransportDocumentReference: "OB-TD" + strings.TrimPrefix(ref, "OB-BKG"), VesselName: "Ocean Blue Aurora", VoyageNumber: "42W", PortOfLoading: "NLRTM", PortOfDischarge: "USEWR", ShipperName: "Cymbal Shoes", ConsigneeName: "To order", Status: "BOOKED", Containers: []intents.ShippingContainer{{ContainerNumber: "OCBU0000004", EquipmentSizeType: "45G1", SealNumber: "S1", GrossWeightKg: 12000}}}, PlannedDeparture: "2026-10-07T18:00:00Z",
+				PlannedArrival: "2026-10-13T08:00:00Z"}}); err != nil {
 			t.Fatal(err)
 		}
 	}

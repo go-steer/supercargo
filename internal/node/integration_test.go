@@ -39,9 +39,10 @@ import (
 func bookingRequest() *intents.BookingRequestBody {
 	return &intents.BookingRequestBody{
 		ShipperRef:        "CY-PO-55120",
-		Origin:            intents.Location{UNLocode: "NLRTM", Name: "Rotterdam"},
-		Destination:       intents.Location{UNLocode: "USEWR", Name: "Newark"},
-		Equipment:         []intents.Equipment{{ISOType: "45G1", Label: "40HC", Count: 1}},
+		ShipperName:       "Cymbal Shoes",
+		PortOfLoading:     "NLRTM",
+		PortOfDischarge:   "USEWR",
+		Equipment:         []intents.Equipment{{ISOType: "45G1", Count: 1, GrossWeightKg: 12000}},
 		Cargo:             intents.Cargo{Description: "Footwear (sneakers)", HSCode: "6404"},
 		EarliestDeparture: "2026-10-06",
 		Consignee:         &intents.Consignee{Name: "Cymbal Footwear", Domain: "cymbal-footwear.example"},
@@ -61,8 +62,8 @@ func TestBookingOverREST(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Book: %v", err)
 	}
-	if conf.Status != intents.StatusConfirmed || conf.BookingRef != "OB-BKG-1042" || conf.Vessel.Voyage != "42W" ||
-		len(conf.EquipmentRefs) != 1 || conf.SubscriptionID == "" {
+	if conf.Status != intents.StatusConfirmed || conf.BookingRef != "OB-BKG-1042" || conf.EBL.VoyageNumber != "42W" ||
+		len(conf.EquipmentRefs()) != 1 || conf.SubscriptionID == "" {
 		t.Errorf("confirmation %+v", conf)
 	}
 	if conf.PlannedDeparture != "2026-10-07T18:00:00Z" || conf.PlannedArrival != "2026-10-13T08:00:00Z" {
@@ -220,7 +221,7 @@ func TestPipelineRejects(t *testing.T) {
 		{"sentAt in the future", request(func(h *envelope.Header, _ *intents.BookingRequestBody) {
 			h.SentAt = time.Now().Add(10 * time.Minute).UTC().Format(envelope.TimeLayout)
 		}), intents.CodeStale, true, 0},
-		{"invalid body", request(func(_ *envelope.Header, b *intents.BookingRequestBody) { b.Origin.UNLocode = "nowhere" }),
+		{"invalid body", request(func(_ *envelope.Header, b *intents.BookingRequestBody) { b.PortOfLoading = "nowhere" }),
 			intents.CodeInvalidBody, true, 0},
 		{"header rule: request with bookingRef", request(func(h *envelope.Header, _ *intents.BookingRequestBody) {
 			ref := "OB-BKG-1"
@@ -292,7 +293,7 @@ func (rejecting) Handle(context.Context, *node.Request) (*node.Reply, error) {
 // bookings; a "rejected" answer goes back to the caller.
 func TestRejectedBookingNotRecorded(t *testing.T) {
 	d := newDemo(t)
-	d.nw.wire(t, d.operator, "Ocean Blue", "operator", map[string]node.Handler{"ulp.booking.request": rejecting{}})
+	d.nw.wire(t, d.operator, "Ocean Blue", "operator", map[string]node.Handler{"ulp.ocean.booking.request": rejecting{}})
 	conf, err := d.ship.Book(context.Background(), operatorDomain, bookingRequest())
 	if err != nil || conf.Status != intents.StatusRejected {
 		t.Fatalf("Book = %+v, %v", conf, err)

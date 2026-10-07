@@ -61,9 +61,9 @@ func TestPipelineDuration(t *testing.T) {
 		}
 	}
 	want := map[string]uint64{
-		"ulp.answer=no_reply,ulp.intent=ulp.booking.request": 1,
-		"ulp.answer=4xx,ulp.intent=other":                    1,
-		"ulp.answer=4xx,ulp.intent=ulp.booking.request":      1,
+		"ulp.answer=no_reply,ulp.intent=ulp.ocean.booking.request": 1,
+		"ulp.answer=4xx,ulp.intent=other":                          1,
+		"ulp.answer=4xx,ulp.intent=ulp.ocean.booking.request":      1,
 	}
 	for k, v := range want {
 		if got[k] != v {
