@@ -419,6 +419,16 @@ func (a *Assistant) call(ctx context.Context, c *Conversation, t *turnState, cal
 	return out
 }
 
+// OneLine makes s safe for a one-line display: no control or format
+// characters, newlines and tabs as spaces, at most n characters.
+func OneLine(s string, n int) string {
+	s = strings.Join(strings.Fields(clean(s)), " ")
+	if r := []rune(s); len(r) > n {
+		s = string(r[:n-1]) + "…"
+	}
+	return s
+}
+
 // clean makes model text safe to show in a terminal: no control or format
 // characters (newlines and tabs stay), at most MaxReplyText characters.
 func clean(s string) string {

@@ -190,14 +190,11 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			return nil, err
 		}
 	}
-	restURL, a2aURL := "", ""
+	restURL, a2aURL := RESTURL(cfg), ""
 	if cfg.Has(config.RoleOperator) {
 		// The operator's agent serves the shipment-inquiry skill.
 		a2aURL = "https://" + cfg.Domain + "/a2a"
-	}
-	if insecure {
-		restURL = "http://" + cfg.Domain + "/ulp"
-		if a2aURL != "" {
+		if insecure {
 			a2aURL = "http://" + cfg.Domain + "/a2a"
 		}
 	}
@@ -426,7 +423,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	for _, d := range o.Deny {
 		deny[d] = true
 	}
-	model, err := newModel(cfg.LLM, operator.FakeInquiryModel())
+	model, err := NewModel(cfg.LLM, operator.FakeInquiryModel())
 	if err != nil {
 		return err
 	}
@@ -465,7 +462,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 // behind it.
 func (a *App) shipperRole(handlers map[string]node.Handler) error {
 	cfg := a.Config
-	model, err := newModel(cfg.LLM, shipper.FakeSummaryModel())
+	model, err := NewModel(cfg.LLM, shipper.FakeSummaryModel())
 	if err != nil {
 		return err
 	}
@@ -578,9 +575,18 @@ func loadPool(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// newModel builds the configured model: none (template output only), the
-// role's fake, or Claude with its key from the environment.
-func newModel(c *config.LLM, fake llm.Model) (llm.Model, error) {
+// RESTURL is where a node from cfg serves the REST binding: where
+// partners send, and where a shipper's bookings ask for pushes.
+func RESTURL(cfg *config.Config) string {
+	if cfg.TLS.Mode == config.TLSInsecureDev {
+		return "http://" + cfg.Domain + "/ulp"
+	}
+	return "https://" + cfg.Domain + "/ulp"
+}
+
+// NewModel builds the configured model: none (template output only), the
+// caller's fake, or Claude with its key from the environment.
+func NewModel(c *config.LLM, fake llm.Model) (llm.Model, error) {
 	switch {
 	case c == nil:
 		return nil, nil

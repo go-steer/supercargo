@@ -633,3 +633,15 @@ func TestStatusToolTrims(t *testing.T) {
 		t.Errorf("tools %+v", *tools)
 	}
 }
+
+func TestOneLine(t *testing.T) {
+	for in, want := range map[string]string{
+		"a\nb\tc  d":            "a b c d",
+		"x\u202e\u001b[2Jy":     "x[2Jy",
+		strings.Repeat("z", 20): strings.Repeat("z", 9) + "…",
+	} {
+		if got := OneLine(in, 10); got != want {
+			t.Errorf("OneLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

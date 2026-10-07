@@ -26,7 +26,7 @@ demo_build() {
   local dir=$1 root
   root="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
   mkdir -p "$dir/bin"
-  (cd "$root" && go build -o "$dir/bin/ulpnode" ./cmd/ulpnode && go build -o "$dir/bin/ulpctl" ./cmd/ulpctl)
+  (cd "$root" && go build -o "$dir/bin/ulpnode" ./cmd/ulpnode && go build -o "$dir/bin/ulpctl" ./cmd/ulpctl && go build -o "$dir/bin/ulpchat" ./cmd/ulpchat)
 }
 
 # demo_ports: pick an operator and a shipper port (OP_PORT, SH_PORT), below

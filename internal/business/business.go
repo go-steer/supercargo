@@ -214,6 +214,25 @@ func (c *Context) Secrets() []string {
 	return out
 }
 
+// Private is everything a message to a partner must not mention: the
+// Secrets, and the required-by and receiving-slot dates (which the guard
+// can't look for, so the assistant's own check does).
+func (c *Context) Private() []string {
+	if c == nil {
+		return nil
+	}
+	out := c.Secrets()
+	for _, s := range c.Shipments {
+		if s.RequiredBy != "" {
+			out = append(out, s.RequiredBy)
+		}
+		if s.ReceivingSlot != nil && s.ReceivingSlot.Date != "" {
+			out = append(out, s.ReceivingSlot.Date)
+		}
+	}
+	return out
+}
+
 // ErrLeak reports an outbound body that carries private context.
 var ErrLeak = errors.New("business: an outbound message would carry private business context")
 

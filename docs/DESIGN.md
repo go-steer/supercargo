@@ -843,6 +843,9 @@ ulp-demo/
 │   ├── shipper/          # partners, drafts, store, business context, handlers, internal API
 │   ├── llm/              # Model interface, our tool loop; anthropic (adapted from mast), gemini, fake
 │   ├── skills/           # agent skills: built-in SKILL.md files (embedded) + company directory loader
+│   ├── assistant/        # the shipper assistant: tool loop, tools, drafts (LLM #1)
+│   ├── chatui/           # ulpchat's full-screen TUI (Bubble Tea v2)
+│   ├── ui/theme/         # colour tokens shared by the TUI, pretty logs and browser UI
 │   ├── mcp/              # MCP server binding and client connectors (official MCP Go SDK)
 │   └── store/            # in-memory stores (+ optional JSON snapshot for reset)
 ├── deploy/
