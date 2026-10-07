@@ -71,6 +71,7 @@ func shipperWith(t *testing.T, answer func(req envelope.Header) (string, any), o
 			req := u.ClaimedHeader()
 			intent, body := answer(req)
 			h := req.Reply(intent, time.Now())
+			intents.SetDialect(&h)
 			if c, ok := body.(*intents.BookingConfirmationBody); ok {
 				h.BookingRef = &c.BookingRef
 			}

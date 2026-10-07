@@ -59,6 +59,17 @@ smoke_wait_for "$work" "$work/shipper.log" '"msg":"alert summary".*"booking":"'"
 grep -E '"msg":"alert summary"' "$work/shipper.log" | grep -q '"cited":\["AL-' ||
   smoke_fail "$work" "the alert summary cites no alert"
 
+# The structured status pull: the operator's signed DCSA status report,
+# with the new ETA and every event so far.
+if ! st="$("$work/bin/ulpnode" status --config "$work/shipper.yaml" --booking "$ref" 2>&1)"; then
+  smoke_fail "$work" "ulpnode status failed: $st"
+fi
+echo "$st"
+grep -q "reports $ref: IN_TRANSIT" <<<"$st" || smoke_fail "$work" "the status isn't IN_TRANSIT: $st"
+grep -q "ETA:      2026-10-16T08:00:00Z" <<<"$st" || smoke_fail "$work" "the status lacks the new ETA: $st"
+grep -qE '"intent":"ulp.ocean.tnt.request".*"verified":true.*"outcome":"accepted"' "$work/operator.log" ||
+  smoke_fail "$work" "the operator logged no verified, accepted status request"
+
 # A disruption for a booking with no voyage is refused.
 if "$work/bin/ulpctl" disrupt --config "$work/operator.yaml" --booking OB-BKG-9999 --delay 1h --reason "Late." >/dev/null 2>&1; then
   smoke_fail "$work" "ulpctl disrupted a booking that doesn't exist"
@@ -67,4 +78,4 @@ fi
 if grep -q '"msg":"push dropped"' "$work/operator.log"; then smoke_fail "$work" "the operator dropped a push"; fi
 if grep -q '"outcome":"rejected"' "$work/shipper.log"; then smoke_fail "$work" "the shipper rejected a push"; fi
 
-echo "✓ smoke/push: events and a delay alert pushed, signed, verified, recorded and summarized"
+echo "✓ smoke/push: events and a delay alert pushed, signed, verified, recorded and summarized; status pulled"

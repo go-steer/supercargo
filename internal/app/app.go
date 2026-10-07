@@ -352,6 +352,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	if model != nil {
 		log.Info("inquiry responder", "model", model.Name(), "skills", skillIDs(agentSkills))
 	}
+	handlers[intents.OceanTnTRequest] = &operator.StatusService{Bookings: a.Bookings, Log: a.Events}
 	handlers[intents.TnTInquiry] = &operator.InquiryService{Bookings: a.Bookings, Log: a.Events, Model: model, Name: cfg.Name, Skills: agentSkills,
 		OnModelCall: func(c operator.ModelCall) {
 			a.Activity.Publish(activity.Entry{Kind: activity.KindModel, Model: &activity.Model{

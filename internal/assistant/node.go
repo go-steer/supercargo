@@ -36,6 +36,7 @@ type Node interface {
 	Shipments(ctx context.Context) ([]store.Summary, error)
 	Records(ctx context.Context, operator, ref string) (*shipper.RecordsResponse, error)
 	Ask(ctx context.Context, operator, ref, question string) (*shipper.AskResponse, error)
+	Status(ctx context.Context, operator, ref string) (*shipper.StatusResponse, error)
 	Book(ctx context.Context, req shipper.BookRequest) (*shipper.BookResponse, error)
 }
 
@@ -133,6 +134,15 @@ func (n ControlNode) Ask(ctx context.Context, operator, ref, question string) (*
 	var out shipper.AskResponse
 	err := n.do(ctx, http.MethodPost, "/ask", shipper.AskRequest{Operator: operator, BookingRef: ref, Question: question}, &out)
 	if err != nil {
+		return nil, withMessage(err, out.Error)
+	}
+	return &out, nil
+}
+
+// Status implements Node.
+func (n ControlNode) Status(ctx context.Context, operator, ref string) (*shipper.StatusResponse, error) {
+	var out shipper.StatusResponse
+	if err := n.do(ctx, http.MethodPost, "/status", shipper.StatusRequest{Operator: operator, BookingRef: ref}, &out); err != nil {
 		return nil, withMessage(err, out.Error)
 	}
 	return &out, nil

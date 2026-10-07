@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,6 +80,12 @@ func (n *node) Records(_ context.Context, operator, ref string) (*shipper.Record
 	}
 	return &shipper.RecordsResponse{Summary: &store.Summary{Ref: ref, Operator: operator, Status: "in transit", ETA: "2026-10-16T08:00:00Z"},
 		Records: recs}, nil
+}
+
+func (n *node) Status(_ context.Context, operator, ref string) (*shipper.StatusResponse, error) {
+	n.log("status " + operator + " " + ref)
+	return &shipper.StatusResponse{Operator: operator, Status: &intents.TnTStatus{TransportDocumentReference: ref,
+		DCSAStatus: intents.StatusInTransit, Events: []intents.TnTEventBody{}}, Missing: []string{"EV-2"}}, nil
 }
 
 func (n *node) Ask(_ context.Context, operator, ref, question string) (*shipper.AskResponse, error) {
@@ -571,5 +578,58 @@ func TestBusyAndPartialDrafts(t *testing.T) {
 	r, err := a.Turn(context.Background(), &c2, "Book with ocean-blue.example")
 	if !errors.Is(err, fake.ErrUnavailable) || len(r.Drafts) != 1 || len(c2.messages) != 0 || len(c2.turns) != 0 {
 		t.Errorf("%+v, %v, %d messages", r, err, len(c2.messages))
+	}
+}
+
+// TestStatusTool: get_status reaches only our bookings, through the node.
+func TestStatusTool(t *testing.T) {
+	n := &node{shipments: []store.Summary{{Ref: "OB-BKG-1042", Operator: "ocean-blue.example"}}}
+	m := fake.Turns(llm.GenerateResponse{ToolCalls: []llm.ToolCall{
+		fake.Call("1", ToolStatus, `{"bookingRef":"OB-BKG-1042"}`),
+		fake.Call("2", ToolStatus, `{"bookingRef":"OB-BKG-9"}`)}}, llm.GenerateResponse{Text: "In transit."})
+	a, tools, _ := newAssistant(m, n)
+	if _, err := a.Turn(context.Background(), &Conversation{}, "Status?"); err != nil {
+		t.Fatal(err)
+	}
+	if (*tools)[0].Error != "" || !n.called("status ocean-blue.example OB-BKG-1042") || !strings.Contains((*tools)[1].Error, "no booking OB-BKG-9") {
+		t.Errorf("tools %+v, calls %v", *tools, n.calls)
+	}
+	res := m.Calls()[1].Messages[2].ToolResults[0].Content
+	if !strings.Contains(res, `"dcsa_status":"IN_TRANSIT"`) || !strings.Contains(res, `"missing":["EV-2"]`) {
+		t.Errorf("result %s", res)
+	}
+}
+
+// TestStatusToolTrims: a large report reaches the model as its latest
+// events (and only their missing IDs), once per booking per turn.
+func TestStatusToolTrims(t *testing.T) {
+	var evs []intents.TnTEventBody
+	var missing []string
+	for i := range 100 {
+		id := fmt.Sprintf("EV-%03d", i)
+		evs = append(evs, intents.TnTEventBody{EventID: id, EventType: "TRANSPORT", EventClassifierCode: "ACT", EventTypeCode: "DEPA",
+			EventDateTime: "2026-10-07T18:00:00Z", Description: strings.Repeat("d", 250), UNLocationCode: "NLRTM"})
+		if i%10 == 0 {
+			missing = append(missing, id)
+		}
+	}
+	got := trimStatus(&shipper.StatusResponse{Status: &intents.TnTStatus{Events: evs}, Missing: missing})
+	if got.OmittedEvents != 100-maxRecords || len(got.Status.Events) != maxRecords || got.Status.Events[0].EventID != "EV-070" ||
+		strings.Join(got.Missing, ",") != "EV-070,EV-080,EV-090" {
+		t.Errorf("trimmed: %d omitted, %d kept, missing %v", got.OmittedEvents, len(got.Status.Events), got.Missing)
+	}
+	if b, _ := json.Marshal(got); len(b) > maxToolResult {
+		t.Errorf("%d bytes", len(b))
+	}
+	n := &node{shipments: []store.Summary{{Ref: "OB-BKG-1042", Operator: "ocean-blue.example"}}}
+	m := fake.Turns(llm.GenerateResponse{ToolCalls: []llm.ToolCall{
+		fake.Call("1", ToolStatus, `{"bookingRef":"OB-BKG-1042"}`), fake.Call("2", ToolStatus, `{"bookingRef":"OB-BKG-1042"}`)}},
+		llm.GenerateResponse{Text: "OK"})
+	a, tools, _ := newAssistant(m, n)
+	if _, err := a.Turn(context.Background(), &Conversation{}, "Status twice"); err != nil {
+		t.Fatal(err)
+	}
+	if (*tools)[0].Error != "" || !strings.Contains((*tools)[1].Error, "already have") {
+		t.Errorf("tools %+v", *tools)
 	}
 }

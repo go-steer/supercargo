@@ -20,6 +20,8 @@
 //	                                                send a booking (after an explicit y)
 //	ulpnode ask    --config node.yaml --booking OB-BKG-1042 "Why the delay?"
 //	                                                ask the booking's operator a question
+//	ulpnode status --config node.yaml --booking OB-BKG-1042
+//	                                                the booking's DCSA status, from its operator
 //	ulpnode watch  --config node.yaml               follow the node's activity stream
 package main
 
@@ -63,6 +65,7 @@ func main() {
 const usage = `usage:
   ulpnode serve  --config FILE [--log-format text|json]
   ulpnode keygen --kid KID --out FILE
+  ulpnode status --config FILE --booking REF [--operator DOMAIN]
   ulpnode ask    --config FILE --booking REF [--operator DOMAIN] QUESTION...
   ulpnode watch  --config FILE [--since N]
   ulpnode book   --config FILE --operator DOMAIN --request FILE [--yes]`
@@ -80,6 +83,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return book(args[1:], stdin, stdout, stderr)
 	case "ask":
 		return ask(args[1:], stdout, stderr)
+	case "status":
+		return status(args[1:], stdout, stderr)
 	case "watch":
 		return watch(context.Background(), args[1:], stdout, stderr)
 	default:
@@ -334,6 +339,64 @@ func ask(args []string, stdout, stderr io.Writer) error {
 			}
 		}
 		fmt.Fprintf(stdout, "\n  Sources: %s\n", strings.Join(sources, ", "))
+	}
+	return nil
+}
+
+// status asks a booking's operator for its DCSA status through the
+// running shipper node, and prints the signed report.
+func status(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path := fs.String("config", "", "the shipper node's configuration (YAML)")
+	booking := fs.String("booking", "", "the booking reference")
+	operatorDomain := fs.String("operator", "", "the operator (needed only if several have that reference)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *path == "" || *booking == "" {
+		return errors.New("status: --config and --booking are required")
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	if cfg.Role != config.RoleShipper || cfg.Control == nil {
+		return errors.New("status: the config must be a shipper's, with a control socket")
+	}
+	var resp shipper.StatusResponse
+	code, err := control.Call(control.Client(cfg.Control.Socket, 30*time.Second), "/status",
+		shipper.StatusRequest{Operator: *operatorDomain, BookingRef: *booking}, &resp)
+	if err != nil {
+		return fmt.Errorf("status: %w", err)
+	}
+	if code != http.StatusOK || resp.Status == nil {
+		return fmt.Errorf("status: HTTP %d: %s", code, resp.Error)
+	}
+	st := resp.Status
+	fmt.Fprintf(stdout, "%s reports %s: %s\n", resp.Operator, st.TransportDocumentReference, st.DCSAStatus)
+	if st.VesselName != "" {
+		fmt.Fprintf(stdout, "  Vessel:   %s %s\n", st.VesselName, st.VoyageNumber)
+	}
+	if st.PortOfLoading != "" {
+		fmt.Fprintf(stdout, "  Route:    %s → %s\n", st.PortOfLoading, st.PortOfDischarge)
+	}
+	if c := st.CurrentLocation; c != nil {
+		fmt.Fprintf(stdout, "  Now at:   %s %s\n", c.UNLocationCode, c.FacilityName)
+	}
+	if st.EstimatedTimeOfArrival != "" {
+		fmt.Fprintf(stdout, "  ETA:      %s\n", st.EstimatedTimeOfArrival)
+	}
+	missing := map[string]bool{}
+	for _, id := range resp.Missing {
+		missing[id] = true
+	}
+	for _, e := range st.Events {
+		mark := ""
+		if missing[e.EventID] {
+			mark = "  (not received as a push)"
+		}
+		fmt.Fprintf(stdout, "  %s  %-9s %s %s  %s%s\n", e.EventDateTime, e.EventType, e.EventTypeCode, e.EventClassifierCode, e.Description, mark)
 	}
 	return nil
 }

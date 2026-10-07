@@ -25,6 +25,7 @@ import (
 	"unicode"
 
 	"github.com/go-steer/supercargo/internal/llm"
+	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
@@ -36,6 +37,7 @@ const (
 	ToolList         = "list_shipments"
 	ToolGetEvents    = "get_events"
 	ToolAsk          = "ask_operator"
+	ToolStatus       = "get_status"
 )
 
 // containerTypes are the container types a draft may ask for: the label
@@ -68,6 +70,8 @@ var Tools = []llm.Tool{
 		Schema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
 	{Name: ToolGetEvents, Description: "Get one booking's signed track-and-trace events and alerts, oldest first.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"bookingRef":{"type":"string","maxLength":64},"operator":{"type":"string","maxLength":253,"description":"Only needed if two carriers use the same reference"}},"required":["bookingRef"],"additionalProperties":false}`)},
+	{Name: ToolStatus, Description: "Ask the carrier for one of our bookings' current DCSA status (structured, signed, no model involved): status, vessel, current location, ETA and all its events, including any we missed.",
+		Schema: json.RawMessage(`{"type":"object","properties":{"bookingRef":{"type":"string","maxLength":64}},"required":["bookingRef"],"additionalProperties":false}`)},
 	{Name: ToolAsk, Description: "Ask the carrier a question about one of our bookings. Our node sends it signed; the carrier's agent answers from that booking's records and cites them.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"bookingRef":{"type":"string","maxLength":64},"question":{"type":"string","maxLength":1000}},"required":["bookingRef","question"],"additionalProperties":false}`)},
 }
@@ -177,6 +181,22 @@ func (a *Assistant) run(ctx context.Context, c *Conversation, t *turnState, call
 			r.Records = r.Records[len(r.Records)-maxRecords:]
 		}
 		return r, nil
+	case ToolStatus:
+		var in struct{ BookingRef string }
+		_ = json.Unmarshal(call.Input, &in)
+		if t.statused[in.BookingRef] {
+			return nil, refuse("you already have %s's status from this turn; use it", in.BookingRef)
+		}
+		op, err := a.operatorOf(ctx, in.BookingRef, "")
+		if err != nil {
+			return nil, err
+		}
+		t.statused[in.BookingRef] = true
+		st, err := a.Node.Status(ctx, op, in.BookingRef)
+		if err != nil {
+			return nil, err
+		}
+		return trimStatus(st), nil
 	case ToolAsk:
 		var in struct{ BookingRef, Question string }
 		_ = json.Unmarshal(call.Input, &in)
@@ -201,6 +221,38 @@ func (a *Assistant) run(ctx context.Context, c *Conversation, t *turnState, call
 		return a.Node.Ask(ctx, op, in.BookingRef, q.Question)
 	}
 	return nil, refuse("no tool %s", call.Name) // ValidateCall ran first
+}
+
+// statusResult is get_status's result: the report with its latest
+// events (as get_events keeps), and how many older ones were left out.
+type statusResult struct {
+	*shipper.StatusResponse
+	OmittedEvents int `json:"omitted_events,omitempty"`
+}
+
+// trimStatus keeps a report's latest maxRecords events, and only the
+// missing IDs among them, so a large booking still fits a tool result.
+func trimStatus(st *shipper.StatusResponse) statusResult {
+	out := statusResult{StatusResponse: st}
+	if st.Status == nil || len(st.Status.Events) <= maxRecords {
+		return out
+	}
+	trimmed := *st.Status
+	out.OmittedEvents = len(trimmed.Events) - maxRecords
+	trimmed.Events = trimmed.Events[out.OmittedEvents:]
+	kept := map[string]bool{}
+	for _, e := range trimmed.Events {
+		kept[e.EventID] = true
+	}
+	resp := *st
+	resp.Status, resp.Missing = &trimmed, nil
+	for _, id := range st.Missing {
+		if kept[id] {
+			resp.Missing = append(resp.Missing, id)
+		}
+	}
+	out.StatusResponse = &resp
+	return out
 }
 
 // operatorOf finds the operator of our booking ref (one of ours: a tool

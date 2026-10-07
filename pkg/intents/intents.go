@@ -41,6 +41,8 @@ const (
 	TnTAlert            = "ulp.tnt.alert"
 	TnTInquiry          = "ulp.tnt.inquiry"
 	TnTInquiryResponse  = "ulp.tnt.inquiry.response"
+	OceanTnTRequest     = "ulp.ocean.tnt.request"
+	OceanTnTResponse    = "ulp.ocean.tnt.response"
 	DelegationGrant     = "ulp.delegation.grant"
 	Error               = "ulp.error"
 )
@@ -104,6 +106,8 @@ var specs = map[string]spec{
 	TnTAlert:            {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &TnTAlertBody{} }},
 	TnTInquiry:          {bookingRef: required, inReplyTo: forbidden, delegation: optional, newBody: func() Body { return &TnTInquiryBody{} }},
 	TnTInquiryResponse:  {bookingRef: required, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &TnTInquiryResponseBody{} }},
+	OceanTnTRequest:     {bookingRef: required, inReplyTo: forbidden, delegation: optional, dialect: &DialectDCSATnT, newBody: func() Body { return &TnTStatusRequestBody{} }},
+	OceanTnTResponse:    {bookingRef: required, inReplyTo: required, delegation: forbidden, dialect: &DialectDCSATnT, newBody: func() Body { return &TnTStatusResponseBody{} }},
 }
 
 // Supported reports whether Decode has a body type for intent.

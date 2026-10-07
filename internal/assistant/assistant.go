@@ -257,7 +257,7 @@ func (a *Assistant) loop(ctx context.Context, c *Conversation) (Reply, error) {
 		rounds = defaultRounds
 	}
 	var reply Reply
-	t := &turnState{asked: map[string]bool{}}
+	t := &turnState{asked: map[string]bool{}, statused: map[string]bool{}}
 	for round := 1; round <= rounds; round++ {
 		resp, err := a.generate(ctx, c, round)
 		if err != nil {
@@ -341,7 +341,8 @@ func (a *Assistant) system() string {
 
 // turnState is what one turn has done so far.
 type turnState struct {
-	asked map[string]bool // booking refs asked about
+	asked    map[string]bool // booking refs asked about
+	statused map[string]bool // booking refs whose status was pulled
 }
 
 // normalize makes the calls safe to keep in the history: a missing or
