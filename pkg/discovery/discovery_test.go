@@ -90,6 +90,9 @@ func TestParseProfile(t *testing.T) {
 	if _, ok := d.Key("ob-2025-9"); ok {
 		t.Error("Key found a kid the profile doesn't publish")
 	}
+	if kids := d.KIDs(); len(kids) != 2 || kids[0] != "ob-2026-1" || kids[1] != "ob-2026-2" {
+		t.Errorf("KIDs = %v", kids)
+	}
 	if !d.Accepts("ulp.tnt.inquiry") || d.Accepts("ulp.payment") {
 		t.Error("Accepts disagrees with services")
 	}

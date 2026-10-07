@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Smoke: the nodes' control API, what the TUI and the browser UI read. The
+# shipper's shipments and a booking's records, the operator's bookings, and
+# both activity streams (Server-Sent Events) over the control sockets, plus
+# `ulpnode watch` following a stream.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+work="$(mktemp -d)"
+trap 'smoke_stop; rm -rf "$work"' EXIT
+
+demo_build "$work"
+demo_ports
+demo_setup "$work" 40
+smoke_start "$work"
+
+"$work/bin/ulpnode" watch --config "$work/shipper.yaml" >"$work/watch.jsonl" 2>"$work/watch.err" &
+SMOKE_PIDS+=($!)
+
+if ! out="$("$work/bin/ulpnode" book --config "$work/shipper.yaml" --operator ocean-blue.example --request "$work/booking.json" --yes 2>"$work/book.log")"; then
+  smoke_fail "$work" "booking failed"
+fi
+ref="$(sed -n 's/.*"bookingRef": "\([^"]*\)".*/\1/p' <<<"$out")"
+smoke_wait_for "$work" "$work/shipper.log" '"msg":"event recorded".*"event":"TRANSPORT DEPA ACT"' 15
+
+cy() { curl -fsS --max-time "${2:-5}" --unix-socket "$work/cy.sock" "http://control$1"; }
+ob() { curl -fsS --max-time "${2:-5}" --unix-socket "$work/ob.sock" "http://control$1"; }
+
+shipments="$(cy /shipments)"
+grep -q "\"bookingRef\":\"$ref\"" <<<"$shipments" || smoke_fail "$work" "shipments lack $ref: $shipments"
+grep -q '"status":"in transit"' <<<"$shipments" || smoke_fail "$work" "the shipment isn't in transit: $shipments"
+cy "/shipments/ocean-blue.example/$ref/events" | grep -q '"sender":"ocean-blue.example"' ||
+  smoke_fail "$work" "the booking's records lack their sender"
+cy /profile/ocean-blue.example | grep -q '"a2a":"http://ocean-blue.example/a2a"' ||
+  smoke_fail "$work" "the operator's profile summary lacks its A2A endpoint"
+ob /bookings | grep -q "\"shipper\":\"cymbal-shoes.example\"" || smoke_fail "$work" "the operator's bookings lack the shipper"
+
+# The streams, replayed from the start (curl stops at --max-time).
+cy_stream="$(cy '/events?since=0' 2 2>/dev/null || true)"
+grep -q '^event: record' <<<"$cy_stream" || smoke_fail "$work" "the shipper's stream has no records"
+grep -q '"intent":"ulp.tnt.event".*"verified":true' <<<"$cy_stream" || smoke_fail "$work" "the shipper's stream has no verified event"
+ob_stream="$(ob '/events?since=0' 2 2>/dev/null || true)"
+grep -q '^event: voyage' <<<"$ob_stream" || smoke_fail "$work" "the operator's stream has no voyage"
+
+# ulpnode watch saw the same entries, as JSON lines.
+grep -q '"kind":"record"' "$work/watch.jsonl" || smoke_fail "$work" "ulpnode watch printed no records"
+
+echo "✓ smoke/api: shipments, records, profiles and both activity streams over the control sockets"

@@ -811,6 +811,27 @@ Loading is strict: an unknown or misspelled key is an error, because a security 
 
 Both CLIs reach their node through its **control socket**: HTTP over a Unix socket in a directory only the node's user can enter. Nothing on it is signed or authorized beyond that; whoever can reach the socket is the node's operator, the same person who can read its signing key. A Unix socket rather than a loopback port keeps out other users on the host and web pages in a local browser. The node refuses to start if the directory is open to group or others, and replaces only a stale socket at the path, never another file.
 
+**What the control API serves.** It is the node API that the CLIs, the TUI (M5) and the browser UI (M9) all use; remote access is #33's IAP and OAuth.
+
+| Role | Endpoint | What |
+|---|---|---|
+| both | `GET /events` | The **activity stream** as Server-Sent Events: replays the kept entries after `?since=N` (or `Last-Event-ID`), then streams new ones. |
+| shipper | `GET /shipments` | Its bookings at a glance: status from the latest actual event, ETA (the actual arrival, else the latest estimate, else the plan), counts. |
+| shipper | `GET /shipments/{operator}/{ref}/events` | A booking's summary and its records as verified: body, sender, message ID. |
+| shipper | `GET /profile/{domain}` | A partner's profile at a glance, fetched through the node's key cache (the guarded client and strict parser). |
+| shipper | `POST /book`, `POST /ask` | Send a booking a person confirmed; send an inquiry. |
+| operator | `GET /bookings`, `GET /bookings/{ref}/events` | Its bookings and what it published for each. |
+| operator | `POST /disrupt` | Delay a voyage (`ulpctl`). |
+
+**The activity stream** has one entry for everything a watcher should see. Each entry has a sequence number, a time and a kind:
+- **`envelope`:** a message in or out and the decision: intent, peers, `via`, message ID, kid, verified, outcome, code, and the node's reason. The reason goes to this node's operator, never to a partner.
+- **`record`:** an event or alert recorded (shipper) or published (operator).
+- **`model`:** a model call: model, attempt, prompt hash, skills, tokens, latency, validation outcome.
+- **`voyage`:** a simulated voyage starting.
+- **`push`:** a push dropped or unpublished.
+
+The node keeps the last 1,000 entries. A subscriber that falls behind is cut off rather than slowing the node; it reconnects from its last sequence number, with a `gap` event if entries it missed are gone. The JSON log is rendered from the same entries, so the log and every live view agree. `ulpnode watch --config …` follows a node's stream from a terminal.
+
 ### A.13 Testing
 
 | Level | What |

@@ -87,7 +87,7 @@ func TestAskRejects(t *testing.T) {
 
 func TestControlAsk(t *testing.T) {
 	s := answering(t, "Departed.", []string{"EV-1"}, "")
-	h := ControlHandler(s)
+	h := ControlHandler(s, nil)
 	post := func(body any) (int, AskResponse) {
 		b, _ := json.Marshal(body)
 		req := httptest.NewRequest(http.MethodPost, "/ask", strings.NewReader(string(b)))

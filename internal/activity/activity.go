@@ -1,0 +1,239 @@
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package activity is a node's activity stream: one structured entry for
+// everything the node does that someone watching should see (each
+// envelope in or out and the decision made about it, each event or alert
+// recorded or published, each model call, each voyage started). The node's
+// log, the control API's live stream, and later the TUI, the browser UI and
+// the pretty log all read the same entries, so they can't disagree.
+package activity
+
+import (
+	"sync"
+	"time"
+
+	"github.com/go-steer/supercargo/pkg/intents"
+)
+
+// Kinds of entries.
+const (
+	KindEnvelope = "envelope"
+	KindRecord   = "record"
+	KindModel    = "model"
+	KindVoyage   = "voyage"
+	KindPush     = "push"
+)
+
+// Entry is one thing the node did. Exactly one of the kind-specific fields
+// is set, matching Kind.
+type Entry struct {
+	Seq      uint64    `json:"seq"`
+	Time     time.Time `json:"time"`
+	Kind     string    `json:"kind"`
+	Envelope *Envelope `json:"envelope,omitempty"`
+	Record   *Record   `json:"record,omitempty"`
+	Model    *Model    `json:"model,omitempty"`
+	Voyage   *Voyage   `json:"voyage,omitempty"`
+	Push     *Push     `json:"push,omitempty"`
+}
+
+// Envelope is a message in or out and what the node decided about it
+// (node.Event).
+type Envelope struct {
+	Direction string `json:"dir"` // "in" or "out"
+	Intent    string `json:"intent"`
+	Sender    string `json:"sender"`
+	Receiver  string `json:"receiver"`
+	Via       string `json:"via"`
+	MessageID string `json:"messageId"`
+	KID       string `json:"kid"`
+	Verified  bool   `json:"verified"`
+	// Outcome is accepted, rejected or malformed (in), or sent, response or
+	// failed (out).
+	Outcome string `json:"outcome"`
+	Code    string `json:"code,omitempty"`
+	// Reason is the node's own account of a refusal. It goes to this node's
+	// operator (the log, the control API), never to a partner.
+	Reason string `json:"reason,omitempty"`
+}
+
+// Actions on a record.
+const (
+	ActionRecorded  = "recorded"  // received, verified and stored (shipper)
+	ActionPublished = "published" // stored and queued for the subscriber (operator)
+)
+
+// Record is an event or alert recorded or published for a booking.
+type Record struct {
+	Action  string                `json:"action"`
+	Booking string                `json:"booking"`
+	Event   *intents.TnTEventBody `json:"event,omitempty"`
+	Alert   *intents.TnTAlertBody `json:"alert,omitempty"`
+}
+
+// Model is one model call.
+type Model struct {
+	Booking      string   `json:"booking"`
+	Attempt      int      `json:"attempt"`
+	Model        string   `json:"model"`
+	PromptHash   string   `json:"promptHash"`
+	Skills       []string `json:"skills,omitempty"`
+	InputTokens  int      `json:"inputTokens"`
+	OutputTokens int      `json:"outputTokens"`
+	LatencyMS    int64    `json:"latencyMs"`
+	Outcome      string   `json:"outcome"` // ok, invalid or error
+	Reason       string   `json:"reason,omitempty"`
+}
+
+// Voyage is a simulated voyage starting, or failing to.
+type Voyage struct {
+	Booking        string  `json:"booking"`
+	Started        bool    `json:"started"`
+	Departure      string  `json:"departure,omitempty"`
+	Arrival        string  `json:"arrival,omitempty"`
+	HoursPerSecond float64 `json:"hoursPerSecond,omitempty"`
+	Error          string  `json:"error,omitempty"`
+}
+
+// Push is a push the operator gave up on, or couldn't publish.
+type Push struct {
+	Booking string `json:"booking"`
+	ID      string `json:"id,omitempty"`
+	// Problem is "dropped" (given up on) or "unpublished" (not recorded).
+	Problem string `json:"problem"`
+	Error   string `json:"error"`
+}
+
+// Bus fans entries out to subscribers, keeping the most recent ones so a
+// subscriber that connects (or reconnects) late can catch up. Publishing
+// never blocks: a subscriber that falls behind is cut off, and catches up
+// from the history when it reconnects.
+type Bus struct {
+	keep int
+	now  func() time.Time
+
+	mu      sync.Mutex
+	seq     uint64
+	history []Entry // the last keep entries, oldest first
+	subs    map[*subscriber]struct{}
+	sinks   []func(Entry)
+	closed  bool
+}
+
+type subscriber struct {
+	ch chan Entry
+}
+
+// NewBus returns a Bus keeping the last keep entries (default 1000).
+func NewBus(keep int) *Bus {
+	if keep <= 0 {
+		keep = 1000
+	}
+	return &Bus{keep: keep, now: time.Now, subs: map[*subscriber]struct{}{}}
+}
+
+// Sink adds f, called synchronously with every entry in order (the log).
+// Add sinks before publishing.
+func (b *Bus) Sink(f func(Entry)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.sinks = append(b.sinks, f)
+}
+
+// Publish stamps e with the next sequence number and the time, and hands
+// it to the sinks and subscribers.
+func (b *Bus) Publish(e Entry) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.seq++
+	e.Seq = b.seq
+	if e.Time.IsZero() {
+		e.Time = b.now()
+	}
+	b.history = append(b.history, e)
+	if len(b.history) > b.keep {
+		b.history = b.history[len(b.history)-b.keep:]
+	}
+	for _, f := range b.sinks {
+		f(e)
+	}
+	for s := range b.subs {
+		select {
+		case s.ch <- e:
+		default:
+			// Behind: cut off. Closing tells the reader to reconnect with
+			// the last sequence number it saw.
+			close(s.ch)
+			delete(b.subs, s)
+		}
+	}
+}
+
+// Subscribe returns the kept entries after since, then a channel of new
+// ones, closed if the subscriber falls behind or cancel is called. gap
+// reports that entries after since are no longer kept. A since beyond the
+// last entry (a client that watched a node before it restarted) counts as
+// missing everything: it gets the whole history, and a gap. Starting from
+// 0 is never a gap: a new watcher missed nothing it asked for.
+func (b *Bus) Subscribe(since uint64, buffer int) (past []Entry, live <-chan Entry, gap bool, cancel func()) {
+	if buffer <= 0 {
+		buffer = 256
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if since > b.seq {
+		since, gap = 0, true
+	}
+	for _, e := range b.history {
+		if e.Seq > since {
+			past = append(past, e)
+		}
+	}
+	gap = gap || (since > 0 && len(b.history) > 0 && b.history[0].Seq > since+1)
+	s := &subscriber{ch: make(chan Entry, buffer)}
+	if b.closed {
+		close(s.ch) // shutting down: history only
+		return past, s.ch, gap, func() {}
+	}
+	b.subs[s] = struct{}{}
+	return past, s.ch, gap, func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if _, ok := b.subs[s]; ok {
+			delete(b.subs, s)
+			close(s.ch)
+		}
+	}
+}
+
+// Close ends every live subscription, so streams finish and the server
+// serving them can shut down; later subscribers get the history only.
+// Publishing still reaches the sinks (the log).
+func (b *Bus) Close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.closed = true
+	for s := range b.subs {
+		close(s.ch)
+		delete(b.subs, s)
+	}
+}
+
+// Seq is the last sequence number published.
+func (b *Bus) Seq() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.seq
+}

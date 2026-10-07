@@ -17,6 +17,7 @@ package store
 import (
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,6 +92,24 @@ func (s *Bookings) Get(operator, ref string) (Booking, error) {
 		return Booking{}, ErrNotFound
 	}
 	return clone(b), nil
+}
+
+// List returns copies of all bookings, newest first (by creation, then
+// reference).
+func (s *Bookings) List() []Booking {
+	s.mu.Lock()
+	out := make([]Booking, 0, len(s.m))
+	for _, b := range s.m {
+		out = append(out, clone(b))
+	}
+	s.mu.Unlock()
+	slices.SortFunc(out, func(a, b Booking) int {
+		if c := b.CreatedAt.Compare(a.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Operator+"/"+a.Ref, b.Operator+"/"+b.Ref)
+	})
+	return out
 }
 
 // Operators returns the operators that hold a booking under ref, sorted: a

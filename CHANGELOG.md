@@ -14,6 +14,7 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- The node API (#15): each node's **activity stream**, one structured entry per envelope decision, record, model call, voyage and dropped push, served as Server-Sent Events at `GET /events` on the control socket (with replay and resume). The JSON log is now rendered from the same entries. The shipper serves `GET /shipments`, `GET /shipments/{operator}/{ref}/events` and `GET /profile/{domain}`; the operator serves `GET /bookings` and `GET /bookings/{ref}/events`. `ulpnode watch` follows a stream. `discovery.Document.KIDs` is new in `pkg/`. `dev/smoke/api` covers it.
 - Claude and agent skills (milestone 4, part 3):
   - `internal/llm/anthropic`: the Anthropic adapter, derived from mast's provider. JSON replies come through a forced `respond` tool.
   - `llm: { provider: anthropic }` takes the key from `ANTHROPIC_API_KEY` (or `apiKeyEnv`); a node without it doesn't start.

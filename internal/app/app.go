@@ -30,6 +30,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/internal/llm"
@@ -62,6 +63,9 @@ type App struct {
 	Events *store.EventLog
 	Server *http.Server
 	Logger *slog.Logger
+	// Activity is the node's activity stream: the log's source, served live
+	// on the control API at /events.
+	Activity *activity.Bus
 
 	// The operator's push path and simulator, and the presenter's control
 	// API (nil unless configured).
@@ -119,7 +123,11 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		return nil, err
 	}
 
-	a := &App{Config: cfg, Bookings: store.NewBookings(), Events: store.NewEventLog(0), Keys: cache, Logger: logger}
+	a := &App{Config: cfg, Bookings: store.NewBookings(), Events: store.NewEventLog(0), Keys: cache, Logger: logger,
+		Activity: activity.NewBus(0)}
+	// The log is the activity stream's first reader: what the log says and
+	// what a live client sees are the same entries.
+	a.Activity.Sink(activity.SlogSink(logger))
 	handlers := map[string]node.Handler{}
 	if cfg.Role == config.RoleOperator {
 		if err := a.operatorRole(handlers); err != nil {
@@ -128,8 +136,8 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	}
 	if cfg.Role == config.RoleShipper {
 		inbound := &shipper.Inbound{Bookings: a.Bookings, Log: a.Events, Now: time.Now,
-			OnEvent: func(b store.Booking, e *intents.TnTEventBody) { logEvent(logger, "event recorded", b.Ref, e) },
-			OnAlert: func(b store.Booking, al *intents.TnTAlertBody) { logAlert(logger, "alert recorded", b.Ref, al) },
+			OnEvent: func(b store.Booking, e *intents.TnTEventBody) { a.record(activity.ActionRecorded, b.Ref, e) },
+			OnAlert: func(b store.Booking, al *intents.TnTAlertBody) { a.record(activity.ActionRecorded, b.Ref, al) },
 		}
 		handlers[intents.TnTEvent] = inbound
 		handlers[intents.TnTAlert] = inbound
@@ -154,7 +162,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		Handlers: handlers,
 		Poster:   client,
 		A2A:      a2aClient,
-		Observer: node.SlogObserver(logger),
+		Observer: a.observe,
 	})
 	if err != nil {
 		return nil, err
@@ -167,11 +175,14 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		a.Shipper = &shipper.Shipper{Node: n, Bookings: a.Bookings, Events: a.Events, Now: time.Now}
 	}
 	if cfg.Control != nil {
-		h := operator.ControlHandler(a.Simulator)
+		role := operator.ControlHandler(a.Simulator, a.Bookings, a.Events)
 		if a.Shipper != nil {
-			h = shipper.ControlHandler(a.Shipper)
+			role = shipper.ControlHandler(a.Shipper, cache)
 		}
-		a.Control = control.Server(h, slog.NewLogLogger(logger.Handler(), slog.LevelInfo))
+		mux := http.NewServeMux()
+		mux.Handle("GET /events", activity.Handler(a.Activity))
+		mux.Handle("/", role)
+		a.Control = control.Server(mux, slog.NewLogLogger(logger.Handler(), slog.LevelInfo))
 	}
 	a.Server = &http.Server{
 		Addr:    cfg.Listen,
@@ -251,6 +262,9 @@ func (a *App) shutdown() {
 	if a.Publisher != nil {
 		a.Publisher.Close()
 	}
+	// End the activity streams: http.Server.Shutdown waits for every
+	// connection to go idle, and a stream never would.
+	a.Activity.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if a.Control != nil {
@@ -266,19 +280,16 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	o := cfg.Operator
 	a.Publisher = &operator.Publisher{Domain: cfg.Domain, Log: a.Events, Now: time.Now,
 		OnDrop: func(ref, id string, err error) {
-			log.Warn("push dropped", "booking", ref, "id", id, "err", err)
+			a.Activity.Publish(activity.Entry{Kind: activity.KindPush,
+				Push: &activity.Push{Booking: ref, ID: id, Problem: "dropped", Error: err.Error()}})
 		},
 	}
 	a.Simulator = &operator.Simulator{Publisher: a.Publisher, HoursPerSecond: cfg.Simulator.HoursPerSecond,
-		OnError: func(ref string, err error) { log.Warn("event not published", "booking", ref, "err", err) },
-		OnPublish: func(ref string, body intents.Body) {
-			switch b := body.(type) {
-			case *intents.TnTEventBody:
-				logEvent(log, "event published", ref, b)
-			case *intents.TnTAlertBody:
-				logAlert(log, "alert published", ref, b)
-			}
+		OnError: func(ref string, err error) {
+			a.Activity.Publish(activity.Entry{Kind: activity.KindPush,
+				Push: &activity.Push{Booking: ref, Problem: "unpublished", Error: err.Error()}})
 		},
+		OnPublish: func(ref string, body intents.Body) { a.record(activity.ActionPublished, ref, body) },
 	}
 	deny := map[string]bool{}
 	for _, d := range o.Deny {
@@ -301,48 +312,48 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	}
 	handlers[intents.TnTInquiry] = &operator.InquiryService{Bookings: a.Bookings, Log: a.Events, Model: model, Name: cfg.Name, Skills: agentSkills,
 		OnModelCall: func(c operator.ModelCall) {
-			level := slog.LevelInfo
-			if c.Outcome != "ok" {
-				level = slog.LevelWarn
-			}
-			log.Log(context.Background(), level, "model call", "booking", c.Booking, "attempt", c.Attempt, "model", c.Model,
-				"promptHash", c.PromptHash, "skills", c.Skills, "inputTokens", c.Usage.InputTokens, "outputTokens", c.Usage.OutputTokens,
-				"latency", c.Latency.Round(time.Millisecond).String(), "outcome", c.Outcome, "reason", c.Reason)
+			a.Activity.Publish(activity.Entry{Kind: activity.KindModel, Model: &activity.Model{
+				Booking: c.Booking, Attempt: c.Attempt, Model: c.Model, PromptHash: c.PromptHash, Skills: c.Skills,
+				InputTokens: c.Usage.InputTokens, OutputTokens: c.Usage.OutputTokens,
+				LatencyMS: c.Latency.Round(time.Millisecond).Milliseconds(), Outcome: c.Outcome, Reason: c.Reason}})
 		},
 	}
 	handlers[intents.BookingRequest] = &operator.BookingService{
 		Bookings: a.Bookings, Deny: deny, RefPrefix: o.RefPrefix, ContainerPrefix: o.ContainerPrefix, Now: time.Now,
 		Voyage: operator.Voyage{Vessel: o.Vessel, Number: o.Voyage, DepartureHour: o.DepartureHour, Transit: o.Transit},
 		OnBooked: func(b store.Booking) {
+			v := &activity.Voyage{Booking: b.Ref, Started: true, Departure: b.Confirmation.PlannedDeparture,
+				Arrival: b.Confirmation.PlannedArrival, HoursPerSecond: cfg.Simulator.HoursPerSecond}
 			if err := a.Simulator.Start(b); err != nil {
-				log.Warn("no voyage for booking", "booking", b.Ref, "err", err)
-				return
+				v = &activity.Voyage{Booking: b.Ref, Error: err.Error()}
 			}
-			log.Info("voyage started", "booking", b.Ref, "departure", b.Confirmation.PlannedDeparture,
-				"arrival", b.Confirmation.PlannedArrival, "hoursPerSecond", cfg.Simulator.HoursPerSecond)
+			a.Activity.Publish(activity.Entry{Kind: activity.KindVoyage, Voyage: v})
 		},
 	}
 	return nil
 }
 
-// logEvent logs a validated event's fields: codes from fixed sets, and
-// text the intent's rules already cleaned.
-func logEvent(log *slog.Logger, msg, ref string, e *intents.TnTEventBody) {
-	attrs := []any{"booking", ref, "eventId", e.EventID, "event", e.EventType + " " + e.EventCode + " " + e.EventClassifierCode,
-		"at", e.EventDateTime, "location", e.Location.UNLocode}
-	if e.EquipmentRef != "" {
-		attrs = append(attrs, "container", e.EquipmentRef)
+// record publishes an event or alert recorded or published for ref. The
+// bodies were validated (received ones by the pipeline, published ones by
+// the publisher), so their text is safe to show.
+func (a *App) record(action, ref string, body intents.Body) {
+	r := &activity.Record{Action: action, Booking: ref}
+	switch b := body.(type) {
+	case *intents.TnTEventBody:
+		r.Event = b
+	case *intents.TnTAlertBody:
+		r.Alert = b
+	default:
+		return
 	}
-	if e.Transport != nil {
-		attrs = append(attrs, "vessel", e.Transport.Vessel+" "+e.Transport.Voyage)
-	}
-	log.Info(msg, attrs...)
+	a.Activity.Publish(activity.Entry{Kind: activity.KindRecord, Record: r})
 }
 
-// logAlert logs a validated alert, at Warn: it is news.
-func logAlert(log *slog.Logger, msg, ref string, al *intents.TnTAlertBody) {
-	log.Warn(msg, "booking", ref, "alertId", al.AlertID, "kind", al.Kind, "severity", al.Severity,
-		"summary", al.Summary, "previousEta", al.PreviousETA, "newEta", al.NewETA, "causeEventIds", al.CauseEventIDs)
+// observe publishes the node's decision about an envelope.
+func (a *App) observe(e node.Event) {
+	a.Activity.Publish(activity.Entry{Time: e.Time, Kind: activity.KindEnvelope, Envelope: &activity.Envelope{
+		Direction: e.Direction, Intent: e.Intent, Sender: e.Sender, Receiver: e.Receiver, Via: e.Via,
+		MessageID: e.MessageID, KID: e.KID, Verified: e.Verified, Outcome: e.Outcome, Code: e.Code, Reason: e.Reason}})
 }
 
 func loadPool(path string) (*x509.CertPool, error) {

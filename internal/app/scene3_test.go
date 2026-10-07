@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/internal/operator"
@@ -199,6 +201,55 @@ control: { socket: "` + shSock + `" }
 	}
 	if !strings.Contains(opLog.String(), `"intent":"ulp.tnt.inquiry","sender":"cymbal-shoes.example","receiver":"ocean-blue.example","via":"a2a"`) {
 		t.Error("the inquiry didn't arrive over A2A")
+	}
+
+	// The control API shows the same story: the shipper's shipments, and
+	// both nodes' activity streams, replayed from the start.
+	var shipments shipper.ShipmentsResponse
+	resp, err := control.Client(shSock, 5*time.Second).Get("http://control/shipments")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&shipments)
+	resp.Body.Close()
+	if len(shipments.Shipments) != 1 || shipments.Shipments[0].Ref != ref || shipments.Shipments[0].Alerts != 1 ||
+		shipments.Shipments[0].ETA != dr.Alert.NewETA {
+		t.Errorf("shipments %+v", shipments)
+	}
+	// missing reads sock's stream from the start until every wanted entry
+	// has been seen (or 5s pass), and returns those that weren't.
+	missing := func(sock string, want ...string) []string {
+		left := map[string]bool{}
+		for _, w := range want {
+			left[w] = true
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = activity.Stream(ctx, control.Client(sock, 0), "http://control/events", 0, func(e activity.Entry, _ error) error {
+			key := e.Kind
+			switch {
+			case e.Envelope != nil:
+				key += " " + e.Envelope.Direction + " " + e.Envelope.Intent + " via " + e.Envelope.Via
+			case e.Record != nil:
+				key += " " + e.Record.Action
+			}
+			delete(left, key)
+			if len(left) == 0 {
+				return io.EOF // done
+			}
+			return nil
+		})
+		var out []string
+		for k := range left {
+			out = append(out, k)
+		}
+		return out
+	}
+	if m := missing(shSock, "envelope in ulp.tnt.event via rest", "record recorded", "envelope out ulp.tnt.inquiry via a2a"); len(m) != 0 {
+		t.Errorf("the shipper's stream lacks %v", m)
+	}
+	if m := missing(opSock, "voyage", "record published", "model", "envelope in ulp.tnt.inquiry via a2a"); len(m) != 0 {
+		t.Errorf("the operator's stream lacks %v", m)
 	}
 
 	// The logs tell the story: the operator published, the shipper

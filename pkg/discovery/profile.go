@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -95,6 +96,11 @@ type Document struct {
 func (d *Document) Key(kid string) (sig.Verifier, bool) {
 	v, ok := d.keys[kid]
 	return v, ok
+}
+
+// KIDs returns the key IDs the profile publishes, sorted.
+func (d *Document) KIDs() []string {
+	return slices.Sorted(maps.Keys(d.keys))
 }
 
 // Accepts reports whether any of the profile's services lists intent.
