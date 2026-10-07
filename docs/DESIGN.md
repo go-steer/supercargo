@@ -672,6 +672,15 @@ type Model interface {
 Choose the provider by config. The demo logic must not depend on provider-specific features beyond tool calling and JSON output.
 
 **No agent runner: the tool loop is ours.** Each `Generate` call is one turn. Tool calls come back to the caller, which validates them and then executes or refuses them. Frameworks whose runner executes the model's tool calls itself (ADK's, for one) don't fit "models propose, code acts".
+- `internal/llm` carries the turn: tool definitions (name, description, JSON Schema) in the request; the model's tool calls and its stop reason in the response; and earlier calls and their results in the history.
+- **`llm.ValidateCall` checks a proposed call before anything runs.**
+  - The tool must exist, named exactly.
+  - The input must be one JSON object with nothing after it.
+  - No two members may differ only in case, at any depth, and no member may be a case variant of a declared property (`Count` beside `count`, or with the Kelvin sign for `k`). encoding/json matches names case-insensitively, so a tool decoding the input would otherwise read a value the validator never checked.
+  - The input must match the tool's schema, within the subset our tools use: object properties, required, `additionalProperties: false`, string length and exact-match enums, integer and number ranges, arrays of bounded length.
+
+  A call that fails is refused; the error goes back to the model as the tool's result, and nothing runs. Schemas are parsed strictly and fail closed: the root must be an object schema, and a keyword the validator doesn't enforce (`pattern`, `minLength`, `oneOf`…) makes the tool unusable rather than silently unchecked.
+- The Anthropic adapter maps calls to `tool_use` and results to `tool_result` blocks (ported from mast). The fake scripts whole turns (`fake.Turns`), and its adversarial calls (an unknown tool, malformed or extra input, duplicate members, a send that no tool offers) must all be refused.
 
 **Code adapted from go-steer/mast.** The Anthropic adapter is adapted from mast's provider: tool-call conversion, thinking blocks, JSON-schema normalization. Copied files carry a `derived from go-steer/mast@<commit>` header and are maintained here. mast's packages are internal to its module, and copying keeps pre-1.0 churn and private-module access out of this build. The fake model follows mast's replay and schema-filling fakes. It adds adversarial replies (malformed JSON, event IDs from another booking, oversized answers) so that validation and fallback paths are exercised by default.
 

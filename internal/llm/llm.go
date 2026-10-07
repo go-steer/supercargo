@@ -37,10 +37,13 @@ const (
 	Assistant Role = "assistant"
 )
 
-// Message is one turn of the conversation.
+// Message is one turn of the conversation. An assistant message may carry
+// tool calls; the user message after it carries their results.
 type Message struct {
-	Role Role
-	Text string
+	Role        Role
+	Text        string
+	ToolCalls   []ToolCall   // assistant
+	ToolResults []ToolResult // user
 }
 
 // GenerateRequest is one model turn's input.
@@ -54,6 +57,9 @@ type GenerateRequest struct {
 	JSONSchema json.RawMessage
 	// MaxTokens caps the output (0: the provider's default).
 	MaxTokens int
+	// Tools the model may call. Calls come back in the response; the
+	// caller validates them (ValidateCall) and decides whether to run them.
+	Tools []Tool
 }
 
 // Usage is what a turn cost.
@@ -68,7 +74,19 @@ type GenerateResponse struct {
 	Usage Usage
 	// Model is the model that answered, as the provider names it.
 	Model string
+	// ToolCalls are the tools the model asked to call, in order.
+	ToolCalls []ToolCall
+	// StopReason is why the turn ended: StopEnd, StopTool, StopMaxTokens,
+	// or a provider's own reason.
+	StopReason string
 }
+
+// Stop reasons.
+const (
+	StopEnd       = "end_turn"
+	StopTool      = "tool_use"
+	StopMaxTokens = "max_tokens"
+)
 
 // Model runs model turns.
 type Model interface {
