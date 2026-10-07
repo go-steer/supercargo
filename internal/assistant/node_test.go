@@ -87,6 +87,15 @@ func TestControlNode(t *testing.T) {
 		}
 		answer(w, http.StatusOK, shipper.AskResponse{Operator: asked.Operator, Answer: &intents.TnTInquiryResponseBody{Answer: "Soon."}})
 	})
+	mux.HandleFunc("POST /status", func(w http.ResponseWriter, r *http.Request) {
+		var req shipper.StatusRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.BookingRef != "OB-BKG-1" {
+			answer(w, http.StatusNotFound, shipper.StatusResponse{Error: "no booking"})
+			return
+		}
+		answer(w, http.StatusOK, shipper.StatusResponse{Operator: "ocean-blue.example", Status: &intents.TnTStatus{DCSAStatus: intents.StatusBooked}})
+	})
 	mux.HandleFunc("POST /book", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&booked)
 		answer(w, http.StatusOK, shipper.BookResponse{Confirmation: &intents.BookingConfirmationBody{BookingRef: "OB-BKG-2"}})
@@ -116,6 +125,12 @@ func TestControlNode(t *testing.T) {
 	}
 	if _, err := n.Ask(ctx, "", "OB-BKG-1", "leak"); err == nil || !strings.Contains(err.Error(), "private") {
 		t.Errorf("Ask refusal: %v", err)
+	}
+	if st, err := n.Status(ctx, "", "OB-BKG-1"); err != nil || st.Status.DCSAStatus != intents.StatusBooked {
+		t.Errorf("Status: %+v, %v", st, err)
+	}
+	if _, err := n.Status(ctx, "", "OB-BKG-9"); err == nil || err.Error() != "no booking" {
+		t.Errorf("Status failure: %v", err)
 	}
 	if b, err := n.Book(ctx, shipper.BookRequest{Operator: "ocean-blue.example"}); err != nil || b.Confirmation.BookingRef != "OB-BKG-2" ||
 		booked.Operator != "ocean-blue.example" {

@@ -140,6 +140,25 @@ func startNode(t *testing.T, cfg string, status int) *fakeNode {
 	}
 	f := &fakeNode{}
 	srv := control.Server(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/status" {
+			var req shipper.StatusRequest
+			if err := control.Decode(r, &req); err != nil {
+				t.Errorf("decode: %v", err)
+			}
+			if status != http.StatusOK {
+				control.Answer(w, status, shipper.StatusResponse{Error: "no booking " + req.BookingRef})
+				return
+			}
+			control.Answer(w, status, shipper.StatusResponse{Operator: "ocean-blue.example", Missing: []string{"EV-2"},
+				Status: &intents.TnTStatus{TransportDocumentReference: req.BookingRef, DCSAStatus: intents.StatusInTransit,
+					VesselName: "Ocean Blue Aurora", VoyageNumber: "42W", PortOfLoading: "NLRTM", PortOfDischarge: "USEWR",
+					CurrentLocation:        &intents.CurrentLocation{UNLocationCode: "NLRTM", FacilityName: "Port of Rotterdam"},
+					EstimatedTimeOfArrival: "2026-10-16T08:00:00Z", Events: []intents.TnTEventBody{
+						{EventID: "EV-1", EventType: "TRANSPORT", EventClassifierCode: "ACT", EventTypeCode: "DEPA", EventDateTime: "2026-10-07T18:00:00Z", Description: "Departed"},
+						{EventID: "EV-2", EventType: "TRANSPORT", EventClassifierCode: "EST", EventTypeCode: "ARRI", EventDateTime: "2026-10-16T08:00:00Z", Description: "Expected"},
+					}}})
+			return
+		}
 		if r.URL.Path == "/ask" {
 			var req shipper.AskRequest
 			if err := control.Decode(r, &req); err != nil {
@@ -388,4 +407,41 @@ func TestMain(m *testing.M) {
 		_ = os.Unsetenv(k)
 	}
 	os.Exit(m.Run())
+}
+
+func TestStatusCommand(t *testing.T) {
+	cfg := shipperConfig(t)
+	startNode(t, cfg, http.StatusOK)
+	out, err := runCmd(t, "", "status", "--config", cfg, "--booking", "OB-BKG-1042")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ocean-blue.example reports OB-BKG-1042: IN_TRANSIT", "Vessel:   Ocean Blue Aurora 42W", "Route:    NLRTM → USEWR",
+		"Now at:   NLRTM Port of Rotterdam", "ETA:      2026-10-16T08:00:00Z", "Departed\n", "Expected  (not received as a push)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestStatusCommandRejects(t *testing.T) {
+	cfg := shipperConfig(t)
+	opCfg := writeFile(t, "op.yaml", strings.Replace(mustRead(t, cfg), "role: shipper",
+		"role: operator\noperator: { refPrefix: OB, containerPrefix: OCBU, vessel: V, voyage: 1W, departureHour: 1, transit: 1h }", 1))
+	for name, args := range map[string][]string{
+		"no booking":       {"status", "--config", cfg},
+		"no config":        {"status", "--booking", "B"},
+		"missing config":   {"status", "--config", "/nonexistent.yaml", "--booking", "B"},
+		"operator config":  {"status", "--config", opCfg, "--booking", "B"},
+		"bad flag":         {"status", "--nope"},
+		"node not running": {"status", "--config", cfg, "--booking", "B"},
+	} {
+		if _, err := runCmd(t, "", args...); err == nil {
+			t.Errorf("%s: succeeded", name)
+		}
+	}
+	startNode(t, cfg, http.StatusNotFound)
+	if _, err := runCmd(t, "", "status", "--config", cfg, "--booking", "B"); err == nil || !strings.Contains(err.Error(), "no booking B") {
+		t.Errorf("a refusal: %v", err)
+	}
 }

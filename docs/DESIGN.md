@@ -456,6 +456,7 @@ Until then, all payloads are **demo designs**, loosely modeled on DCSA where not
 | `ulp.tnt.event` | operator → subscriber | REST webhook | async push | (HTTP 204 ack only) |
 | `ulp.tnt.alert` | operator → subscriber | REST webhook | async push | (HTTP 204 ack only) |
 | `ulp.tnt.inquiry` | shipper/receiver → operator | **A2A** (`shipment-inquiry` skill) | sync | `ulp.tnt.inquiry.response` |
+| `ulp.ocean.tnt.request` | shipper/receiver → operator | REST | sync | `ulp.ocean.tnt.response` |
 | `ulp.delegation.grant` | shipper → operator (optional pre-notify) | REST | sync | ack |
 | `ulp.error` | any | same as the request | as a response | n/a |
 
@@ -471,6 +472,8 @@ The binding column is the **default**. Every intent is a signed envelope, so any
 | `tnt.alert` | required | absent | absent | absent |
 | `tnt.inquiry` | required | absent | optional (a receiver's delegation) | absent |
 | `tnt.inquiry.response` | required | required | absent | absent |
+| `ocean.tnt.request` | required | absent | optional (a receiver's delegation) | required: `DCSA_TNT` `2.2.0` |
+| `ocean.tnt.response` | required | required | absent | required: `DCSA_TNT` `2.2.0` |
 | `ulp.error` | optional | required | absent | absent |
 
 **Body rules.** Bodies are decoded with exact member names: a member the intent doesn't define, a duplicate, or one that differs from a defined member only in case is `invalid_body`. Otherwise one implementation could read `"Question"` where another reads `"question"`.
@@ -552,6 +555,22 @@ The shipper's required delivery date is **deliberately not sent**. It's private 
 ```
 `kind` is `delay`, `early` or `exception`, and `severity` is `low`, `medium` or `high`. A `delay` or `early` alert carries both ETAs, and `new_eta` is later (or earlier) accordingly. `summary` is one line of at most 280 characters, and an alert cites at most 20 cause events (any event type).
 
+**`ulp.ocean.tnt.request`** → **`ulp.ocean.tnt.response`**: the standard payloads, pf's DCSA Track & Trace status query and report, both with dialect `DCSA_TNT 2.2.0`
+```json
+{ "tnt_request": { "transport_document_reference": "OB-BKG-1042", "equipment_reference": null, "carrier_booking_reference": "OB-BKG-1042" } }
+```
+```json
+{ "tnt_response": {
+    "transport_document_reference": "OB-BKG-1042", "carrier_booking_reference": "OB-BKG-1042",
+    "dcsa_status": "IN_TRANSIT",
+    "vessel_name": "Ocean Blue Aurora", "voyage_number": "42W",
+    "port_of_loading": "NLRTM", "port_of_discharge": "USEWR",
+    "current_location": { "un_location_code": "NLRTM", "facility_name": "Port of Rotterdam" },
+    "estimated_time_of_arrival": "2026-10-16T08:00:00Z",
+    "events": [ /* ulp.tnt.event bodies, oldest first, at most 100 (the latest) */ ] } }
+```
+A structured, deterministic status pull: no model is involved, and it lets a subscriber catch up on pushes it missed (the shipper marks the reported events it never received). `dcsa_status` is one of `BOOKED`, `RECEIVED`, `LOADED`, `IN_TRANSIT`, `TRANSSHIPMENT`, `DISCHARGED`, `DELIVERED`, `NOT_FOUND`, and the operator derives it from the latest actual event (gate-in → `RECEIVED`, load → `LOADED`, departure and arrival → `IN_TRANSIT`, discharge → `DISCHARGED`, gate-out → `DELIVERED`). Authorization is the inquiry's ([A.6](#a6-authorization-rules)). References that don't name the header's booking get `NOT_FOUND` with nothing else, and an `equipment_reference` filters out other containers' equipment events. Until the eBL (#66) assigns transport document references, a booking's reference is its transport document reference. Only transport and equipment events set `current_location` (a shipment event's location is a document's). A `NOT_FOUND` report carries nothing but the references asked about. The report is cut to its latest events if it would not fit an envelope, and the shipper checks that the body names the booking it asked about. **Stricter than pf:** pf leaves `current_location` open, where ULP fixes it to `un_location_code` and `facility_name`. ULP also requires `events` (an empty list for none), a 7-digit IMO number, UN/LOCODE ports, a whole-second UTC ETA, unique event IDs and at most 100 events, and it refuses unknown members. The assistant's `get_status` result keeps the latest 30 events (with a count of the rest), once per booking per turn. `ulpnode status`, the control API's `POST /status` and the assistant's `get_status` tool use it.
+
 **`ulp.tnt.inquiry`** → **`ulp.tnt.inquiry.response`**
 ```json
 { "question": "What caused the delay on this shipment, and how firm is the new ETA of the 16th?" }
@@ -594,6 +613,7 @@ These are evaluated after signature, replay and body validation, and **before** 
 |---|---|
 | `booking.request` | Sender is not on a deny list (demo: anyone may request; the operator may reject) |
 | `tnt.inquiry` | `sender == booking.shipper` **or** a valid delegation is attached: signature by `booking.shipper`, `audience == self`, `grantee == sender`, `scope` includes `tnt:read`, matching `bookingRef`, not expired. An unknown booking and someone else's get the same `forbidden`. Until delegation lands (milestone 7), an inquiry carrying one is refused rather than having it ignored |
+| `ocean.tnt.request` | The same rule as `tnt.inquiry` (the booking's shipper, or from milestone 7 a delegate with `tnt:read`), the same single `forbidden` |
 | `tnt.event` / `tnt.alert` (inbound at the shipper) | `sender == booking.operator` (the booking is looked up under the sender, so another carrier never finds it), and the booking has an active subscription that lists this intent. Every failure is the same `forbidden`, so the answer reveals nothing about which bookings exist |
 | Subscription endpoint | Must be on the sender's own domain (prevents using the operator to push data to third parties) |
 

@@ -112,25 +112,33 @@ func ControlHandler(s *Shipper, profiles rest.Profiles) http.Handler {
 		}
 		control.Answer(w, http.StatusOK, BookResponse{Confirmation: conf})
 	})
+	// operatorOf finds the operator of ref when the request names none;
+	// it answers and reports false when it can't.
+	operatorOf := func(op, ref string, fail func(int, string)) (string, bool) {
+		if op != "" {
+			return op, true
+		}
+		// The reference alone names it if exactly one operator has it.
+		switch ops := s.Bookings.Operators(ref); len(ops) {
+		case 0:
+			fail(http.StatusNotFound, "no booking "+ref)
+			return "", false
+		case 1:
+			return ops[0], true
+		default:
+			fail(http.StatusConflict, "several operators have a booking "+ref+"; name one: "+strings.Join(ops, ", "))
+			return "", false
+		}
+	}
 	mux.HandleFunc("POST /ask", func(w http.ResponseWriter, r *http.Request) {
 		var req AskRequest
 		if err := control.Decode(r, &req); err != nil {
 			control.Answer(w, http.StatusBadRequest, AskResponse{Error: err.Error()})
 			return
 		}
-		op := req.Operator
-		if op == "" {
-			// The reference alone names it if exactly one operator has it.
-			switch ops := s.Bookings.Operators(req.BookingRef); len(ops) {
-			case 0:
-				control.Answer(w, http.StatusNotFound, AskResponse{Error: "no booking " + req.BookingRef})
-				return
-			case 1:
-				op = ops[0]
-			default:
-				control.Answer(w, http.StatusConflict, AskResponse{Error: "several operators have a booking " + req.BookingRef + "; name one: " + strings.Join(ops, ", ")})
-				return
-			}
+		op, ok := operatorOf(req.Operator, req.BookingRef, func(code int, msg string) { control.Answer(w, code, AskResponse{Error: msg}) })
+		if !ok {
+			return
 		}
 		a, err := s.Ask(r.Context(), op, req.BookingRef, req.Question)
 		switch {
@@ -144,7 +152,44 @@ func ControlHandler(s *Shipper, profiles rest.Profiles) http.Handler {
 			control.Answer(w, http.StatusOK, AskResponse{Operator: a.Operator, Answer: a.Response, Held: a.Held})
 		}
 	})
+	mux.HandleFunc("POST /status", func(w http.ResponseWriter, r *http.Request) {
+		var req StatusRequest
+		if err := control.Decode(r, &req); err != nil {
+			control.Answer(w, http.StatusBadRequest, StatusResponse{Error: err.Error()})
+			return
+		}
+		op, ok := operatorOf(req.Operator, req.BookingRef, func(code int, msg string) { control.Answer(w, code, StatusResponse{Error: msg}) })
+		if !ok {
+			return
+		}
+		st, err := s.Status(r.Context(), op, req.BookingRef)
+		switch {
+		case errors.Is(err, ErrNotOurBooking):
+			control.Answer(w, http.StatusNotFound, StatusResponse{Error: err.Error()})
+		case err != nil:
+			control.Answer(w, http.StatusBadGateway, StatusResponse{Error: err.Error()})
+		default:
+			control.Answer(w, http.StatusOK, StatusResponse{Operator: st.Operator, Status: st.Status, Missing: st.Missing})
+		}
+	})
 	return mux
+}
+
+// StatusRequest is the body of the control API's POST /status: ask a
+// booking's operator for its DCSA status. Operator may be empty when only
+// one operator has a booking under BookingRef.
+type StatusRequest struct {
+	Operator   string `json:"operator,omitempty"`
+	BookingRef string `json:"bookingRef"`
+}
+
+// StatusResponse is its answer: the operator's signed report, and the
+// reported events this shipper never received as pushes.
+type StatusResponse struct {
+	Operator string             `json:"operator,omitempty"`
+	Status   *intents.TnTStatus `json:"status,omitempty"`
+	Missing  []string           `json:"missing,omitempty"`
+	Error    string             `json:"error,omitempty"`
 }
 
 // AskRequest is the body of the control API's POST /ask. Operator may be
