@@ -55,6 +55,7 @@ func (n *Node) Process(ctx context.Context, msg []byte) (res rest.Result) {
 	}
 	ctx, span := n.ingressTrace(ctx, sender, start)
 	defer span.End()
+	defer func() { n.recordDuration(ctx, start, u, res) }()
 	_, ps := n.start(ctx, "ulp.parse", trace.WithTimestamp(start))
 	if err != nil {
 		ps.SetStatus(codes.Error, bounded(err.Error()))

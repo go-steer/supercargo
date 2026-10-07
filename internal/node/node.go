@@ -38,6 +38,8 @@ import (
 	"slices"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
+
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/go-steer/supercargo/internal/store"
@@ -117,6 +119,9 @@ type Config struct {
 	// Tracer records the pipeline's spans. Nil uses the global
 	// TracerProvider, which records nothing unless telemetry is set up.
 	Tracer trace.Tracer
+	// Meter records the pipeline's metrics. Nil uses the global
+	// MeterProvider, which records nothing unless telemetry is set up.
+	Meter metric.Meter
 	// TrustTrace reports whether a sender's trace context (from the HTTP
 	// headers, WithRemoteTrace) may be continued rather than only linked
 	// to. Nil trusts nobody.
@@ -127,9 +132,10 @@ type Config struct {
 
 // Node is a configured ULP node. It is safe for concurrent use.
 type Node struct {
-	cfg     Config
-	profile []byte
-	tracer  trace.Tracer
+	cfg      Config
+	profile  []byte
+	tracer   trace.Tracer
+	duration metric.Float64Histogram
 }
 
 // New validates cfg and returns a Node.
@@ -171,7 +177,7 @@ func New(cfg Config) (*Node, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	n := &Node{cfg: cfg, tracer: defaultTracer(cfg.Tracer)}
+	n := &Node{cfg: cfg, tracer: defaultTracer(cfg.Tracer), duration: newDuration(cfg.Meter)}
 	p, err := n.buildProfile()
 	if err != nil {
 		return nil, err

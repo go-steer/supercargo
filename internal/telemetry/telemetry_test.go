@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -36,16 +37,18 @@ import (
 type collector struct {
 	mu     sync.Mutex
 	bodies [][]byte
+	paths  []string
 }
 
 func (c *collector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/v1/traces" {
+	if !strings.HasSuffix(r.URL.Path, "/v1/traces") && !strings.HasSuffix(r.URL.Path, "/v1/metrics") {
 		http.NotFound(w, r)
 		return
 	}
 	b, _ := io.ReadAll(r.Body)
 	c.mu.Lock()
 	c.bodies = append(c.bodies, b)
+	c.paths = append(c.paths, r.URL.Path)
 	c.mu.Unlock()
 	w.Header().Set("Content-Type", "application/x-protobuf")
 }
@@ -57,7 +60,8 @@ func (c *collector) got() []byte {
 }
 
 func clearEnv(t *testing.T) {
-	for _, k := range []string{"OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_PROTOCOL", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"} {
+	for _, k := range []string{"OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_PROTOCOL", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+		"OTEL_SDK_DISABLED", "OTEL_TRACES_EXPORTER", "OTEL_METRICS_EXPORTER"} {
 		t.Setenv(k, "")
 	}
 	t.Cleanup(func() { otel.SetTracerProvider(noop.NewTracerProvider()) })
@@ -140,9 +144,35 @@ func TestEnvironment(t *testing.T) {
 }
 
 func TestOffSwitches(t *testing.T) {
-	for _, env := range []map[string]string{{"OTEL_SDK_DISABLED": "true"}, {"OTEL_TRACES_EXPORTER": "none"}} {
+	for _, env := range []map[string]string{{"OTEL_SDK_DISABLED": "true"}, {"OTEL_TRACES_EXPORTER": "none", "OTEL_METRICS_EXPORTER": "NONE"}} {
 		if Enabled(&config.Telemetry{}, func(k string) string { return env[k] }) {
 			t.Errorf("%v didn't turn export off", env)
+		}
+	}
+}
+
+// TestOneSignalOff: switching one signal off keeps the other.
+func TestOneSignalOff(t *testing.T) {
+	clearEnv(t)
+	col := &collector{}
+	srv := httptest.NewServer(col)
+	defer srv.Close()
+	t.Setenv("OTEL_TRACES_EXPORTER", "none")
+	if !Enabled(&config.Telemetry{}, os.Getenv) {
+		t.Fatal("metrics alone should still be on")
+	}
+	shutdown, err := Setup(context.Background(), &config.Telemetry{Protocol: "http", Endpoint: srv.URL, Insecure: true}, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, span := otel.Tracer("test").Start(context.Background(), "not-exported")
+	span.End()
+	_ = shutdown(context.Background())
+	col.mu.Lock()
+	defer col.mu.Unlock()
+	for _, p := range col.paths {
+		if strings.HasSuffix(p, "/v1/traces") {
+			t.Error("traces exported with OTEL_TRACES_EXPORTER=none")
 		}
 	}
 }

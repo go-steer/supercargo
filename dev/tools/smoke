@@ -22,7 +22,7 @@
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 # The scenarios export nowhere, whatever the developer's shell sets.
-unset OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ULP_OTEL_ENDPOINT
+unset OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ULP_OTEL_ENDPOINT ULP_OTEL_METRICS_ENDPOINT
 dir="$(repo_root)/dev/smoke"
 
 tests=()

@@ -137,6 +137,19 @@ func (s *Simulator) init() {
 	})
 }
 
+// Active is the number of voyages in progress.
+func (s *Simulator) Active() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, tl := range s.lines {
+		if len(tl.steps) > 0 {
+			n++
+		}
+	}
+	return n
+}
+
 // Run advances every voyage until Close. Call it once, in its own
 // goroutine.
 func (s *Simulator) Run() {
