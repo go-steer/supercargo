@@ -53,6 +53,10 @@ const (
 	MaxCapabilities = 32
 	MaxTags         = 32
 	MaxDialects     = 16
+
+	// MaxServices and MaxIntents bound services and each one's intents.
+	MaxServices = 16
+	MaxIntents  = 64
 )
 
 // Roles a party may have.
@@ -205,8 +209,8 @@ func (d *Document) validate(opts ParseOptions, algs sig.Algorithms) error {
 			return fmt.Errorf("party.roles: %s is not a role", logsafe.Quote(r))
 		}
 	}
-	if len(p.Services) == 0 {
-		return errors.New("services is empty")
+	if len(p.Services) == 0 || len(p.Services) > MaxServices {
+		return fmt.Errorf("services has %d entries, want 1-%d", len(p.Services), MaxServices)
 	}
 	for _, s := range p.Services {
 		if s.Name == "" || len(s.Name) > 64 || strings.ContainsFunc(s.Name, isControl) {
@@ -217,8 +221,11 @@ func (d *Document) validate(opts ParseOptions, algs sig.Algorithms) error {
 				return errors.New("services: an extension must be 1-64 characters without control characters")
 			}
 		}
+		if len(s.Intents) > MaxIntents {
+			return fmt.Errorf("services: %d intents, over %d", len(s.Intents), MaxIntents)
+		}
 		for _, in := range s.Intents {
-			if !strings.HasPrefix(in, "ulp.") || len(in) > 64 {
+			if len(in) > 64 || !intentName.MatchString(in) {
 				return fmt.Errorf("services: %s is not an intent name", logsafe.Quote(in))
 			}
 		}
@@ -260,7 +267,10 @@ func (d *Document) validate(opts ParseOptions, algs sig.Algorithms) error {
 
 var (
 	// capabilityName is a reverse-DNS name, "dev.ulp.logistics.shipment".
-	capabilityName = regexp.MustCompile(`^[a-z][a-z0-9-]*(\.[a-z0-9_-]+)+$`)
+	// Each label starts and ends with a letter or digit.
+	capabilityName = regexp.MustCompile(`^[a-z]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9_-]*[a-z0-9])?)+$`)
+	// intentName is "ulp.tnt.inquiry.response".
+	intentName = regexp.MustCompile(`^ulp(\.[a-z0-9_]+)+$`)
 	// capabilityVersion is "0.0.1", "v2" or "2026-01-11".
 	capabilityVersion = regexp.MustCompile(`^[A-Za-z0-9._-]{1,32}$`)
 	// tagPattern is colon-separated lowercase words, "ulp:transport:rest".
@@ -286,12 +296,8 @@ func checkCapabilities(cs []Capability) error {
 		if !capabilityVersion.MatchString(c.Version) {
 			return fmt.Errorf("%s.version: %s is not 1-32 of [A-Za-z0-9._-]", f, logsafe.Quote(c.Version))
 		}
-		if c.SpecURL != "" {
-			u, err := url.Parse(c.SpecURL)
-			if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Opaque != "" || len(c.SpecURL) > 256 ||
-				strings.ContainsFunc(c.SpecURL, isControl) {
-				return fmt.Errorf("%s.spec_url: %s is not an https URL of at most 256 characters", f, logsafe.Quote(c.SpecURL))
-			}
+		if c.SpecURL != "" && !validSpecURL(c.SpecURL) {
+			return fmt.Errorf("%s.spec_url: %s is not an https URL of at most 256 characters without query, fragment or spaces", f, logsafe.Quote(c.SpecURL))
 		}
 		if len(c.Tags) > MaxTags {
 			return fmt.Errorf("%s.tags has %d entries, over %d", f, len(c.Tags), MaxTags)
@@ -308,6 +314,15 @@ func checkCapabilities(cs []Capability) error {
 		}
 	}
 	return nil
+}
+
+// validSpecURL is the rule for a header dialect's schema_url (pkg/envelope).
+func validSpecURL(s string) bool {
+	if len(s) > 256 || !strings.HasPrefix(s, "https://") || strings.ContainsFunc(s, func(r rune) bool { return r <= ' ' || isControl(r) }) {
+		return false
+	}
+	u, err := url.Parse(s)
+	return err == nil && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" && u.Opaque == ""
 }
 
 func checkDialects(ds []string) error {

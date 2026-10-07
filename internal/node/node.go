@@ -191,8 +191,8 @@ func (n *Node) Domain() string { return n.cfg.Domain }
 
 // capabilityTable names the areas of service a profile lists, after the
 // ULP payload specification's discovery document: each is listed when the
-// node accepts one of its intents. Its spec URL is the first intent's
-// dialect schema, if any.
+// node accepts one of its intents. Its spec URL is the dialect schema of
+// the first accepted intent that has one.
 var capabilityTable = []struct {
 	name    string
 	intents []string
@@ -222,8 +222,11 @@ func capabilities(accepted []string, a2a bool) []discovery.Capability {
 		if a2a && slices.Contains(has, intents.TnTInquiry) {
 			cp.Tags = append(cp.Tags, "ulp:transport:a2a")
 		}
-		if d, ok := intents.DialectFor(c.intents[0]); ok {
-			cp.SpecURL = d.SchemaURL
+		for _, in := range has {
+			if d, ok := intents.DialectFor(in); ok {
+				cp.SpecURL = d.SchemaURL
+				break
+			}
 		}
 		out = append(out, cp)
 	}

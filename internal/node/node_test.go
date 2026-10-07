@@ -544,6 +544,9 @@ func TestProfileCapabilities(t *testing.T) {
 	if c, _ := profile([]string{intents.OceanTnTRequest}, "https://"+operatorDomain+"/a2a").Capability("dev.ulp.logistics.tracking"); slices.Contains(c.Tags, "ulp:transport:a2a") {
 		t.Error("A2A tagged without the inquiry")
 	}
+	if c, _ := profile([]string{intents.TnTInquiry}, "").Capability("dev.ulp.logistics.tracking"); c.SpecURL != "" {
+		t.Errorf("an inquiry-only node claims the status pull's schema: %+v", c)
+	}
 	if c, ok := profile([]string{intents.TnTEvent}, "").Capability("dev.ulp.logistics.tracking.subscriber"); !ok || !slices.Contains(c.Tags, "ulp:subscriber") {
 		t.Errorf("subscriber capability %+v, %v", c, ok)
 	}

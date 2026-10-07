@@ -44,7 +44,7 @@ const (
 // Tools are the assistant's tools. There is no tool that sends a booking:
 // sending happens only in the confirmation dialog, after a person says yes.
 var Tools = []llm.Tool{
-	{Name: ToolGetProfile, Description: "Fetch a company's ULP profile (services, intents, endpoints, signing keys) through our node, which verifies it. Use it when the user names a carrier's domain.",
+	{Name: ToolGetProfile, Description: "Fetch a company's ULP profile (intents, capabilities, supported dialects, endpoints, signing keys) through our node, which verifies it. Use it when the user names a carrier's domain.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"domain":{"type":"string","maxLength":253,"description":"The company's domain, as the user wrote it, e.g. ocean-blue.example"}},"required":["domain"],"additionalProperties":false}`)},
 	{Name: ToolDraftBooking, Description: "Prepare a booking request draft. Nothing is sent: the user reviews the draft and confirms it themselves. Returns the draft ID and what the carrier would receive.",
 		Schema: json.RawMessage(`{"type":"object","properties":{` +

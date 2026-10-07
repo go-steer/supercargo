@@ -20,6 +20,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -138,6 +139,22 @@ func TestControlReads(t *testing.T) {
 		len(pr.Profile.Intents) != 2 || pr.Profile.MCP == "" || !slices.Equal(pr.Profile.Dialects, []string{"DCSA_TNT"}) ||
 		!slices.Equal(pr.Profile.Capabilities, []string{"dev.ulp.logistics.tracking (ulp:service, ulp:transport:rest)", "dev.ulp.logistics.quote"}) {
 		t.Errorf("profile: HTTP %d %+v", code, pr.Profile)
+	}
+	// A partner's long profile reaches the model only up to the caps.
+	big := oceanBlueProfile(t)
+	for i := range 20 {
+		c := discovery.Capability{Name: fmt.Sprintf("dev.ulp.c%d", i), Version: "1"}
+		for j := range 20 {
+			c.Tags = append(c.Tags, fmt.Sprintf("ulp:t%d", j))
+		}
+		big.Profile.Capabilities = append(big.Profile.Capabilities, c)
+	}
+	for i := range 50 {
+		big.Profile.Services[0].Intents = append(big.Profile.Services[0].Intents, fmt.Sprintf("ulp.i%d", i))
+	}
+	if p := SummarizeProfile(big); len(p.Capabilities) != summaryCapabilities || len(p.Intents) != summaryIntents ||
+		strings.Count(p.Capabilities[2], "ulp:t") != summaryTags {
+		t.Errorf("summary over the caps: %d capabilities, %d intents, %q", len(p.Capabilities), len(p.Intents), p.Capabilities[2])
 	}
 	if code := get(t, h, "/profile/Not%20A%20Domain", &pr); code != http.StatusBadRequest {
 		t.Errorf("bad domain: HTTP %d", code)
