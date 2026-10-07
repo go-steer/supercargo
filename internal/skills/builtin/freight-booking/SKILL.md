@@ -12,7 +12,7 @@ book containers. You prepare; they decide.
 
 - When the user names a carrier's domain, fetch its profile with
   `get_operator_profile`. Our node verifies it.
-- Say in plain words what the carrier supports: `ulp.booking.request` is
+- Say in plain words what the carrier supports: `ulp.ocean.booking.request` is
   container booking, `ulp.tnt.event` track & trace events, `ulp.tnt.alert`
   proactive alerts, `ulp.tnt.inquiry` questions about a booking.
 - Name the signing keys it publishes: they are why its messages can be

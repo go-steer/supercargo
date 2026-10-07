@@ -149,11 +149,17 @@ func clone(b Booking) Booking {
 		r.Subscription = &s
 	}
 	c := &b.Confirmation
-	if c.Vessel != nil {
-		v := *c.Vessel
-		c.Vessel = &v
+	if c.EBL != nil {
+		e := *c.EBL
+		e.Containers = slices.Clone(e.Containers)
+		for i, ct := range e.Containers {
+			if ct.TargetTemperatureCelsius != nil {
+				t := *ct.TargetTemperatureCelsius
+				e.Containers[i].TargetTemperatureCelsius = &t
+			}
+		}
+		c.EBL = &e
 	}
-	c.EquipmentRefs = slices.Clone(c.EquipmentRefs)
 	c.Messages = slices.Clone(c.Messages)
 	return b
 }

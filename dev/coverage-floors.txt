@@ -55,6 +55,7 @@ github.com/go-steer/supercargo/pkg/internal/netguard     97.0  # 98.1
 # intent already settles.
 github.com/go-steer/supercargo/internal/node            92.0  # 93.2
 github.com/go-steer/supercargo/internal/operator        96.0  # 97.2
+github.com/go-steer/supercargo/internal/ports          100.0
 github.com/go-steer/supercargo/internal/shipper         97.0  # 98.2
 github.com/go-steer/supercargo/internal/store          100.0
 github.com/go-steer/supercargo/internal/activity        93.0  # 94.7

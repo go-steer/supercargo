@@ -38,12 +38,12 @@ type Status struct {
 // returns the verified report. It asks only about bookings this shipper
 // holds, and commits to nothing.
 func (s *Shipper) Status(ctx context.Context, operator, ref string) (*Status, error) {
-	if _, err := s.Bookings.Get(operator, ref); err != nil {
+	b, err := s.Bookings.Get(operator, ref)
+	if err != nil {
 		return nil, fmt.Errorf("%w: %s with %s", ErrNotOurBooking, ref, operator)
 	}
-	// Until the eBL assigns transport document references, the booking's
-	// reference is its transport document reference (docs/DESIGN.md, A.5).
-	body := &intents.TnTStatusRequestBody{TnTRequest: intents.TnTRequest{TransportDocumentReference: ref, CarrierBookingReference: ref}}
+	tdr := b.Confirmation.TransportDocumentReference()
+	body := &intents.TnTStatusRequestBody{TnTRequest: intents.TnTRequest{TransportDocumentReference: tdr, CarrierBookingReference: ref}}
 	h := envelope.NewHeader(intents.OceanTnTRequest, s.Node.Domain(), operator, s.Now())
 	h.BookingRef = &ref
 	resp, err := s.Node.Exchange(ctx, h, body, intents.OceanTnTResponse)
@@ -59,7 +59,7 @@ func (s *Shipper) Status(ctx context.Context, operator, ref string) (*Status, er
 	}
 	// The body must name what was asked: this booking's document, no
 	// other booking, no container (none was asked about).
-	if b := r.TnTResponse; b.TransportDocumentReference != ref || (b.CarrierBookingReference != "" && b.CarrierBookingReference != ref) ||
+	if b := r.TnTResponse; b.TransportDocumentReference != tdr || (b.CarrierBookingReference != "" && b.CarrierBookingReference != ref) ||
 		b.EquipmentReference != "" {
 		return nil, errors.New("shipper: the report's references don't match the booking asked about")
 	}

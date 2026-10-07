@@ -25,6 +25,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/ports"
+
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -368,11 +370,11 @@ type bookingView struct {
 
 func viewBooking(b store.Booking) bookingView {
 	c := b.Confirmation
-	v := bookingView{BookingRef: b.Ref, Status: c.Status, Origin: b.Request.Origin, Destination: b.Request.Destination,
-		PlannedDeparture: c.PlannedDeparture, PlannedArrival: c.PlannedArrival, EquipmentRefs: c.EquipmentRefs,
+	v := bookingView{BookingRef: b.Ref, Status: c.Status, Origin: ports.Location(b.Request.PortOfLoading), Destination: ports.Location(b.Request.PortOfDischarge),
+		PlannedDeparture: c.PlannedDeparture, PlannedArrival: c.PlannedArrival, EquipmentRefs: c.EquipmentRefs(),
 		Cargo: b.Request.Cargo.Description}
-	if c.Vessel != nil {
-		v.Vessel, v.Voyage = c.Vessel.Name, c.Vessel.Voyage
+	if c.EBL != nil {
+		v.Vessel, v.Voyage = c.EBL.VesselName, c.EBL.VoyageNumber
 	}
 	if v.EquipmentRefs == nil {
 		v.EquipmentRefs = []string{}

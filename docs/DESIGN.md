@@ -87,8 +87,8 @@ The node logs are what make the demo convincing: each envelope shows `intent`, `
 Send this booking request? [y/N] y
 ```
 
-4. The Cymbal node builds a `ulp.booking.request` envelope, **signs it** and posts it to Ocean Blue's ULP endpoint (the REST binding: booking is a structured exchange between systems, so no agent is involved on the receiving side).
-5. Ocean Blue's node verifies the signature with Cymbal's key (fetched from `cymbal-shoes.example/.well-known/ulp`), checks for replay, validates the body, creates the booking, registers the **subscription**, and replies with a signed `ulp.booking.confirmation`.
+4. The Cymbal node builds a `ulp.ocean.booking.request` envelope, **signs it** and posts it to Ocean Blue's ULP endpoint (the REST binding: booking is a structured exchange between systems, so no agent is involved on the receiving side).
+5. Ocean Blue's node verifies the signature with Cymbal's key (fetched from `cymbal-shoes.example/.well-known/ulp`), checks for replay, validates the body, creates the booking, registers the **subscription**, and replies with a signed `ulp.ocean.booking.confirmation`.
 
 **Assistant:**
 > Booked. Reference **OB-BKG-1042** on vessel *Ocean Blue Aurora*, voyage 42W. Planned departure Wed the 7th, planned arrival Tue the 13th, which is two days before your Thursday deadline. I'll watch it and tell you about anything that affects the 15th.
@@ -96,7 +96,7 @@ Send this booking request? [y/N] y
 **Point out:**
 - The LLM proposed; a human approved; deterministic code signed.
 - The subscription is part of the booking, fixing a gap in the v0.1 spec.
-- On the right-hand log: `ulp.booking.request ← cymbal-shoes.example … signature: VERIFIED`.
+- On the right-hand log: `ulp.ocean.booking.request ← cymbal-shoes.example … signature: VERIFIED`.
 
 ### Scene 3: Events flow in (≈1 min, simulator-driven)
 
@@ -201,7 +201,7 @@ The presenter shows that verification is real:
 
 ### Wrap-up talking points
 
-- **Protocol basics shown:** discovery, published keys, a signed header/body envelope, `booking.request`, a subscription, `tnt.event`, `tnt.alert`, `tnt.inquiry`, replay protection, authorization, delegation.
+- **Protocol basics shown:** discovery, published keys, a signed header/body envelope, `ocean.booking.request`, a subscription, `tnt.event`, `tnt.alert`, `tnt.inquiry`, replay protection, authorization, delegation.
 - **LLM roles shown:** intent → protocol (shipper), events → business impact (shipper), free-text inquiry → grounded answer (operator).
 - **Transport shown:** the plumbing (booking, events, alerts) over plain REST and webhooks; A2A only for the agent-to-agent inquiry.
 - **Neither LLM ever:** held a key, signed a message, chose a counterparty on its own, saw data it wasn't authorized for, or sent a booking without human approval.
@@ -308,7 +308,7 @@ It is deliberately not an "allow private networks" switch: only the listed domai
   "party": { "domain": "ocean-blue.example", "name": "Ocean Blue", "roles": ["operator"] },
   "services": [{
     "name": "ulp.freight",
-    "intents": ["ulp.booking.request", "ulp.tnt.event", "ulp.tnt.alert", "ulp.tnt.inquiry"],
+    "intents": ["ulp.ocean.booking.request", "ulp.tnt.event", "ulp.tnt.alert", "ulp.tnt.inquiry"],
     "extensions": []
   }],
   "transports": {
@@ -337,7 +337,7 @@ Fetching and validating a profile:
 
 Shipper and receiver nodes publish the same document (with `roles: ["shipper"]` and only the intents they accept, e.g. `ulp.tnt.event` and `ulp.tnt.alert`), so operators can verify *their* signatures and push to them.
 
-**`GET /.well-known/agent-card.json`:** a standard A2A agent card (name, description, URL, skills). It lists only the **agentic** skills, the ones where a caller delegates an open-ended task to this company's agent: for the demo operator that's `shipment-inquiry` (later `rebooking-negotiation`). Structured intents such as `booking.request` aren't skills; they're served by the REST binding. Check the exact path and fields against the A2A spec version you target.
+**`GET /.well-known/agent-card.json`:** a standard A2A agent card (name, description, URL, skills). It lists only the **agentic** skills, the ones where a caller delegates an open-ended task to this company's agent: for the demo operator that's `shipment-inquiry` (later `rebooking-negotiation`). Structured intents such as `ocean.booking.request` aren't skills; they're served by the REST binding. Check the exact path and fields against the A2A spec version you target.
 
 ### A.4 Envelope
 
@@ -387,7 +387,7 @@ The **payload** (base64url JSON) is the envelope content:
 | `inReplyTo` | `messageId` of the request, on responses |
 | `sentAt` | RFC 3339 UTC, ±5 min skew |
 | `sender` / `receiver` | Domains. `receiver` must equal the receiving node's domain (prevents forwarding a message to a different node) |
-| `bookingRef` | Present for every intent except `booking.request` |
+| `bookingRef` | Present for every intent except `ocean.booking.request` |
 | `dialect` | The payload schema the body follows: `{ "standard": "DCSA_TNT", "version": "2.2.0", "schema_url": "…" }` ([A.5](#a5-intents-and-bodies)). The one optional header member: present (an object with exactly those three strings; standard `[A-Z][A-Z0-9_]{0,31}`, a dotted numeric version, an https schema URL) for intents with a standard payload, absent for ULP extensions. Signed like every header field |
 
 The **signature** is the JWS signature over `ASCII(protected || "." || payload)`, so it covers the header, body and attachments exactly as sent. Receiving, in order:
@@ -439,20 +439,18 @@ Handlers act on the verified payload bytes, so there is no canonicalization and 
 | Envelope, signing, replay, identity, keys | `ulp_header` / `ulp_body`, unsigned; HS256 shared-secret token; `did:ulp:` | **ours** ([A.4](#a4-envelope), [A.2](#a2-identity-keys-and-trust-design-decisions)) |
 | Body of each intent | what pf puts in `ulp_body` | **pf's**, field for field |
 | Payload schema descriptor | `dialect { standard, version, schema_url }` in its header | **adopted**: `dialect` in our signed header |
-| Ocean booking | `ulp.ocean.booking`, body `{ "ebl": … }` (a DCSA eBL) | the intent name is **adopted**. The request carries what a shipper knows, in pf's types and names. The eBL, with its vessel and transport document reference, is the carrier's document, so it comes back in the confirmation (`ulp.ocean.booking.confirmation`, ours) (#66) |
+| Ocean booking | `ulp.ocean.booking`, body `{ "ebl": … }` (a DCSA eBL) | the intent name is **adopted** as `ulp.ocean.booking.request`. The request carries what a shipper knows, in pf's types and names. The eBL, with its vessel and transport document reference, is the carrier's document, so it comes back in the confirmation (`ulp.ocean.booking.confirmation`, ours) with dialect `DCSA_OCEAN_CONTAINER` (#66) |
 | Track & trace event | DCSA T&T event (`event_id`, `event_type`, `event_classifier_code`, `event_date_time`, `event_type_code`, `description`, `un_location_code`, …) | **adopted** as the body of `ulp.tnt.event` with dialect `DCSA_TNT` (#64) |
 | Track & trace status | `ulp.ocean.tnt.request` / `.response`, bodies `{ "tnt_request": … }` / `{ "tnt_response": … }` | **adopted**, under the inquiry's authorization (#65) |
 | Alert, inquiry, error, delegation, subscription | none | **ours**, as ULP extensions, renamed to snake_case for one convention across bodies |
 | Discovery | `capabilities[{name, version, spec_url, tags}]`, `transports.mcp`, no keys | the extras are **adopted additively**; `keys` stay (#67) |
 | A2A and MCP bindings | in-process shapes named after them | **ours**: the real protocols ([A.7](#a7-transport-bindings)) |
 
-Where pf's names differ from DCSA's published schemas (DCSA is camelCase, and splits event codes by event type), we follow pf and note the difference. Each body change is a protocol change: the golden vectors are regenerated in the PR that makes it. The intent table and bodies below are **the current wire format, being moved to the payload standard** issue by issue (#64–#66).
-
-Until then, all payloads are **demo designs**, loosely modeled on DCSA where noted.
+Where pf's names differ from DCSA's published schemas (DCSA is camelCase, and splits event codes by event type), we follow pf and note the difference. Each body change is a protocol change: the golden vectors are regenerated in the PR that makes it. The intent table and bodies below are the current wire format. pf's eBL has no carrier booking reference, planned times or subscription, so the confirmation keeps those as ULP members beside the `ebl`.
 
 | Intent | Direction | Binding | Sync/async | Response intent |
 |---|---|---|---|---|
-| `ulp.booking.request` | shipper → operator | REST | sync | `ulp.booking.confirmation` |
+| `ulp.ocean.booking.request` | shipper → operator | REST | sync | `ulp.ocean.booking.confirmation` |
 | `ulp.tnt.event` | operator → subscriber | REST webhook | async push | (HTTP 204 ack only) |
 | `ulp.tnt.alert` | operator → subscriber | REST webhook | async push | (HTTP 204 ack only) |
 | `ulp.tnt.inquiry` | shipper/receiver → operator | **A2A** (`shipment-inquiry` skill) | sync | `ulp.tnt.inquiry.response` |
@@ -466,8 +464,8 @@ The binding column is the **default**. Every intent is a signed envelope, so any
 
 | Intent | `bookingRef` | `inReplyTo` | `attachments.delegation` | `dialect` |
 |---|---|---|---|---|
-| `booking.request` | absent (no booking yet) | absent | absent | absent (until #66) |
-| `booking.confirmation` | required, equal to the body's `bookingRef` | required | absent | absent (until #66) |
+| `ocean.booking.request` | absent (no booking yet) | absent | absent | absent (the request is ULP's own) |
+| `ocean.booking.confirmation` | required, equal to the body's `carrier_booking_reference` | required | absent | required: `DCSA_OCEAN_CONTAINER` `0.0.1` |
 | `tnt.event` | required | absent | absent | required: `DCSA_TNT` `2.2.0` (the schema URL is informative) |
 | `tnt.alert` | required | absent | absent | absent |
 | `tnt.inquiry` | required | absent | optional (a receiver's delegation) | absent |
@@ -477,44 +475,55 @@ The binding column is the **default**. Every intent is a signed envelope, so any
 | `ulp.error` | optional | required | absent | absent |
 
 **Body rules.** Bodies are decoded with exact member names: a member the intent doesn't define, a duplicate, or one that differs from a defined member only in case is `invalid_body`. Otherwise one implementation could read `"Question"` where another reads `"question"`.
-- **Identifiers** (`shipperRef`, `bookingRef`, voyage, subscription IDs) are 1–64 characters of `[A-Za-z0-9._-]` (no `/`, so a reference can never become a path).
+- **Identifiers** (`shipper_reference`, `carrier_booking_reference`, the voyage number, seal numbers, service contract and subscription IDs) are 1–64 characters of `[A-Za-z0-9._-]` (no `/`, so a reference can never become a path).
 - **Free text** has a length cap and none of: control characters, format characters (bidirectional overrides, zero-width characters, the U+E0000 tag block used to smuggle hidden instructions to models), private-use code points, noncharacters, or line and paragraph separators. Free text reaches logs and model prompts, and what a person reviews must be all there is.
 - **Subscription endpoints** follow the profile-endpoint rules: an http(s) URL on a lowercase domain, no port, userinfo, query or fragment. The authorization rule that it is the subscriber's own domain ([A.6](#a6-authorization-rules)) compares that canonical host.
 - **Codes** follow their standards' forms: UN/LOCODE, ISO 6346 size-type and container number, HS code.
 - **Times** are RFC 3339 UTC in whole seconds, and dates are `YYYY-MM-DD`.
 
-**`ulp.booking.request`**
+**`ulp.ocean.booking.request`**: pf's shipper-side booking fields, snake_case
 ```json
 {
-  "shipperRef": "CY-PO-55120",
-  "origin":      { "unLocode": "NLRTM", "name": "Rotterdam" },
-  "destination": { "unLocode": "USEWR", "name": "Newark" },
-  "equipment":   [{ "isoType": "45G1", "label": "40HC", "count": 1 }],
-  "cargo":       { "description": "Footwear (sneakers)", "hsCode": "6404" },
-  "earliestDeparture": "2026-10-06",
-  "consignee":   { "name": "Cymbal Footwear", "domain": "cymbal-footwear.example" },
+  "shipper_reference": "CY-PO-55120",
+  "shipper_name": "Cymbal Shoes",
+  "port_of_loading": "NLRTM",
+  "port_of_discharge": "USEWR",
+  "containers": [{ "equipment_size_type": "45G1", "count": 1, "gross_weight_kg": 12000 }],
+  "cargo": { "description": "Footwear (sneakers)", "hs_code": "6404" },
+  "earliest_departure": "2026-10-06",
+  "consignee": { "name": "Cymbal Footwear", "domain": "cymbal-footwear.example" },
   "subscription": {
     "endpoint": "https://cymbal-shoes.example/ulp",
     "intents":  ["ulp.tnt.event", "ulp.tnt.alert"]
   }
 }
 ```
-The shipper's required delivery date is **deliberately not sent**. It's private business context used only by the shipper's LLM (Scene 4).
+Ports are UN/LOCODEs and must differ; a node names them from its own table, never from the sender. Each container line has an ISO 6346 size-type code, a count of 1–999 (at most 20 lines) and each container's gross weight, above 0 and at most 40,000 kg. `service_contract_number`, `consignee` and `subscription` are optional. The shipper's required delivery date is **deliberately not sent**. It's private business context used only by the shipper's LLM (Scene 4).
 
-**`ulp.booking.confirmation`**
+**`ulp.ocean.booking.confirmation`**: ULP's answer, carrying pf's eBL, with header `dialect` `{ "standard": "DCSA_OCEAN_CONTAINER", "version": "0.0.1", "schema_url": "https://dcsa.org/standards/ebill-of-lading" }`
 ```json
 {
-  "bookingRef": "OB-BKG-1042",
+  "carrier_booking_reference": "OB-BKG-1042",
   "status": "confirmed",
-  "vessel": { "name": "Ocean Blue Aurora", "voyage": "42W" },
-  "plannedDeparture": "2026-10-07T18:00:00Z",
-  "plannedArrival":   "2026-10-13T08:00:00Z",
-  "equipmentRefs": ["OCBU1234565"],
-  "subscriptionId": "SUB-311",
-  "messages": []
+  "planned_departure": "2026-10-07T18:00:00Z",
+  "planned_arrival":   "2026-10-13T08:00:00Z",
+  "subscription_id": "SUB-311",
+  "messages": [],
+  "ebl": {
+    "transport_document_reference": "OB-TD-1042",
+    "vessel_name": "Ocean Blue Aurora",
+    "voyage_number": "42W",
+    "port_of_loading": "NLRTM",
+    "port_of_discharge": "USEWR",
+    "shipper_name": "Cymbal Shoes",
+    "consignee_name": "Cymbal Footwear",
+    "containers": [{ "container_number": "OCBU1234565", "equipment_size_type": "45G1",
+                     "seal_number": "OCBUS0000001", "gross_weight_kg": 12000, "is_reefer": false }],
+    "status": "BOOKED"
+  }
 }
 ```
-`status` is `confirmed` | `rejected` | `alternative_proposed` ("if the vessel is full, propose an alternative voyage"; out of scope for the demo, but reserved).
+A confirmed booking requires the `ebl`; a rejected one (or an alternative proposal) must not carry one, though the header still names the dialect, which is fixed per intent. The eBL `status` is one of `BOOKED`, `LOADED`, `IN_TRANSIT`, `DISCHARGED`, `DELIVERED`. Container numbers are unique and in ISO 6346 form (the check digit is not checked on receipt); a `target_temperature_celsius` (−40 to 40) is only for a reefer. The transport document reference is what `ulp.ocean.tnt.request` asks about. The eBL's `shipper_name` is the name the shipper declared; only its domain is verified. **The shipper holds the eBL to its request** before recording the booking: the same ports, shipper name, consignee (when one was named), service contract and `BOOKED` status, and exactly the containers asked for by size-type and weight. A contradicting eBL is an error shown to the person, and nothing is recorded. `status` is `confirmed` | `rejected` | `alternative_proposed` ("if the vessel is full, propose an alternative voyage"; out of scope for the demo, but reserved).
 
 **`ulp.tnt.event`**: the standard payload, pf's DCSA Track & Trace event, with header `dialect` `{ "standard": "DCSA_TNT", "version": "2.2.0", "schema_url": "https://dcsa.org/standards/track-and-trace" }`
 ```json
@@ -569,7 +578,7 @@ The shipper's required delivery date is **deliberately not sent**. It's private 
     "estimated_time_of_arrival": "2026-10-16T08:00:00Z",
     "events": [ /* ulp.tnt.event bodies, oldest first, at most 100 (the latest) */ ] } }
 ```
-A structured, deterministic status pull: no model is involved, and it lets a subscriber catch up on pushes it missed (the shipper marks the reported events it never received). `dcsa_status` is one of `BOOKED`, `RECEIVED`, `LOADED`, `IN_TRANSIT`, `TRANSSHIPMENT`, `DISCHARGED`, `DELIVERED`, `NOT_FOUND`, and the operator derives it from the latest actual event (gate-in → `RECEIVED`, load → `LOADED`, departure and arrival → `IN_TRANSIT`, discharge → `DISCHARGED`, gate-out → `DELIVERED`). Authorization is the inquiry's ([A.6](#a6-authorization-rules)). References that don't name the header's booking get `NOT_FOUND` with nothing else, and an `equipment_reference` filters out other containers' equipment events. Until the eBL (#66) assigns transport document references, a booking's reference is its transport document reference. Only transport and equipment events set `current_location` (a shipment event's location is a document's). A `NOT_FOUND` report carries nothing but the references asked about. The report is cut to its latest events if it would not fit an envelope, and the shipper checks that the body names the booking it asked about. **Stricter than pf:** pf leaves `current_location` open, where ULP fixes it to `un_location_code` and `facility_name`. ULP also requires `events` (an empty list for none), a 7-digit IMO number, UN/LOCODE ports, a whole-second UTC ETA, unique event IDs and at most 100 events, and it refuses unknown members. The assistant's `get_status` result keeps the latest 30 events (with a count of the rest), once per booking per turn. `ulpnode status`, the control API's `POST /status` and the assistant's `get_status` tool use it.
+A structured, deterministic status pull: no model is involved, and it lets a subscriber catch up on pushes it missed (the shipper marks the reported events it never received). `dcsa_status` is one of `BOOKED`, `RECEIVED`, `LOADED`, `IN_TRANSIT`, `TRANSSHIPMENT`, `DISCHARGED`, `DELIVERED`, `NOT_FOUND`, and the operator derives it from the latest actual event (gate-in → `RECEIVED`, load → `LOADED`, departure and arrival → `IN_TRANSIT`, discharge → `DISCHARGED`, gate-out → `DELIVERED`). Authorization is the inquiry's ([A.6](#a6-authorization-rules)). References that don't name the header's booking get `NOT_FOUND` with nothing else, and an `equipment_reference` filters out other containers' equipment events. The references are the eBL's transport document reference and the carrier booking reference. Only transport and equipment events set `current_location` (a shipment event's location is a document's). A `NOT_FOUND` report carries nothing but the references asked about. The report is cut to its latest events if it would not fit an envelope, and the shipper checks that the body names the booking it asked about. **Stricter than pf:** pf leaves `current_location` open, where ULP fixes it to `un_location_code` and `facility_name`. ULP also requires `events` (an empty list for none), a 7-digit IMO number, UN/LOCODE ports, a whole-second UTC ETA, unique event IDs and at most 100 events, and it refuses unknown members. The assistant's `get_status` result keeps the latest 30 events (with a count of the rest), once per booking per turn. `ulpnode status`, the control API's `POST /status` and the assistant's `get_status` tool use it.
 
 **`ulp.tnt.inquiry`** → **`ulp.tnt.inquiry.response`**
 ```json
@@ -611,7 +620,7 @@ These are evaluated after signature, replay and body validation, and **before** 
 
 | Intent | Allowed if |
 |---|---|
-| `booking.request` | Sender is not on a deny list (demo: anyone may request; the operator may reject) |
+| `ocean.booking.request` | Sender is not on a deny list (demo: anyone may request; the operator may reject) |
 | `tnt.inquiry` | `sender == booking.shipper` **or** a valid delegation is attached: signature by `booking.shipper`, `audience == self`, `grantee == sender`, `scope` includes `tnt:read`, matching `bookingRef`, not expired. An unknown booking and someone else's get the same `forbidden`. Until delegation lands (milestone 7), an inquiry carrying one is refused rather than having it ignored |
 | `ocean.tnt.request` | The same rule as `tnt.inquiry` (the booking's shipper, or from milestone 7 a delegate with `tnt:read`), the same single `forbidden` |
 | `tnt.event` / `tnt.alert` (inbound at the shipper) | `sender == booking.operator` (the booking is looked up under the sender, so another carrier never finds it), and the booking has an active subscription that lists this intent. Every failure is the same `forbidden`, so the answer reveals nothing about which bookings exist |
@@ -639,7 +648,7 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 **Only signed intents commit.** That rule covers every binding and integration, not just A2A. MCP tool calls, agent conversations and partner integrations may look things up, propose and draft. Anything that binds two companies (a booking, an amendment, a grant of access) happens only as a signed intent, built and signed by the node.
 
 **REST binding:**
-- `POST /ulp` with the serialized envelope as the JSON request body (`Content-Type: application/json`, at most `envelope.MaxSize`). Sync responses (`booking.confirmation`, `ulp.error`) come back as the response body, also signed envelopes.
+- `POST /ulp` with the serialized envelope as the JSON request body (`Content-Type: application/json`, at most `envelope.MaxSize`). Sync responses (`ocean.booking.confirmation`, `ulp.error`) come back as the response body, also signed envelopes.
 - **Status codes:**
   - `200`: the body is a signed envelope, and may be a `ulp.error`;
   - `204`: accepted, no response (pushes);
@@ -686,7 +695,7 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 
 | Component | Responsibility |
 |---|---|
-| Booking service | Validate request → assign `bookingRef`, vessel/voyage, equipment → store → confirmation |
+| Booking service | Validate request → assign the carrier booking reference, the eBL (transport document reference, vessel/voyage, container and seal numbers) → store → confirmation |
 | Subscription registry | `bookingRef → [endpoint, intents]`; validated per [A.6](#a6-authorization-rules) |
 | Shipment simulator | Starts a voyage for each confirmed booking: per container gate-in (26 h before departure) and load (4 h before), the departure, an arrival estimate an hour later, the arrival, then per container discharge (6 h after) and gate-out (30 h after). Simulated time runs `simulator.hoursPerSecond` hours per real second from 27 h before departure, starting 2 s after the booking so the confirmation reaches the shipper first; voyages in progress are capped. `disrupt` (from `ulpctl`, through the control socket) publishes a new arrival estimate and then a delay alert citing it, graded by the delay (12 h medium, 48 h high), and moves every later step. The reason given becomes the alert's summary, so it must pass the free-text rules |
 | Event store | Append-only events per booking (the operator's "knowledge graph" for the demo) |
@@ -918,7 +927,7 @@ The node keeps the last 1,000 entries. A subscriber that falls behind is cut off
 | # | Milestone | Done when |
 |---|---|---|
 | 1 | `pkg/envelope` + `pkg/sig` + `pkg/internal/strictjson` | Golden vectors pass; envelope round trip |
-| 2 | Discovery + node pipeline + REST binding | Two nodes exchange a verified `booking.request` / `confirmation` over REST |
+| 2 | Discovery + node pipeline + REST binding | Two nodes exchange a verified `ocean.booking.request` / `confirmation` over REST |
 | 3 | Operator simulator + subscriptions + webhook push | Scene 3 runs with a scripted shipper (**"hello ULP": REST only, no LLM, no A2A**) |
 | 4 | A2A binding + inquiry responder (fake model first, then real) | `shipment-inquiry` skill in the agent card; Scenes 5 and 7 |
 | 5 | `ulpchat` with tools + alert summarizer | Scenes 1, 2, 4 |
@@ -939,7 +948,7 @@ What each milestone also carries:
 |---|---|
 | Payments | `ulp.doc.invoice` after delivery with a 3-way match, using AP2-style signed invoices |
 | Spot procurement (multiple operators) | `ulp.booking.procurement` broadcast + shipper LLM comparing offers |
-| Alternative voyage proposals | `booking.confirmation.status = alternative_proposed` |
+| Alternative voyage proposals | `ocean.booking.confirmation.status = alternative_proposed` |
 | Rebooking negotiation | A2A `rebooking-negotiation` skill as a multi-turn task (`input-required` when a person must decide), committed as a signed booking amendment ([A.7](#a7-transport-bindings): converse over A2A, commit with intents) |
 | Local MCP server | The MCP binding ([A.7](#a7-transport-bindings)): the shipper's internal API as MCP tools (stdio) so any MCP-capable assistant can drive it; read and draft only |
 | Partner MCP on-ramp | Operator-side MCP server for partners without a node ([A.7](#a7-transport-bindings)): read-only tools, identity as a domain via federated OAuth or `private_key_jwt` with the partner's published keys; a possible "Scene 8b" where the consignee uses an assistant instead of a node |

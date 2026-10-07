@@ -365,6 +365,7 @@ func TestExchangeResponseChecks(t *testing.T) {
 			rh.Sender = sender
 			ref := "OB-BKG-1"
 			rh.BookingRef = &ref
+			intents.SetDialect(&rh)
 			b, _ := json.Marshal(body)
 			return envelope.Seal(&envelope.Envelope{Header: rh, Body: b}, kid, signer)
 		})

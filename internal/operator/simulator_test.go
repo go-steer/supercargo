@@ -99,7 +99,7 @@ func newSimulated(t *testing.T) *simulated {
 func (s *simulated) book(t *testing.T, n int) string {
 	t.Helper()
 	b := body()
-	b.Equipment = []intents.Equipment{{ISOType: "45G1", Label: "40HC", Count: n}}
+	b.Equipment = []intents.Equipment{{ISOType: "45G1", Count: n, GrossWeightKg: 12000}}
 	b.Subscription = &intents.Subscription{Endpoint: "https://cymbal-shoes.example/ulp", Intents: []string{intents.TnTEvent, intents.TnTAlert}}
 	reply, err := s.svc.Handle(context.Background(), request("cymbal-shoes.example", b))
 	if err != nil {
@@ -399,7 +399,7 @@ func TestRunAndClose(t *testing.T) {
 	}
 	go sim.Run()
 	b := body()
-	b.Equipment = []intents.Equipment{{ISOType: "45G1", Label: "40HC", Count: 1}}
+	b.Equipment = []intents.Equipment{{ISOType: "45G1", Count: 1, GrossWeightKg: 12000}}
 	if _, err := svc.Handle(context.Background(), request("cymbal-shoes.example", b)); err != nil {
 		t.Fatal(err)
 	}
@@ -420,8 +420,8 @@ func TestRunAndClose(t *testing.T) {
 func TestLongNamesStillPublish(t *testing.T) {
 	long := strings.Repeat("x", 128)
 	tl := &timeline{booking: store.Booking{Ref: "OB-1",
-		Request:      intents.BookingRequestBody{Destination: intents.Location{UNLocode: "USEWR", Name: long}},
-		Confirmation: intents.BookingConfirmationBody{Vessel: &intents.Vessel{Name: long, Voyage: "42W"}}},
+		Request:      intents.BookingRequestBody{PortOfLoading: "NLRTM", PortOfDischarge: "USEWR"},
+		Confirmation: intents.BookingConfirmationBody{EBL: &intents.EBL{VesselName: long, VoyageNumber: "42W"}}},
 		arrival: time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)}
 	s := &Simulator{}
 	ev := s.estimate("EV-1", tl, strings.Repeat("r", 280)).(*intents.TnTEventBody)

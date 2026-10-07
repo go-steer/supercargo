@@ -54,9 +54,8 @@ func (s *StatusService) Authorize(_ context.Context, req *node.Request) error {
 }
 
 // Handle implements node.Handler. The request's references must name the
-// booking in the header; otherwise the answer is NOT_FOUND. Until the eBL
-// (#66) assigns transport document references, a booking's reference is
-// its transport document reference.
+// booking in the header (its eBL's transport document reference, and its
+// carrier booking reference if given); otherwise the answer is NOT_FOUND.
 func (s *StatusService) Handle(_ context.Context, req *node.Request) (*node.Reply, error) {
 	h := req.Envelope.Header
 	b, err := s.Bookings.Get(h.Receiver, *h.BookingRef)
@@ -69,15 +68,15 @@ func (s *StatusService) Handle(_ context.Context, req *node.Request) (*node.Repl
 	reply := func() (*node.Reply, error) {
 		return &node.Reply{Body: &intents.TnTStatusResponseBody{TnTResponse: resp}, BookingRef: b.Ref}, nil
 	}
-	if q.TransportDocumentReference != b.Ref || (q.CarrierBookingReference != "" && q.CarrierBookingReference != b.Ref) ||
-		(q.EquipmentReference != "" && !slices.Contains(b.Confirmation.EquipmentRefs, q.EquipmentReference)) {
+	if q.TransportDocumentReference != b.Confirmation.TransportDocumentReference() || (q.CarrierBookingReference != "" && q.CarrierBookingReference != b.Ref) ||
+		(q.EquipmentReference != "" && !slices.Contains(b.Confirmation.EquipmentRefs(), q.EquipmentReference)) {
 		resp.DCSAStatus = intents.StatusNotFound
 		return reply()
 	}
 	recs := s.Log.List(b.Operator, b.Ref)
 	sum := store.Summarize(b, recs)
 	resp.CarrierBookingReference = b.Ref
-	resp.PortOfLoading, resp.PortOfDischarge = b.Request.Origin.UNLocode, b.Request.Destination.UNLocode
+	resp.PortOfLoading, resp.PortOfDischarge = b.Confirmation.EBL.PortOfLoading, b.Confirmation.EBL.PortOfDischarge
 	resp.VesselName, resp.VoyageNumber = sum.Vessel, sum.Voyage
 	resp.EstimatedTimeOfArrival = sum.ETA
 	resp.DCSAStatus = intents.StatusBooked

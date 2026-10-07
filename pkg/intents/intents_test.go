@@ -30,13 +30,14 @@ func ptr(s string) *string { return &s }
 
 // bookingRequestJSON is the DESIGN.md §A.5 example.
 const bookingRequestJSON = `{
-  "shipperRef": "CY-PO-55120",
-  "origin":      { "unLocode": "NLRTM", "name": "Rotterdam" },
-  "destination": { "unLocode": "USEWR", "name": "Newark" },
-  "equipment":   [{ "isoType": "45G1", "label": "40HC", "count": 1 }],
-  "cargo":       { "description": "Footwear (sneakers)", "hsCode": "6404" },
-  "earliestDeparture": "2026-10-06",
-  "consignee":   { "name": "Cymbal Footwear", "domain": "cymbal-footwear.example" },
+  "shipper_reference": "CY-PO-55120",
+  "shipper_name": "Cymbal Shoes",
+  "port_of_loading": "NLRTM",
+  "port_of_discharge": "USEWR",
+  "containers": [{ "equipment_size_type": "45G1", "count": 1, "gross_weight_kg": 12000 }],
+  "cargo": { "description": "Footwear (sneakers)", "hs_code": "6404" },
+  "earliest_departure": "2026-10-06",
+  "consignee": { "name": "Cymbal Footwear", "domain": "cymbal-footwear.example" },
   "subscription": {
     "endpoint": "https://cymbal-shoes.example/ulp",
     "intents":  ["ulp.tnt.event", "ulp.tnt.alert"]
@@ -44,14 +45,24 @@ const bookingRequestJSON = `{
 }`
 
 const confirmationJSON = `{
-  "bookingRef": "OB-BKG-1042",
+  "carrier_booking_reference": "OB-BKG-1042",
   "status": "confirmed",
-  "vessel": { "name": "Ocean Blue Aurora", "voyage": "42W" },
-  "plannedDeparture": "2026-10-07T18:00:00Z",
-  "plannedArrival":   "2026-10-13T08:00:00Z",
-  "equipmentRefs": ["OCBU1234565"],
-  "subscriptionId": "SUB-311",
-  "messages": []
+  "planned_departure": "2026-10-07T18:00:00Z",
+  "planned_arrival":   "2026-10-13T08:00:00Z",
+  "subscription_id": "SUB-311",
+  "messages": [],
+  "ebl": {
+    "transport_document_reference": "OB-TD-1042",
+    "vessel_name": "Ocean Blue Aurora",
+    "voyage_number": "42W",
+    "port_of_loading": "NLRTM",
+    "port_of_discharge": "USEWR",
+    "shipper_name": "Cymbal Shoes",
+    "consignee_name": "Cymbal Footwear",
+    "containers": [{ "container_number": "OCBU1234565", "equipment_size_type": "45G1", "seal_number": "OBS0000001",
+                     "gross_weight_kg": 12000, "is_reefer": false }],
+    "status": "BOOKED"
+  }
 }`
 
 func request(body string) *envelope.Envelope {
@@ -64,6 +75,7 @@ func request(body string) *envelope.Envelope {
 func confirmation(body string) *envelope.Envelope {
 	h := request(bookingRequestJSON).Header.Reply(BookingConfirmation, now)
 	h.BookingRef = ptr("OB-BKG-1042")
+	SetDialect(&h)
 	return &envelope.Envelope{Header: h, Body: json.RawMessage(body)}
 }
 
@@ -86,8 +98,8 @@ func TestDecodeBookingRequest(t *testing.T) {
 		t.Errorf("decoded %+v", r)
 	}
 	// The optional parts are optional.
-	minimal := `{"shipperRef":"P1","origin":{"unLocode":"NLRTM","name":"R"},"destination":{"unLocode":"USEWR","name":"N"},` +
-		`"equipment":[{"isoType":"22G1","label":"20GP","count":2}],"cargo":{"description":"Shoes","hsCode":"6404"},"earliestDeparture":"2026-10-06"}`
+	minimal := `{"shipper_reference":"P1","shipper_name":"C","port_of_loading":"NLRTM","port_of_discharge":"USEWR",` +
+		`"containers":[{"equipment_size_type":"22G1","count":2,"gross_weight_kg":8000}],"cargo":{"description":"Shoes","hs_code":"6404"},"earliest_departure":"2026-10-06"}`
 	if _, err := Decode(request(minimal)); err != nil {
 		t.Errorf("Decode(minimal): %v", err)
 	}
@@ -98,10 +110,11 @@ func TestDecodeConfirmationAndError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode(confirmation): %v", err)
 	}
-	if c := b.(*BookingConfirmationBody); c.Vessel.Voyage != "42W" || c.Intent() != BookingConfirmation {
+	if c := b.(*BookingConfirmationBody); c.EBL.VoyageNumber != "42W" || c.Intent() != BookingConfirmation ||
+		c.TransportDocumentReference() != "OB-TD-1042" || len(c.EquipmentRefs()) != 1 {
 		t.Errorf("decoded %+v", c)
 	}
-	if _, err := Decode(confirmation(`{"bookingRef":"OB-BKG-1042","status":"rejected","messages":[{"code":"vessel_full","detail":"No space on 42W"}]}`)); err != nil {
+	if _, err := Decode(confirmation(`{"carrier_booking_reference":"OB-BKG-1042","status":"rejected","messages":[{"code":"vessel_full","detail":"No space on 42W"}]}`)); err != nil {
 		t.Errorf("Decode(rejected): %v", err)
 	}
 	b, err = Decode(errorEnvelope(`{"code":"forbidden","detail":"Sender is not a party to OB-BKG-1042","retryable":false}`))
@@ -210,51 +223,59 @@ func TestBookingRequestRejects(t *testing.T) {
 		return string(b)
 	}
 	obj := func(m map[string]any, k string) map[string]any { return m[k].(map[string]any) }
-	eq := func(m map[string]any) map[string]any { return m["equipment"].([]any)[0].(map[string]any) }
+	eq := func(m map[string]any) map[string]any { return m["containers"].([]any)[0].(map[string]any) }
 
 	for _, tc := range []struct {
 		name string
 		body string
 	}{
 		{"not an object", `[]`},
-		{"case variant member", strings.Replace(bookingRequestJSON, `"shipperRef"`, `"ShipperRef"`, 1)},
-		{"nested case variant", strings.Replace(bookingRequestJSON, `"unLocode": "NLRTM"`, `"UNLocode": "NLRTM"`, 1)},
+		{"case variant member", strings.Replace(bookingRequestJSON, `"shipper_reference"`, `"Shipper_Reference"`, 1)},
+		{"camelCase member", strings.Replace(bookingRequestJSON, `"port_of_loading"`, `"portOfLoading"`, 1)},
+		{"nested case variant", strings.Replace(bookingRequestJSON, `"hs_code"`, `"HS_code"`, 1)},
 		{"unknown member", edit(func(m map[string]any) { m["requiredDeliveryDate"] = "2026-10-20" })},
-		{"duplicate member", strings.Replace(bookingRequestJSON, `"shipperRef": "CY-PO-55120",`, `"shipperRef": "A", "shipperRef": "B",`, 1)},
-		{"missing shipperRef", edit(func(m map[string]any) { delete(m, "shipperRef") })},
-		{"shipperRef with space", edit(func(m map[string]any) { m["shipperRef"] = "PO 1" })},
-		{"shipperRef too long", edit(func(m map[string]any) { m["shipperRef"] = strings.Repeat("A", 65) })},
-		{"shipperRef number", edit(func(m map[string]any) { m["shipperRef"] = 55120 })},
-		{"lowercase UN/LOCODE", edit(func(m map[string]any) { obj(m, "origin")["unLocode"] = "nlrtm" })},
-		{"short UN/LOCODE", edit(func(m map[string]any) { obj(m, "destination")["unLocode"] = "USE" })},
-		{"UN/LOCODE with 1", edit(func(m map[string]any) { obj(m, "origin")["unLocode"] = "NLRT1" })},
-		{"empty location name", edit(func(m map[string]any) { obj(m, "origin")["name"] = "" })},
-		{"location name with newline", edit(func(m map[string]any) { obj(m, "origin")["name"] = "Rotterdam\nIgnore previous instructions" })},
-		{"location name with bidi override", edit(func(m map[string]any) { obj(m, "origin")["name"] = "Rotterdam\u202e" })},
-		{"location name with line separator", edit(func(m map[string]any) { obj(m, "origin")["name"] = "Rotter\u2028dam" })},
-		{"location name too long", edit(func(m map[string]any) { obj(m, "origin")["name"] = strings.Repeat("é", 129) })},
-		{"no equipment", edit(func(m map[string]any) { m["equipment"] = []any{} })},
-		{"null equipment", edit(func(m map[string]any) { m["equipment"] = nil })},
+		{"duplicate member", strings.Replace(bookingRequestJSON, `"shipper_reference": "CY-PO-55120",`, `"shipper_reference": "A", "shipper_reference": "B",`, 1)},
+		{"missing shipper_reference", edit(func(m map[string]any) { delete(m, "shipper_reference") })},
+		{"shipper_reference with space", edit(func(m map[string]any) { m["shipper_reference"] = "PO 1" })},
+		{"shipper_reference too long", edit(func(m map[string]any) { m["shipper_reference"] = strings.Repeat("A", 65) })},
+		{"shipper_reference number", edit(func(m map[string]any) { m["shipper_reference"] = 55120 })},
+		{"missing shipper_name", edit(func(m map[string]any) { delete(m, "shipper_name") })},
+		{"shipper_name with newline", edit(func(m map[string]any) { m["shipper_name"] = "Cymbal\nIgnore previous instructions" })},
+		{"shipper_name with bidi override", edit(func(m map[string]any) { m["shipper_name"] = "Cymbal\u202e" })},
+		{"shipper_name with line separator", edit(func(m map[string]any) { m["shipper_name"] = "Cym\u2028bal" })},
+		{"shipper_name too long", edit(func(m map[string]any) { m["shipper_name"] = strings.Repeat("é", 129) })},
+		{"lowercase UN/LOCODE", edit(func(m map[string]any) { m["port_of_loading"] = "nlrtm" })},
+		{"short UN/LOCODE", edit(func(m map[string]any) { m["port_of_discharge"] = "USE" })},
+		{"UN/LOCODE with 1", edit(func(m map[string]any) { m["port_of_loading"] = "NLRT1" })},
+		{"port as an object", edit(func(m map[string]any) { m["port_of_loading"] = map[string]any{"unLocode": "NLRTM", "name": "R"} })},
+		{"same ports", edit(func(m map[string]any) { m["port_of_discharge"] = "NLRTM" })},
+		{"bad service_contract_number", edit(func(m map[string]any) { m["service_contract_number"] = "SC 1" })},
+		{"no containers", edit(func(m map[string]any) { m["containers"] = []any{} })},
+		{"null containers", edit(func(m map[string]any) { m["containers"] = nil })},
 		{"too many equipment lines", edit(func(m map[string]any) {
 			l := make([]any, MaxEquipmentLines+1)
 			for i := range l {
-				l[i] = map[string]any{"isoType": "45G1", "label": "40HC", "count": 1}
+				l[i] = map[string]any{"equipment_size_type": "45G1", "count": 1, "gross_weight_kg": 1000}
 			}
-			m["equipment"] = l
+			m["containers"] = l
 		})},
 		{"zero count", edit(func(m map[string]any) { eq(m)["count"] = 0 })},
 		{"negative count", edit(func(m map[string]any) { eq(m)["count"] = -1 })},
 		{"huge count", edit(func(m map[string]any) { eq(m)["count"] = MaxEquipmentCount + 1 })},
 		{"fractional count", strings.Replace(bookingRequestJSON, `"count": 1`, `"count": 1.5`, 1)},
-		{"bad isoType", edit(func(m map[string]any) { eq(m)["isoType"] = "45g1" })},
-		{"empty label", edit(func(m map[string]any) { eq(m)["label"] = "" })},
-		{"long label", edit(func(m map[string]any) { eq(m)["label"] = strings.Repeat("L", 17) })},
-		{"bad hsCode", edit(func(m map[string]any) { obj(m, "cargo")["hsCode"] = "64.04" })},
+		{"bad equipment_size_type", edit(func(m map[string]any) { eq(m)["equipment_size_type"] = "45g1" })},
+		{"no weight", edit(func(m map[string]any) { delete(eq(m), "gross_weight_kg") })},
+		{"zero weight", edit(func(m map[string]any) { eq(m)["gross_weight_kg"] = 0 })},
+		{"negative weight", edit(func(m map[string]any) { eq(m)["gross_weight_kg"] = -1 })},
+		{"overweight", edit(func(m map[string]any) { eq(m)["gross_weight_kg"] = MaxGrossWeightKg + 1 })},
+		{"weight as string", edit(func(m map[string]any) { eq(m)["gross_weight_kg"] = "12000" })},
+		{"old label member", edit(func(m map[string]any) { eq(m)["label"] = "40HC" })},
+		{"bad hs_code", edit(func(m map[string]any) { obj(m, "cargo")["hs_code"] = "64.04" })},
 		{"empty description", edit(func(m map[string]any) { obj(m, "cargo")["description"] = "" })},
 		{"long description", edit(func(m map[string]any) { obj(m, "cargo")["description"] = strings.Repeat("d", 513) })},
-		{"bad date", edit(func(m map[string]any) { m["earliestDeparture"] = "06/10/2026" })},
-		{"impossible date", edit(func(m map[string]any) { m["earliestDeparture"] = "2026-02-30" })},
-		{"timestamp for date", edit(func(m map[string]any) { m["earliestDeparture"] = "2026-10-06T00:00:00Z" })},
+		{"bad date", edit(func(m map[string]any) { m["earliest_departure"] = "06/10/2026" })},
+		{"impossible date", edit(func(m map[string]any) { m["earliest_departure"] = "2026-02-30" })},
+		{"timestamp for date", edit(func(m map[string]any) { m["earliest_departure"] = "2026-10-06T00:00:00Z" })},
 		{"consignee without domain", edit(func(m map[string]any) { delete(obj(m, "consignee"), "domain") })},
 		{"consignee bad domain", edit(func(m map[string]any) { obj(m, "consignee")["domain"] = "Cymbal Footwear" })},
 		{"consignee empty name", edit(func(m map[string]any) { obj(m, "consignee")["name"] = "" })},
@@ -282,12 +303,12 @@ func TestBookingRequestRejects(t *testing.T) {
 		{"description with soft hyphen", edit(func(m map[string]any) { obj(m, "cargo")["description"] = "Sho\u00ades" })},
 		{"description with private use", edit(func(m map[string]any) { obj(m, "cargo")["description"] = "Shoes\ue000" })},
 		{"description with noncharacter", edit(func(m map[string]any) { obj(m, "cargo")["description"] = "Shoes\ufdd0" })},
-		{"shipperRef with slash", edit(func(m map[string]any) { m["shipperRef"] = "PO/../../x" })},
+		{"shipper_reference with slash", edit(func(m map[string]any) { m["shipper_reference"] = "PO/../../x" })},
 		{"endpoint too long", edit(func(m map[string]any) {
 			obj(m, "subscription")["endpoint"] = "https://cymbal-shoes.example/" + strings.Repeat("p", 500)
 		})},
 		{"no subscribed intents", edit(func(m map[string]any) { obj(m, "subscription")["intents"] = []any{} })},
-		{"unsubscribable intent", edit(func(m map[string]any) { obj(m, "subscription")["intents"] = []any{"ulp.booking.request"} })},
+		{"unsubscribable intent", edit(func(m map[string]any) { obj(m, "subscription")["intents"] = []any{"ulp.ocean.booking.request"} })},
 		{"duplicate subscribed intent", edit(func(m map[string]any) {
 			obj(m, "subscription")["intents"] = []any{"ulp.tnt.event", "ulp.tnt.event"}
 		})},
@@ -308,32 +329,58 @@ func TestConfirmationRejects(t *testing.T) {
 		b, _ := json.Marshal(m)
 		return string(b)
 	}
+	ebl := func(m map[string]any) map[string]any { return m["ebl"].(map[string]any) }
+	box := func(m map[string]any) map[string]any { return ebl(m)["containers"].([]any)[0].(map[string]any) }
 	for _, tc := range []struct {
 		name string
 		body string
 	}{
 		{"unknown status", edit(func(m map[string]any) { m["status"] = "maybe" })},
 		{"uppercase status", edit(func(m map[string]any) { m["status"] = "CONFIRMED" })},
-		{"confirmed without vessel", edit(func(m map[string]any) { delete(m, "vessel") })},
-		{"confirmed without departure", edit(func(m map[string]any) { delete(m, "plannedDeparture") })},
-		{"confirmed without arrival", edit(func(m map[string]any) { delete(m, "plannedArrival") })},
-		{"arrival before departure", edit(func(m map[string]any) { m["plannedArrival"] = "2026-10-06T08:00:00Z" })},
-		{"arrival equals departure", edit(func(m map[string]any) { m["plannedArrival"] = "2026-10-07T18:00:00Z" })},
-		{"departure with offset", edit(func(m map[string]any) { m["plannedDeparture"] = "2026-10-07T20:00:00+02:00" })},
-		{"departure with fractional seconds", edit(func(m map[string]any) { m["plannedDeparture"] = "2026-10-07T18:00:00.5Z" })},
-		{"rejected with bad time", edit(func(m map[string]any) { m["status"] = "rejected"; m["plannedArrival"] = "soon" })},
-		{"bad bookingRef", edit(func(m map[string]any) { m["bookingRef"] = "OB BKG" })},
-		{"vessel without voyage", edit(func(m map[string]any) { m["vessel"] = map[string]any{"name": "Aurora"} })},
-		{"vessel empty name", edit(func(m map[string]any) { m["vessel"] = map[string]any{"name": "", "voyage": "42W"} })},
-		{"bad container number", edit(func(m map[string]any) { m["equipmentRefs"] = []any{"OCBU-1234565"} })},
+		{"confirmed without ebl", edit(func(m map[string]any) { delete(m, "ebl") })},
+		{"rejected with ebl", edit(func(m map[string]any) { m["status"] = "rejected" })},
+		{"alternative with ebl", edit(func(m map[string]any) { m["status"] = "alternative_proposed" })},
+		{"confirmed without departure", edit(func(m map[string]any) { delete(m, "planned_departure") })},
+		{"confirmed without arrival", edit(func(m map[string]any) { delete(m, "planned_arrival") })},
+		{"arrival before departure", edit(func(m map[string]any) { m["planned_arrival"] = "2026-10-06T08:00:00Z" })},
+		{"arrival equals departure", edit(func(m map[string]any) { m["planned_arrival"] = "2026-10-07T18:00:00Z" })},
+		{"departure with offset", edit(func(m map[string]any) { m["planned_departure"] = "2026-10-07T20:00:00+02:00" })},
+		{"departure with fractional seconds", edit(func(m map[string]any) { m["planned_departure"] = "2026-10-07T18:00:00.5Z" })},
+		{"rejected with bad time", edit(func(m map[string]any) { m["status"] = "rejected"; delete(m, "ebl"); m["planned_arrival"] = "soon" })},
+		{"bad carrier_booking_reference", edit(func(m map[string]any) { m["carrier_booking_reference"] = "OB BKG" })},
+		{"old vessel member", edit(func(m map[string]any) { m["vessel"] = map[string]any{"name": "Aurora", "voyage": "42W"} })},
+		{"ebl without transport document reference", edit(func(m map[string]any) { delete(ebl(m), "transport_document_reference") })},
+		{"ebl bad transport document reference", edit(func(m map[string]any) { ebl(m)["transport_document_reference"] = "OB TD" })},
+		{"ebl without voyage", edit(func(m map[string]any) { delete(ebl(m), "voyage_number") })},
+		{"ebl empty vessel name", edit(func(m map[string]any) { ebl(m)["vessel_name"] = "" })},
+		{"ebl vessel name with newline", edit(func(m map[string]any) { ebl(m)["vessel_name"] = "Aurora\nSYSTEM:" })},
+		{"ebl bad port", edit(func(m map[string]any) { ebl(m)["port_of_loading"] = "Rotterdam" })},
+		{"ebl empty shipper", edit(func(m map[string]any) { ebl(m)["shipper_name"] = "" })},
+		{"ebl empty consignee", edit(func(m map[string]any) { ebl(m)["consignee_name"] = "" })},
+		{"ebl unknown status", edit(func(m map[string]any) { ebl(m)["status"] = "booked" })},
+		{"ebl unknown member", edit(func(m map[string]any) { ebl(m)["freight_payable"] = "yes" })},
+		{"ebl bad service contract", edit(func(m map[string]any) { ebl(m)["service_contract_number"] = "SC 1" })},
+		{"ebl no containers", edit(func(m map[string]any) { ebl(m)["containers"] = []any{} })},
+		{"bad container number", edit(func(m map[string]any) { box(m)["container_number"] = "OCBU-1234565" })},
+		{"bad container size type", edit(func(m map[string]any) { box(m)["equipment_size_type"] = "45g1" })},
+		{"container without seal", edit(func(m map[string]any) { delete(box(m), "seal_number") })},
+		{"container zero weight", edit(func(m map[string]any) { box(m)["gross_weight_kg"] = 0 })},
+		{"set point on a dry box", edit(func(m map[string]any) { box(m)["target_temperature_celsius"] = 4 })},
+		{"reefer set point too cold", edit(func(m map[string]any) {
+			box(m)["is_reefer"] = true
+			box(m)["target_temperature_celsius"] = -41
+		})},
+		{"repeated container number", edit(func(m map[string]any) {
+			ebl(m)["containers"] = []any{box(m), box(m)}
+		})},
 		{"too many container numbers", edit(func(m map[string]any) {
 			l := make([]any, MaxEquipmentLines*MaxEquipmentCount+1)
 			for i := range l {
-				l[i] = "OCBU1234565"
+				l[i] = box(m)
 			}
-			m["equipmentRefs"] = l
+			ebl(m)["containers"] = l
 		})},
-		{"bad subscriptionId", edit(func(m map[string]any) { m["subscriptionId"] = "SUB 311" })},
+		{"bad subscription_id", edit(func(m map[string]any) { m["subscription_id"] = "SUB 311" })},
 		{"message bad code", edit(func(m map[string]any) { m["messages"] = []any{map[string]any{"code": "Bad Code", "detail": "x"}} })},
 		{"message empty detail", edit(func(m map[string]any) { m["messages"] = []any{map[string]any{"code": "c", "detail": ""}} })},
 		{"too many messages", edit(func(m map[string]any) {
@@ -343,7 +390,8 @@ func TestConfirmationRejects(t *testing.T) {
 			}
 			m["messages"] = l
 		})},
-		{"case variant", strings.Replace(confirmationJSON, `"bookingRef"`, `"BookingRef"`, 1)},
+		{"case variant", strings.Replace(confirmationJSON, `"carrier_booking_reference"`, `"Carrier_Booking_Reference"`, 1)},
+		{"nested case variant", strings.Replace(confirmationJSON, `"vessel_name"`, `"Vessel_Name"`, 1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if b, err := Decode(confirmation(tc.body)); !errors.Is(err, ErrInvalidBody) {
@@ -389,5 +437,24 @@ func TestTextAllowsMultiline(t *testing.T) {
 	}
 	if err := text("q", "bell\a", 100, true); err == nil {
 		t.Error("control character accepted in multiline text")
+	}
+}
+
+// TestConfirmationAccessors: they read the eBL, and are empty without one.
+func TestConfirmationAccessors(t *testing.T) {
+	b, err := Decode(confirmation(confirmationJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := b.(*BookingConfirmationBody)
+	if name, voyage := c.Vessel(); name != "Ocean Blue Aurora" || voyage != "42W" {
+		t.Errorf("Vessel() = %q, %q", name, voyage)
+	}
+	if refs := c.EquipmentRefs(); len(refs) != 1 || refs[0] != "OCBU1234565" {
+		t.Errorf("EquipmentRefs() = %v", refs)
+	}
+	var none BookingConfirmationBody
+	if name, voyage := none.Vessel(); name != "" || voyage != "" || none.EquipmentRefs() != nil || none.TransportDocumentReference() != "" {
+		t.Error("accessors without an eBL aren't empty")
 	}
 }

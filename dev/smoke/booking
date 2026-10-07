@@ -42,7 +42,7 @@ if out="$(echo n | "$work/bin/ulpnode" book --config "$work/shipper.yaml" --oper
 fi
 grep -q "Not sent." <<<"$out" || smoke_fail "$work" "declining didn't say so"
 sleep 0.5 # anything sent would have arrived by now
-accepted="$(grep -c '"intent":"ulp.booking.request".*"outcome":"accepted"' "$work/operator.log" || true)"
+accepted="$(grep -c '"intent":"ulp.ocean.booking.request".*"outcome":"accepted"' "$work/operator.log" || true)"
 [[ "$accepted" == 1 ]] || smoke_fail "$work" "the operator accepted $accepted booking requests, want 1"
 
 echo "✓ smoke/booking: two ulpnode processes booked over REST, verified both ways"

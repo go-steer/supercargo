@@ -22,6 +22,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/go-steer/supercargo/internal/ports"
+
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -197,7 +199,7 @@ func (s *Simulator) Close() {
 func (s *Simulator) Start(b store.Booking) error {
 	s.init()
 	c := b.Confirmation
-	if c.Status != intents.StatusConfirmed || c.Vessel == nil {
+	if c.Status != intents.StatusConfirmed || c.EBL == nil {
 		return fmt.Errorf("operator: booking %s is not confirmed", b.Ref)
 	}
 	dep, err1 := time.Parse(envelope.TimeLayout, c.PlannedDeparture)
@@ -205,8 +207,8 @@ func (s *Simulator) Start(b store.Booking) error {
 	if err := errors.Join(err1, err2); err != nil {
 		return fmt.Errorf("operator: booking %s: %w", b.Ref, err)
 	}
-	origin, dest := b.Request.Origin, b.Request.Destination
-	vessel, voyage := c.Vessel.Name, c.Vessel.Voyage
+	origin, dest := ports.Location(b.Request.PortOfLoading), ports.Location(b.Request.PortOfDischarge)
+	vessel, voyage := c.EBL.VesselName, c.EBL.VoyageNumber
 	equipment := func(code string, loc intents.Location, when time.Time, ref string) step {
 		return step{at: when, body: func(id string, at time.Time) intents.Body {
 			return &intents.TnTEventBody{EventID: id, EventType: intents.EventTypeEquipment, EventClassifierCode: intents.ClassifierActual,
@@ -215,7 +217,7 @@ func (s *Simulator) Start(b store.Booking) error {
 		}}
 	}
 	var steps []step
-	for _, ref := range c.EquipmentRefs {
+	for _, ref := range c.EquipmentRefs() {
 		steps = append(steps, equipment("GTIN", origin, dep.Add(-gateInBefore), ref), equipment("LOAD", origin, dep.Add(-loadBefore), ref))
 	}
 	steps = append(steps,
@@ -236,7 +238,7 @@ func (s *Simulator) Start(b store.Booking) error {
 				Description: describe("%s %s arrived at %s", vessel, voyage, facility(dest)), VesselName: vessel, VoyageNumber: voyage}
 		}},
 	)
-	for _, ref := range c.EquipmentRefs {
+	for _, ref := range c.EquipmentRefs() {
 		d := equipment("DISC", dest, arr.Add(dischargeAfter), ref)
 		g := equipment("GTOT", dest, arr.Add(gateOutAfter), ref)
 		d.afterArrival, g.afterArrival = true, true
@@ -261,15 +263,15 @@ func (s *Simulator) Start(b store.Booking) error {
 // if set, says what moved it. It is called with s.mu held.
 func (s *Simulator) estimate(id string, tl *timeline, why string) intents.Body {
 	c := tl.booking.Confirmation
-	dest := tl.booking.Request.Destination
-	desc := fmt.Sprintf("%s %s expected at %s", c.Vessel.Name, c.Vessel.Voyage, facility(dest))
+	dest := ports.Location(tl.booking.Request.PortOfDischarge)
+	desc := fmt.Sprintf("%s %s expected at %s", c.EBL.VesselName, c.EBL.VoyageNumber, facility(dest))
 	if why != "" {
 		desc += ": " + why
 	}
 	desc = clip(desc, 280)
 	return &intents.TnTEventBody{EventID: id, EventType: intents.EventTypeTransport, EventClassifierCode: intents.ClassifierEstimated,
 		EventTypeCode: "ARRI", EventDateTime: stamp(tl.arrival), UNLocationCode: dest.UNLocode, FacilityName: facility(dest),
-		Description: desc, VesselName: c.Vessel.Name, VoyageNumber: c.Vessel.Voyage}
+		Description: desc, VesselName: c.EBL.VesselName, VoyageNumber: c.EBL.VoyageNumber}
 }
 
 // facility names a port in events: "Port of Rotterdam", within the

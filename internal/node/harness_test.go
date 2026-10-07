@@ -279,7 +279,7 @@ func newDemo(t *testing.T) *demo {
 	d.model = operator.FakeInquiryModel()
 	d.inquiry = &operator.InquiryService{Bookings: d.bookings, Log: d.opLog, Model: d.model, Name: "Ocean Blue"}
 	d.nw.wire(t, d.operator, "Ocean Blue", "operator", map[string]node.Handler{
-		"ulp.booking.request": d.booking, "ulp.tnt.inquiry": d.inquiry,
+		"ulp.ocean.booking.request": d.booking, "ulp.tnt.inquiry": d.inquiry,
 	})
 	shipBookings := store.NewBookings()
 	d.shipLog = store.NewEventLog(0)

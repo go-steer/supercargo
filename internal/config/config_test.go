@@ -208,6 +208,8 @@ func TestParseRejects(t *testing.T) {
 		"retention over a day":        {"replayRetention: 15m", "replayRetention: 25h"},
 		"ttl over a day":              {"ttl: 1h", "ttl: 48h"},
 		"refresh floor over a day":    {"refreshFloor: 1m", "refreshFloor: 48h"},
+		"refPrefix with a dot":        {"refPrefix: OB-BKG", "refPrefix: OB.BKG"},
+		"refPrefix too long":          {"refPrefix: OB-BKG", "refPrefix: OB-BKG-0123456789012345678901234567890123"},
 		"name with a control char":    {"name: Ocean Blue", "name: \"Ocean\\x07Blue\""},
 		"name with a bidi override":   {"name: Ocean Blue", "name: \"Ocean Blue\\u202e\""},
 		"listen with a word for port": {`listen: ":8443"`, `listen: "host:abc"`},

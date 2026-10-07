@@ -35,13 +35,13 @@ func statusEvent(id string) intents.TnTEventBody {
 }
 
 // reporting is a shipper whose operator answers status requests with st
-// (its booking reference set to the request's unless ref is given).
-func reporting(t *testing.T, ref string, intent string, edit ...func(*intents.TnTStatus)) *Shipper {
+// (about the booking's transport document, OB-TD-1, unless tdr is given).
+func reporting(t *testing.T, tdr string, intent string, edit ...func(*intents.TnTStatus)) *Shipper {
 	t.Helper()
-	s := shipperWith(t, func(h envelope.Header) (string, any) {
-		r := *h.BookingRef
-		if ref != "" {
-			r = ref
+	s := shipperWith(t, func(envelope.Header) (string, any) {
+		r := "OB-TD-1"
+		if tdr != "" {
+			r = tdr
 		}
 		st := intents.TnTStatus{TransportDocumentReference: r,
 			DCSAStatus: intents.StatusInTransit, Events: []intents.TnTEventBody{statusEvent("EV-1"), statusEvent("EV-2")}}
@@ -50,7 +50,8 @@ func reporting(t *testing.T, ref string, intent string, edit ...func(*intents.Tn
 		}
 		return intent, &intents.TnTStatusResponseBody{TnTResponse: st}
 	})
-	if err := s.Bookings.Add(store.Booking{Ref: "OB-BKG-1", Operator: "ocean-blue.example", Shipper: "cymbal-shoes.example"}); err != nil {
+	if err := s.Bookings.Add(store.Booking{Ref: "OB-BKG-1", Operator: "ocean-blue.example", Shipper: "cymbal-shoes.example",
+		Confirmation: intents.BookingConfirmationBody{EBL: &intents.EBL{TransportDocumentReference: "OB-TD-1"}}}); err != nil {
 		t.Fatal(err)
 	}
 	s.Events = store.NewEventLog(0)
@@ -80,7 +81,7 @@ func TestStatus(t *testing.T) {
 	}
 	// A report whose body names something other than what was asked.
 	for name, s := range map[string]*Shipper{
-		"another document": reporting(t, "OB-BKG-2", intents.OceanTnTResponse),
+		"another document": reporting(t, "OB-TD-2", intents.OceanTnTResponse),
 		"another booking":  reporting(t, "", intents.OceanTnTResponse, func(st *intents.TnTStatus) { st.CarrierBookingReference = "OB-BKG-2" }),
 		"a container":      reporting(t, "", intents.OceanTnTResponse, func(st *intents.TnTStatus) { st.EquipmentReference = "OCBU0000004" }),
 	} {

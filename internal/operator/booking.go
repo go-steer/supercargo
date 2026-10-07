@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,7 +45,7 @@ type Voyage struct {
 // container numbers than fit in an envelope the shipper accepts.
 const MaxContainers = 50
 
-// BookingService handles ulp.booking.request: it books the request on the
+// BookingService handles ulp.ocean.booking.request: it books the request on the
 // configured voyage and confirms it.
 type BookingService struct {
 	Bookings *store.Bookings
@@ -123,15 +124,36 @@ func (s *BookingService) Handle(_ context.Context, req *node.Request) (*node.Rep
 	}
 
 	departure := earliest.AddDate(0, 0, 1).Add(time.Duration(s.Voyage.DepartureHour) * time.Hour)
+	// The eBL is the carrier's document: its reference, the vessel and
+	// voyage, and a numbered, sealed container for each one asked for.
+	consignee := "To order" // the eBL names a consignee; a request may not
+	if b.Consignee != nil {
+		consignee = b.Consignee.Name
+	}
+	ebl := &intents.EBL{
+		TransportDocumentReference: fmt.Sprintf("%s-%d", s.documentPrefix(), n),
+		VesselName:                 s.Voyage.Vessel, VoyageNumber: s.Voyage.Number,
+		PortOfLoading: b.PortOfLoading, PortOfDischarge: b.PortOfDischarge,
+		ShipperName: b.ShipperName, ConsigneeName: consignee, ServiceContractNumber: b.ServiceContractNumber,
+		Status: "BOOKED",
+	}
+	i := 0
+	for _, e := range b.Equipment {
+		for range e.Count {
+			serial := firstSerial + i
+			ebl.Containers = append(ebl.Containers, intents.ShippingContainer{
+				ContainerNumber: containerNumber(s.ContainerPrefix, serial), EquipmentSizeType: e.ISOType,
+				SealNumber: fmt.Sprintf("%sS%07d", s.ContainerPrefix, serial), GrossWeightKg: e.GrossWeightKg,
+				IsReefer: e.ISOType[2] == 'R'}) // ISO 6346: the type group's letter
+			i++
+		}
+	}
 	conf := &intents.BookingConfirmationBody{
 		BookingRef:       ref,
 		Status:           intents.StatusConfirmed,
-		Vessel:           &intents.Vessel{Name: s.Voyage.Vessel, Voyage: s.Voyage.Number},
 		PlannedDeparture: departure.UTC().Format(envelope.TimeLayout),
 		PlannedArrival:   departure.Add(s.Voyage.Transit).UTC().Format(envelope.TimeLayout),
-	}
-	for i := range containers {
-		conf.EquipmentRefs = append(conf.EquipmentRefs, containerNumber(s.ContainerPrefix, firstSerial+i))
+		EBL:              ebl,
 	}
 	if b.Subscription != nil {
 		// Recorded with the booking; the Publisher pushes to it.
@@ -159,4 +181,11 @@ func (s *BookingService) Handle(_ context.Context, req *node.Request) (*node.Rep
 		}
 	}
 	return &node.Reply{Body: conf, BookingRef: conf.BookingRef}, nil
+}
+
+// documentPrefix prefixes transport document references: the booking
+// prefix's first segment and "TD" ("OB-TD-1042" for "OB-BKG").
+func (s *BookingService) documentPrefix() string {
+	head, _, _ := strings.Cut(s.RefPrefix, "-")
+	return head + "-TD"
 }

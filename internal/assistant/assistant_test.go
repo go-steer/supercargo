@@ -144,8 +144,8 @@ func TestScenes1And2(t *testing.T) {
 	d := r.Drafts[0]
 	req := d.Request
 	if d.DraftID != "BD-0001" || d.To != "ocean-blue.example" || d.Sent || req.ShipperRef != "BD-0001" ||
-		req.Origin.UNLocode != "NLRTM" || req.Destination.UNLocode != "USEWR" || req.EarliestDeparture != "2026-10-05" ||
-		req.Equipment[0] != (intents.Equipment{ISOType: "45G1", Label: "40HC", Count: 1}) || req.Cargo.HSCode != "6404" ||
+		req.PortOfLoading != "NLRTM" || req.PortOfDischarge != "USEWR" || req.EarliestDeparture != "2026-10-05" ||
+		req.Equipment[0] != (intents.Equipment{ISOType: "45G1", Count: 1, GrossWeightKg: 12000}) || req.Cargo.HSCode != "6404" ||
 		req.Consignee == nil || *req.Consignee != (intents.Consignee{Name: "Cymbal Footwear", Domain: "cymbal-footwear.example"}) ||
 		req.Subscription == nil || req.Subscription.Endpoint != "https://cymbal-shoes.example/ulp" ||
 		d.NotSent["requiredBy"] != "2026-10-15" {
@@ -209,7 +209,7 @@ func TestRefusedCalls(t *testing.T) {
 		"booking with ourselves":  {fake.Call("1", ToolDraftBooking, draftJSON(`"operator":"cymbal-shoes.example"`)), "is us"},
 		"consignee, no domain":    {fake.Call("1", ToolDraftBooking, draftJSON(`"consigneeName":"Mallory"`)), "needs the domain"},
 		"unnamed consignee":       {fake.Call("1", ToolDraftBooking, draftJSON(`"consigneeName":"M","consigneeDomain":"mallory.example"`)), "hasn't named"},
-		"bad port":                {fake.Call("1", ToolDraftBooking, draftJSON(`"origin":{"unLocode":"XX","name":"Nowhere"}`)), "origin.unLocode"},
+		"bad port":                {fake.Call("1", ToolDraftBooking, draftJSON(`"portOfLoading":"XX"`)), "port_of_loading"},
 		"bad required-by":         {fake.Call("1", ToolDraftBooking, draftJSON(`"requiredBy":"the 15th"`)), "not a YYYY-MM-DD"},
 		"bad container type":      {fake.Call("1", ToolDraftBooking, draftJSON(`"containerType":"53HC"`)), "doesn't match its schema"},
 		"a booking not ours":      {fake.Call("1", ToolGetEvents, `{"bookingRef":"OB-BKG-9999"}`), "no booking OB-BKG-9999"},
@@ -254,8 +254,8 @@ func TestRefusedCalls(t *testing.T) {
 
 func draftJSON(override string) string {
 	base := map[string]json.RawMessage{
-		"operator": json.RawMessage(`"ocean-blue.example"`), "origin": json.RawMessage(`{"unLocode":"NLRTM","name":"Rotterdam"}`),
-		"destination": json.RawMessage(`{"unLocode":"USEWR","name":"Newark"}`), "containerType": json.RawMessage(`"40HC"`),
+		"operator": json.RawMessage(`"ocean-blue.example"`), "portOfLoading": json.RawMessage(`"NLRTM"`),
+		"portOfDischarge": json.RawMessage(`"USEWR"`), "grossWeightKg": json.RawMessage(`12000`), "containerType": json.RawMessage(`"40HC"`),
 		"containerCount": json.RawMessage(`1`), "cargoDescription": json.RawMessage(`"Shoes"`), "hsCode": json.RawMessage(`"6404"`),
 		"earliestDeparture": json.RawMessage(`"2026-10-06"`),
 	}

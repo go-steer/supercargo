@@ -92,10 +92,11 @@ func shipperWith(t *testing.T, answer func(req envelope.Header) (string, any), o
 func request() *intents.BookingRequestBody {
 	return &intents.BookingRequestBody{
 		ShipperRef: "P1", EarliestDeparture: "2026-10-06",
-		Origin:      intents.Location{UNLocode: "NLRTM", Name: "Rotterdam"},
-		Destination: intents.Location{UNLocode: "USEWR", Name: "Newark"},
-		Equipment:   []intents.Equipment{{ISOType: "45G1", Label: "40HC", Count: 1}},
-		Cargo:       intents.Cargo{Description: "Shoes", HSCode: "6404"},
+		ShipperName:     "Cymbal Shoes",
+		PortOfLoading:   "NLRTM",
+		PortOfDischarge: "USEWR",
+		Equipment:       []intents.Equipment{{ISOType: "45G1", Count: 1, GrossWeightKg: 12000}},
+		Cargo:           intents.Cargo{Description: "Shoes", HSCode: "6404"},
 	}
 }
 
@@ -103,7 +104,7 @@ func TestBook(t *testing.T) {
 	s := shipperWith(t, func(envelope.Header) (string, any) {
 		return intents.BookingConfirmation, &intents.BookingConfirmationBody{
 			BookingRef: "OB-BKG-1", Status: intents.StatusConfirmed,
-			Vessel:           &intents.Vessel{Name: "Aurora", Voyage: "42W"},
+			EBL:              &intents.EBL{TransportDocumentReference: "OB-TD-1", VesselName: "Aurora", VoyageNumber: "42W", PortOfLoading: "NLRTM", PortOfDischarge: "USEWR", ShipperName: "Cymbal Shoes", ConsigneeName: "To order", Status: "BOOKED", Containers: []intents.ShippingContainer{{ContainerNumber: "OCBU0000004", EquipmentSizeType: "45G1", SealNumber: "S1", GrossWeightKg: 12000}}},
 			PlannedDeparture: "2026-10-07T18:00:00Z", PlannedArrival: "2026-10-13T08:00:00Z",
 		}
 	})
@@ -116,13 +117,61 @@ func TestBook(t *testing.T) {
 	}
 }
 
+// TestBookRefusesContradictingEBL: a signed confirmation whose eBL
+// doesn't describe what was asked for is an error, and nothing is recorded.
+func TestBookRefusesContradictingEBL(t *testing.T) {
+	good := func() *intents.EBL {
+		return &intents.EBL{TransportDocumentReference: "OB-TD-1", VesselName: "Aurora", VoyageNumber: "42W", PortOfLoading: "NLRTM",
+			PortOfDischarge: "USEWR", ShipperName: "Cymbal Shoes", ConsigneeName: "Cymbal Footwear", Status: "BOOKED",
+			Containers: []intents.ShippingContainer{{ContainerNumber: "OCBU0000004", EquipmentSizeType: "45G1", SealNumber: "S1", GrossWeightKg: 12000}}}
+	}
+	other := intents.ShippingContainer{ContainerNumber: "OCBU0000015", EquipmentSizeType: "45G1", SealNumber: "S2", GrossWeightKg: 12000}
+	for name, edit := range map[string]func(*intents.EBL){
+		"another port of loading":   func(e *intents.EBL) { e.PortOfLoading = "DEHAM" },
+		"another port of discharge": func(e *intents.EBL) { e.PortOfDischarge = "USLAX" },
+		"another shipper":           func(e *intents.EBL) { e.ShipperName = "Mallory Freight" },
+		"another consignee":         func(e *intents.EBL) { e.ConsigneeName = "Mallory" },
+		"a service contract":        func(e *intents.EBL) { e.ServiceContractNumber = "SC-1" },
+		"not BOOKED":                func(e *intents.EBL) { e.Status = "LOADED" },
+		"an extra container":        func(e *intents.EBL) { e.Containers = append(e.Containers, other) },
+		"another size-type":         func(e *intents.EBL) { e.Containers[0].EquipmentSizeType = "22G1" },
+		"another weight":            func(e *intents.EBL) { e.Containers[0].GrossWeightKg = 30000 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := good()
+			edit(e)
+			s := shipperWith(t, func(envelope.Header) (string, any) {
+				return intents.BookingConfirmation, &intents.BookingConfirmationBody{
+					BookingRef: "OB-BKG-1", Status: intents.StatusConfirmed, EBL: e,
+					PlannedDeparture: "2026-10-07T18:00:00Z", PlannedArrival: "2026-10-13T08:00:00Z",
+				}
+			})
+			req := request()
+			req.Consignee = &intents.Consignee{Name: "Cymbal Footwear", Domain: "cymbal-footwear.example"}
+			if conf, err := s.Book(context.Background(), "ocean-blue.example", req); !errors.Is(err, ErrEBLMismatch) {
+				t.Errorf("Book = %+v, %v; want ErrEBLMismatch", conf, err)
+			}
+			if s.Bookings.Len() != 0 {
+				t.Error("a contradicting eBL was recorded")
+			}
+		})
+	}
+	if err := checkEBL(request(), nil); err == nil {
+		t.Error("no eBL passed")
+	}
+	// Without a named consignee, the operator's choice ("To order") stands.
+	if err := checkEBL(request(), good()); err != nil {
+		t.Errorf("the matching eBL: %v", err)
+	}
+}
+
 // TestBookRefusesReusedReference: an operator confirming a reference it
 // already used doesn't overwrite the booking.
 func TestBookRefusesReusedReference(t *testing.T) {
 	s := shipperWith(t, func(envelope.Header) (string, any) {
 		return intents.BookingConfirmation, &intents.BookingConfirmationBody{
 			BookingRef: "OB-BKG-1", Status: intents.StatusConfirmed,
-			Vessel:           &intents.Vessel{Name: "Aurora", Voyage: "42W"},
+			EBL:              &intents.EBL{TransportDocumentReference: "OB-TD-1", VesselName: "Aurora", VoyageNumber: "42W", PortOfLoading: "NLRTM", PortOfDischarge: "USEWR", ShipperName: "Cymbal Shoes", ConsigneeName: "To order", Status: "BOOKED", Containers: []intents.ShippingContainer{{ContainerNumber: "OCBU0000004", EquipmentSizeType: "45G1", SealNumber: "S1", GrossWeightKg: 12000}}},
 			PlannedDeparture: "2026-10-07T18:00:00Z", PlannedArrival: "2026-10-13T08:00:00Z",
 		}
 	})
@@ -145,7 +194,7 @@ func TestBookStoreFull(t *testing.T) {
 	s := shipperWith(t, func(envelope.Header) (string, any) {
 		return intents.BookingConfirmation, &intents.BookingConfirmationBody{
 			BookingRef: "OB-BKG-1", Status: intents.StatusConfirmed,
-			Vessel:           &intents.Vessel{Name: "Aurora", Voyage: "42W"},
+			EBL:              &intents.EBL{TransportDocumentReference: "OB-TD-1", VesselName: "Aurora", VoyageNumber: "42W", PortOfLoading: "NLRTM", PortOfDischarge: "USEWR", ShipperName: "Cymbal Shoes", ConsigneeName: "To order", Status: "BOOKED", Containers: []intents.ShippingContainer{{ContainerNumber: "OCBU0000004", EquipmentSizeType: "45G1", SealNumber: "S1", GrossWeightKg: 12000}}},
 			PlannedDeparture: "2026-10-07T18:00:00Z", PlannedArrival: "2026-10-13T08:00:00Z",
 		}
 	})

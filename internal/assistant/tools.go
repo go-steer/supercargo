@@ -25,6 +25,7 @@ import (
 	"unicode"
 
 	"github.com/go-steer/supercargo/internal/llm"
+	"github.com/go-steer/supercargo/internal/ports"
 	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -40,12 +41,6 @@ const (
 	ToolStatus       = "get_status"
 )
 
-// containerTypes are the container types a draft may ask for: the label
-// people use, and its ISO 6346 size-type code.
-var containerTypes = map[string]string{
-	"20GP": "22G1", "40GP": "42G1", "40HC": "45G1", "45HC": "L5G1", "20RF": "22R1", "40RF": "45R1",
-}
-
 // Tools are the assistant's tools. There is no tool that sends a booking:
 // sending happens only in the confirmation dialog, after a person says yes.
 var Tools = []llm.Tool{
@@ -55,8 +50,9 @@ var Tools = []llm.Tool{
 		Schema: json.RawMessage(`{"type":"object","properties":{` +
 			`"operator":{"type":"string","maxLength":253,"description":"The carrier's domain, as the user named it"},` +
 			`"shipperRef":{"type":"string","maxLength":64,"description":"The user's own reference (a PO number), if they gave one"},` +
-			`"origin":{"type":"object","properties":{"unLocode":{"type":"string","maxLength":5},"name":{"type":"string","maxLength":128}},"required":["unLocode","name"],"additionalProperties":false},` +
-			`"destination":{"type":"object","properties":{"unLocode":{"type":"string","maxLength":5},"name":{"type":"string","maxLength":128}},"required":["unLocode","name"],"additionalProperties":false},` +
+			`"portOfLoading":{"type":"string","maxLength":5,"description":"UN/LOCODE, e.g. NLRTM for Rotterdam"},` +
+			`"portOfDischarge":{"type":"string","maxLength":5,"description":"UN/LOCODE, e.g. USEWR for Newark"},` +
+			`"grossWeightKg":{"type":"number","minimum":1,"maximum":40000,"description":"Each container's gross weight in kg (estimate if the user didn't say)"},` +
 			`"containerType":{"type":"string","enum":["20GP","40GP","40HC","45HC","20RF","40RF"]},` +
 			`"containerCount":{"type":"integer","minimum":1,"maximum":999},` +
 			`"cargoDescription":{"type":"string","maxLength":512},` +
@@ -65,7 +61,7 @@ var Tools = []llm.Tool{
 			`"consigneeName":{"type":"string","maxLength":128},` +
 			`"consigneeDomain":{"type":"string","maxLength":253,"description":"Only a domain the user gave"},` +
 			`"requiredBy":{"type":"string","maxLength":10,"description":"YYYY-MM-DD: the user's own delivery deadline. Private: kept on our side, never sent"}` +
-			`},"required":["operator","origin","destination","containerType","containerCount","cargoDescription","hsCode","earliestDeparture"],"additionalProperties":false}`)},
+			`},"required":["operator","portOfLoading","portOfDischarge","containerType","containerCount","grossWeightKg","cargoDescription","hsCode","earliestDeparture"],"additionalProperties":false}`)},
 	{Name: ToolList, Description: "List our bookings, each at a glance: status, ETA, latest event, alerts.",
 		Schema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
 	{Name: ToolGetEvents, Description: "Get one booking's signed track-and-trace events and alerts, oldest first.",
@@ -279,18 +275,19 @@ func (a *Assistant) operatorOf(ctx context.Context, ref, operator string) (strin
 
 // draftInput is draft_booking's input.
 type draftInput struct {
-	Operator          string           `json:"operator"`
-	ShipperRef        string           `json:"shipperRef"`
-	Origin            intents.Location `json:"origin"`
-	Destination       intents.Location `json:"destination"`
-	ContainerType     string           `json:"containerType"`
-	ContainerCount    int              `json:"containerCount"`
-	CargoDescription  string           `json:"cargoDescription"`
-	HSCode            string           `json:"hsCode"`
-	EarliestDeparture string           `json:"earliestDeparture"`
-	ConsigneeName     string           `json:"consigneeName"`
-	ConsigneeDomain   string           `json:"consigneeDomain"`
-	RequiredBy        string           `json:"requiredBy"`
+	Operator          string  `json:"operator"`
+	ShipperRef        string  `json:"shipperRef"`
+	PortOfLoading     string  `json:"portOfLoading"`
+	PortOfDischarge   string  `json:"portOfDischarge"`
+	GrossWeightKg     float64 `json:"grossWeightKg"`
+	ContainerType     string  `json:"containerType"`
+	ContainerCount    int     `json:"containerCount"`
+	CargoDescription  string  `json:"cargoDescription"`
+	HSCode            string  `json:"hsCode"`
+	EarliestDeparture string  `json:"earliestDeparture"`
+	ConsigneeName     string  `json:"consigneeName"`
+	ConsigneeDomain   string  `json:"consigneeDomain"`
+	RequiredBy        string  `json:"requiredBy"`
 }
 
 // DraftResult is what draft_booking returns to the model, and what the
@@ -316,13 +313,13 @@ func (a *Assistant) draft(c *Conversation, raw json.RawMessage) (any, error) {
 	if in.Operator == a.Self.Domain {
 		return nil, refuse("%s is us; a booking goes to a carrier", in.Operator)
 	}
-	iso, ok := containerTypes[in.ContainerType]
-	if !ok {
+	iso := ports.SizeType(in.ContainerType)
+	if iso == "" {
 		return nil, refuse("no container type %s", in.ContainerType)
 	}
 	req := intents.BookingRequestBody{
-		ShipperRef: in.ShipperRef, Origin: in.Origin, Destination: in.Destination,
-		Equipment:         []intents.Equipment{{ISOType: iso, Label: in.ContainerType, Count: in.ContainerCount}},
+		ShipperRef: in.ShipperRef, ShipperName: a.shipperName(), PortOfLoading: in.PortOfLoading, PortOfDischarge: in.PortOfDischarge,
+		Equipment:         []intents.Equipment{{ISOType: iso, Count: in.ContainerCount, GrossWeightKg: in.GrossWeightKg}},
 		Cargo:             intents.Cargo{Description: strings.TrimSpace(in.CargoDescription), HSCode: in.HSCode},
 		EarliestDeparture: in.EarliestDeparture,
 	}
@@ -385,4 +382,12 @@ func (c *Conversation) named(domain string) error {
 		}
 	}
 	return errTool{errNotNamed.Error()}
+}
+
+// shipperName names us in a booking request: our name, else our domain.
+func (a *Assistant) shipperName() string {
+	if a.Self.Name != "" {
+		return a.Self.Name
+	}
+	return a.Self.Domain
 }

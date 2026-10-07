@@ -36,9 +36,9 @@ func eventRecord(t *testing.T, id, code, class, at string) Record {
 
 func TestSummarize(t *testing.T) {
 	b := Booking{Ref: "OB-1", Operator: "ocean-blue.example", Shipper: "cymbal-shoes.example",
-		Request: intents.BookingRequestBody{Origin: intents.Location{UNLocode: "NLRTM"}, Destination: intents.Location{UNLocode: "USEWR"}},
-		Confirmation: intents.BookingConfirmationBody{Status: "confirmed", Vessel: &intents.Vessel{Name: "Aurora", Voyage: "42W"},
-			PlannedDeparture: "2026-10-07T18:00:00Z", PlannedArrival: "2026-10-13T08:00:00Z", EquipmentRefs: []string{"OCBU0000004"}}}
+		Request: intents.BookingRequestBody{PortOfLoading: "NLRTM", PortOfDischarge: "USEWR"},
+		Confirmation: intents.BookingConfirmationBody{Status: "confirmed", EBL: &intents.EBL{TransportDocumentReference: "OB-TD-1", VesselName: "Aurora", VoyageNumber: "42W", PortOfLoading: "NLRTM", PortOfDischarge: "USEWR", ShipperName: "Cymbal Shoes", ConsigneeName: "To order", Status: "BOOKED", Containers: []intents.ShippingContainer{{ContainerNumber: "OCBU0000004", EquipmentSizeType: "45G1", SealNumber: "S1", GrossWeightKg: 12000}}},
+			PlannedDeparture: "2026-10-07T18:00:00Z", PlannedArrival: "2026-10-13T08:00:00Z"}}
 	s := Summarize(b, nil)
 	if s.Status != "confirmed" || s.ETA != "2026-10-13T08:00:00Z" || s.ETASource != "" || s.Vessel != "Aurora" || len(s.Containers) != 1 {
 		t.Errorf("no events: %+v", s)

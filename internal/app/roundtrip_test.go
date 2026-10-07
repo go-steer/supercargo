@@ -90,10 +90,11 @@ operator: { refPrefix: OB-BKG, containerPrefix: OCBU, vessel: Aurora, voyage: 42
 func request() *intents.BookingRequestBody {
 	return &intents.BookingRequestBody{
 		ShipperRef: "CY-PO-1", EarliestDeparture: "2026-10-06",
-		Origin:      intents.Location{UNLocode: "NLRTM", Name: "Rotterdam"},
-		Destination: intents.Location{UNLocode: "USEWR", Name: "Newark"},
-		Equipment:   []intents.Equipment{{ISOType: "45G1", Label: "40HC", Count: 1}},
-		Cargo:       intents.Cargo{Description: "Shoes", HSCode: "6404"},
+		ShipperName:     "Cymbal Shoes",
+		PortOfLoading:   "NLRTM",
+		PortOfDischarge: "USEWR",
+		Equipment:       []intents.Equipment{{ISOType: "45G1", Count: 1, GrossWeightKg: 12000}},
+		Cargo:           intents.Cargo{Description: "Shoes", HSCode: "6404"},
 	}
 }
 

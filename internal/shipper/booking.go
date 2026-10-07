@@ -55,6 +55,9 @@ func (s *Shipper) Book(ctx context.Context, operator string, req *intents.Bookin
 		return nil, errors.New("shipper: response is not a booking confirmation")
 	}
 	if conf.Status == intents.StatusConfirmed {
+		if err := checkEBL(req, conf.EBL); err != nil {
+			return nil, fmt.Errorf("%w: %s's eBL for %s: %w", ErrEBLMismatch, operator, conf.BookingRef, err)
+		}
 		// Keyed by (operator, ref), and never overwritten: an operator
 		// reusing a reference is an error, not a replacement.
 		if err := s.Bookings.Add(store.Booking{
@@ -71,4 +74,49 @@ func (s *Shipper) Book(ctx context.Context, operator string, req *intents.Bookin
 		}
 	}
 	return conf, nil
+}
+
+// ErrEBLMismatch: a confirmation's eBL doesn't describe what was asked
+// for. The booking isn't recorded; the person sees why.
+var ErrEBLMismatch = errors.New("shipper: the eBL contradicts the request")
+
+// checkEBL holds a confirmed booking's eBL, the document of record, to the
+// request: the same ports, shipper, consignee (if one was named) and
+// service contract, a newly BOOKED document, and exactly the containers
+// asked for, by size-type and weight.
+func checkEBL(req *intents.BookingRequestBody, e *intents.EBL) error {
+	if e == nil {
+		return errors.New("no eBL") // Validate requires one; kept for safety
+	}
+	var errs []error
+	differ := func(field, got, want string) {
+		if got != want {
+			errs = append(errs, fmt.Errorf("%s is %q, we asked for %q", field, got, want))
+		}
+	}
+	differ("port_of_loading", e.PortOfLoading, req.PortOfLoading)
+	differ("port_of_discharge", e.PortOfDischarge, req.PortOfDischarge)
+	differ("shipper_name", e.ShipperName, req.ShipperName)
+	differ("service_contract_number", e.ServiceContractNumber, req.ServiceContractNumber)
+	if req.Consignee != nil {
+		differ("consignee_name", e.ConsigneeName, req.Consignee.Name)
+	}
+	differ("status", e.Status, "BOOKED")
+	type line struct {
+		iso    string
+		weight float64
+	}
+	want := map[line]int{}
+	for _, q := range req.Equipment {
+		want[line{q.ISOType, q.GrossWeightKg}] += q.Count
+	}
+	for _, c := range e.Containers {
+		want[line{c.EquipmentSizeType, c.GrossWeightKg}]--
+	}
+	for l, n := range want {
+		if n != 0 {
+			errs = append(errs, fmt.Errorf("containers: %+d × %s at %g kg against the request", -n, l.iso, l.weight))
+		}
+	}
+	return errors.Join(errs...)
 }
