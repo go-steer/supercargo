@@ -388,6 +388,7 @@ The **payload** (base64url JSON) is the envelope content:
 | `sentAt` | RFC 3339 UTC, ±5 min skew |
 | `sender` / `receiver` | Domains. `receiver` must equal the receiving node's domain (prevents forwarding a message to a different node) |
 | `bookingRef` | Present for every intent except `booking.request` |
+| `dialect` | The payload schema the body follows: `{ "standard": "DCSA_TNT", "version": "2.2.0", "schema_url": "…" }` ([A.5](#a5-intents-and-bodies)). Required for intents with a standard payload, absent for ULP extensions. Planned with the payload alignment (#68); signed like every header field |
 
 The **signature** is the JWS signature over `ASCII(protected || "." || payload)`, so it covers the header, body and attachments exactly as sent. Receiving, in order:
 
@@ -424,7 +425,23 @@ Handlers act on the verified payload bytes, so there is no canonicalization and 
 
 ### A.5 Intents and bodies
 
-All payloads are **demo designs**, loosely modeled on DCSA where noted. None are defined by the ULP documents.
+**The payload standard (decided 2026-10-07, tracking #68).** The ULP branch of `google-octo/pf` defines ULP's standard *payloads*: the message bodies for booking and track & trace, as wrappers around industry schemas it calls dialects (DCSA for ocean, DSDC for truckload, IATA for air). supercargo adopts those payload schemas, with **pf's field names exactly** (snake_case), inside *our* envelope. The JWS, the header, replay protection, domain keys and the pipeline are unchanged. pf's envelope is unsigned, and it identifies parties by self-asserted `did:ulp:` strings, so it isn't a security model to adopt. What we take, and what we don't:
+
+| Area | pf | supercargo |
+|---|---|---|
+| Envelope, signing, replay, identity, keys | `ulp_header` / `ulp_body`, unsigned; HS256 shared-secret token; `did:ulp:` | **ours** ([A.4](#a4-envelope), [A.2](#a2-identity-keys-and-trust-design-decisions)) |
+| Body of each intent | what pf puts in `ulp_body` | **pf's**, field for field |
+| Payload schema descriptor | `dialect { standard, version, schema_url }` in its header | **adopted**: `dialect` in our signed header |
+| Ocean booking | `ulp.ocean.booking`, body `{ "ebl": … }` (a DCSA eBL) | the intent name is **adopted**. The request carries what a shipper knows, in pf's types and names. The eBL, with its vessel and transport document reference, is the carrier's document, so it comes back in the confirmation (`ulp.ocean.booking.confirmation`, ours) (#66) |
+| Track & trace event | DCSA T&T event (`event_id`, `event_type`, `event_classifier_code`, `event_date_time`, `event_type_code`, `description`, `un_location_code`, …) | **adopted** as the body of `ulp.tnt.event` with dialect `DCSA_TNT` (#64) |
+| Track & trace status | `ulp.ocean.tnt.request` / `.response`, bodies `{ "tnt_request": … }` / `{ "tnt_response": … }` | **adopted**, under the inquiry's authorization (#65) |
+| Alert, inquiry, error, delegation, subscription | none | **ours**, as ULP extensions, renamed to snake_case for one convention across bodies |
+| Discovery | `capabilities[{name, version, spec_url, tags}]`, `transports.mcp`, no keys | the extras are **adopted additively**; `keys` stay (#67) |
+| A2A and MCP bindings | in-process shapes named after them | **ours**: the real protocols ([A.7](#a7-transport-bindings)) |
+
+Where pf's names differ from DCSA's published schemas (DCSA is camelCase, and splits event codes by event type), we follow pf and note the difference. Each body change is a protocol change: the golden vectors are regenerated in the PR that makes it. The intent table and bodies below are **the current wire format, being moved to the payload standard** issue by issue (#64–#66).
+
+Until then, all payloads are **demo designs**, loosely modeled on DCSA where noted.
 
 | Intent | Direction | Binding | Sync/async | Response intent |
 |---|---|---|---|---|

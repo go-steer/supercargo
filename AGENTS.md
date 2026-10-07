@@ -160,8 +160,8 @@ are in:
 - The node API (#15): `internal/activity` (the activity stream, which the
   log renders from), the control API's reads, and `ulpnode watch`.
 
-Next is milestone 5: `ulpchat` (the shipper assistant with tools) and the
-alert summarizer, as a full-screen TUI; the UI decisions and mockups are in
-issues #29 (M5) and #30 (M9, the browser UI), deployment in #38 and
-telemetry in #49. Cited cause IDs in alerts must be checked against the
-shipper's log before an alert reaches a model.
+Next is the payload alignment (tracking #68, DESIGN §A.5): the message
+bodies move to the standard ULP payload schemas (pf's, snake_case) inside
+our unchanged signed envelope; then back to the browser UI (#30) and the
+deployment (#38). The M5 TUI work is in review (#55–#57); cited cause IDs
+in alerts are always checked against the shipper's log before a model.
