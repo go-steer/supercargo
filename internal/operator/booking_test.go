@@ -199,3 +199,19 @@ func TestHandle(t *testing.T) {
 		t.Error("Handle accepted an unparseable date")
 	}
 }
+
+// TestReeferFromSizeType: a container is a reefer by its ISO 6346 type
+// group (the third character), not by an R anywhere in the code.
+func TestReeferFromSizeType(t *testing.T) {
+	s := service()
+	b := body()
+	b.Equipment = []intents.Equipment{{ISOType: "22R1", Count: 1, GrossWeightKg: 12000}, {ISOType: "R5G1", Count: 1, GrossWeightKg: 12000}}
+	reply, err := s.Handle(context.Background(), request("cymbal-shoes.example", b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := reply.Body.(*intents.BookingConfirmationBody).EBL.Containers
+	if len(cs) != 2 || !cs[0].IsReefer || cs[1].IsReefer {
+		t.Errorf("containers %+v", cs)
+	}
+}

@@ -19,8 +19,6 @@ import (
 	"encoding/json"
 	"slices"
 
-	"github.com/go-steer/supercargo/internal/ports"
-
 	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -78,7 +76,7 @@ func (s *StatusService) Handle(_ context.Context, req *node.Request) (*node.Repl
 	recs := s.Log.List(b.Operator, b.Ref)
 	sum := store.Summarize(b, recs)
 	resp.CarrierBookingReference = b.Ref
-	resp.PortOfLoading, resp.PortOfDischarge = ports.Location(b.Request.PortOfLoading).UNLocode, ports.Location(b.Request.PortOfDischarge).UNLocode
+	resp.PortOfLoading, resp.PortOfDischarge = b.Confirmation.EBL.PortOfLoading, b.Confirmation.EBL.PortOfDischarge
 	resp.VesselName, resp.VoyageNumber = sum.Vessel, sum.Voyage
 	resp.EstimatedTimeOfArrival = sum.ETA
 	resp.DCSAStatus = intents.StatusBooked

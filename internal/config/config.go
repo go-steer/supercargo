@@ -148,7 +148,10 @@ type Operator struct {
 }
 
 var (
-	envName   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+	envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
+	// refPrefix makes references that must pass the bodies' 1-64 of
+	// [A-Za-z0-9_-], with "-TD-" and a number to spare.
+	refPrefix = regexp.MustCompile(`^[A-Za-z0-9-]{1,40}$`)
 	modelName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$`)
 )
 
@@ -302,6 +305,9 @@ func (c *Config) validate() error {
 		if o.RefPrefix == "" || len(o.ContainerPrefix) != 4 || o.Vessel == "" || o.Voyage == "" || o.Transit <= 0 ||
 			o.DepartureHour < 0 || o.DepartureHour > 23 {
 			return errors.New("operator: refPrefix, a 4-letter containerPrefix, vessel, voyage, departureHour (0-23) and a positive transit are required")
+		}
+		if !refPrefix.MatchString(o.RefPrefix) {
+			return fmt.Errorf("operator: refPrefix %q must be 1-40 of [A-Za-z0-9-]", o.RefPrefix)
 		}
 		for _, r := range o.ContainerPrefix {
 			if r < 'A' || r > 'Z' {

@@ -518,12 +518,12 @@ Ports are UN/LOCODEs and must differ; a node names them from its own table, neve
     "shipper_name": "Cymbal Shoes",
     "consignee_name": "Cymbal Footwear",
     "containers": [{ "container_number": "OCBU1234565", "equipment_size_type": "45G1",
-                     "seal_number": "OBS0000001", "gross_weight_kg": 12000, "is_reefer": false }],
+                     "seal_number": "OCBUS0000001", "gross_weight_kg": 12000, "is_reefer": false }],
     "status": "BOOKED"
   }
 }
 ```
-A confirmed booking requires the `ebl`; a rejected one (or an alternative proposal) must not carry one. The eBL `status` is one of `BOOKED`, `LOADED`, `IN_TRANSIT`, `DISCHARGED`, `DELIVERED`. Container numbers are unique ISO 6346 numbers; a `target_temperature_celsius` (−40 to 40) is only for a reefer. The transport document reference is what `ulp.ocean.tnt.request` asks about. `status` is `confirmed` | `rejected` | `alternative_proposed` ("if the vessel is full, propose an alternative voyage"; out of scope for the demo, but reserved).
+A confirmed booking requires the `ebl`; a rejected one (or an alternative proposal) must not carry one, though the header still names the dialect, which is fixed per intent. The eBL `status` is one of `BOOKED`, `LOADED`, `IN_TRANSIT`, `DISCHARGED`, `DELIVERED`. Container numbers are unique and in ISO 6346 form (the check digit is not checked on receipt); a `target_temperature_celsius` (−40 to 40) is only for a reefer. The transport document reference is what `ulp.ocean.tnt.request` asks about. The eBL's `shipper_name` is the name the shipper declared; only its domain is verified. **The shipper holds the eBL to its request** before recording the booking: the same ports, shipper name, consignee (when one was named), service contract and `BOOKED` status, and exactly the containers asked for by size-type and weight. A contradicting eBL is an error shown to the person, and nothing is recorded. `status` is `confirmed` | `rejected` | `alternative_proposed` ("if the vessel is full, propose an alternative voyage"; out of scope for the demo, but reserved).
 
 **`ulp.tnt.event`**: the standard payload, pf's DCSA Track & Trace event, with header `dialect` `{ "standard": "DCSA_TNT", "version": "2.2.0", "schema_url": "https://dcsa.org/standards/track-and-trace" }`
 ```json

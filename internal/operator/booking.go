@@ -144,7 +144,7 @@ func (s *BookingService) Handle(_ context.Context, req *node.Request) (*node.Rep
 			ebl.Containers = append(ebl.Containers, intents.ShippingContainer{
 				ContainerNumber: containerNumber(s.ContainerPrefix, serial), EquipmentSizeType: e.ISOType,
 				SealNumber: fmt.Sprintf("%sS%07d", s.ContainerPrefix, serial), GrossWeightKg: e.GrossWeightKg,
-				IsReefer: strings.Contains(e.ISOType, "R")})
+				IsReefer: e.ISOType[2] == 'R'}) // ISO 6346: the type group's letter
 			i++
 		}
 	}
