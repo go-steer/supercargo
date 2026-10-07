@@ -49,7 +49,8 @@ dev/
 │   ├── lib.sh             # shared with dev/demo: build, keys, configs, start/stop
 │   ├── booking            # two nodes book over REST; a declined booking isn't sent
 │   ├── push               # hello ULP scripted: events, ulpctl disrupt, the alert
-│   └── inquiry            # Scene 5: ulpnode ask, a grounded, signed answer
+│   ├── inquiry            # Scene 5: ulpnode ask, a grounded, signed answer
+│   └── api                # the control API: shipments, records, profiles, activity streams
 ├── demo/
 │   └── hello-ulp          # the interactive milestone 3 demo (see below)
 └── ci/

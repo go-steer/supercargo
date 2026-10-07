@@ -20,8 +20,11 @@ import (
 	"strings"
 
 	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/store"
+	"github.com/go-steer/supercargo/pkg/discovery"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
+	"github.com/go-steer/supercargo/pkg/transport/rest"
 )
 
 // BookRequest is the body of the control API's POST /book: a booking the
@@ -45,8 +48,44 @@ type BookResponse struct {
 // It sends whatever it is given: the human confirmation the hard rules
 // require happens in the CLI before the call, and reaching the socket at
 // all takes the node user's own access.
-func ControlHandler(s *Shipper) http.Handler {
+//
+// The reads (shipments, a booking's records, a partner's profile) are what
+// the TUI and the browser UI show; they serve both alike.
+func ControlHandler(s *Shipper, profiles rest.Profiles) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /shipments", func(w http.ResponseWriter, _ *http.Request) {
+		out := []store.Summary{}
+		for _, b := range s.Bookings.List() {
+			out = append(out, store.Summarize(b, s.records(b.Operator, b.Ref)))
+		}
+		control.Answer(w, http.StatusOK, ShipmentsResponse{Shipments: out})
+	})
+	mux.HandleFunc("GET /shipments/{operator}/{ref}/events", func(w http.ResponseWriter, r *http.Request) {
+		op, ref := r.PathValue("operator"), r.PathValue("ref")
+		b, err := s.Bookings.Get(op, ref)
+		if err != nil {
+			control.Answer(w, http.StatusNotFound, RecordsResponse{Error: "no booking " + ref + " with " + op})
+			return
+		}
+		recs := s.records(op, ref) // once: the summary and the records must agree
+		control.Answer(w, http.StatusOK, RecordsResponse{Summary: ptr(store.Summarize(b, recs)),
+			Records: store.ViewRecords(recs)})
+	})
+	mux.HandleFunc("GET /profile/{domain}", func(w http.ResponseWriter, r *http.Request) {
+		domain := r.PathValue("domain")
+		if !envelope.ValidDomain(domain) {
+			control.Answer(w, http.StatusBadRequest, ProfileResponse{Error: "not a lowercase domain"})
+			return
+		}
+		// Fetched through the node's key cache: the guarded client, the
+		// strict parser, and the same keys the node verifies with.
+		doc, err := profiles.Profile(r.Context(), domain)
+		if err != nil {
+			control.Answer(w, http.StatusBadGateway, ProfileResponse{Error: err.Error()})
+			return
+		}
+		control.Answer(w, http.StatusOK, ProfileResponse{Profile: SummarizeProfile(doc)})
+	})
 	mux.HandleFunc("POST /book", func(w http.ResponseWriter, r *http.Request) {
 		var req BookRequest
 		if err := control.Decode(r, &req); err != nil {
@@ -116,3 +155,53 @@ type AskResponse struct {
 	Held     []string                        `json:"held,omitempty"`
 	Error    string                          `json:"error,omitempty"`
 }
+
+// ShipmentsResponse is GET /shipments.
+type ShipmentsResponse struct {
+	Shipments []store.Summary `json:"shipments"`
+}
+
+// RecordsResponse is GET /shipments/{operator}/{ref}/events: the booking
+// at a glance and its records, oldest first.
+type RecordsResponse struct {
+	Summary *store.Summary     `json:"summary,omitempty"`
+	Records []store.RecordView `json:"records,omitempty"`
+	Error   string             `json:"error,omitempty"`
+}
+
+// ProfileResponse is GET /profile/{domain}.
+type ProfileResponse struct {
+	Profile *Profile `json:"profile,omitempty"`
+	Error   string   `json:"error,omitempty"`
+}
+
+// Profile is a partner's verified profile at a glance.
+type Profile struct {
+	Domain  string   `json:"domain"`
+	Name    string   `json:"name"`
+	Roles   []string `json:"roles"`
+	Intents []string `json:"intents"`
+	REST    string   `json:"rest"`
+	A2A     string   `json:"a2a,omitempty"`
+	Keys    []string `json:"keys"` // kids
+}
+
+// SummarizeProfile sums up a parsed, validated profile.
+func SummarizeProfile(doc *discovery.Document) *Profile {
+	p := doc.Profile
+	out := &Profile{Domain: p.Party.Domain, Name: p.Party.Name, Roles: p.Party.Roles, REST: p.Transports.REST,
+		A2A: p.Transports.A2A, Intents: []string{}, Keys: doc.KIDs()}
+	for _, svc := range p.Services {
+		out.Intents = append(out.Intents, svc.Intents...)
+	}
+	return out
+}
+
+func (s *Shipper) records(operator, ref string) []store.Record {
+	if s.Events == nil {
+		return nil
+	}
+	return s.Events.List(operator, ref)
+}
+
+func ptr[T any](v T) *T { return &v }

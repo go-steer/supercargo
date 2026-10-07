@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
 
@@ -36,10 +37,30 @@ type DisruptResponse struct {
 	Error string                `json:"error,omitempty"`
 }
 
-// ControlHandler is the operator's control API (internal/control), which
-// ulpctl uses to drive the simulator.
-func ControlHandler(sim *Simulator) http.Handler {
+// ControlHandler is the operator's control API (internal/control): ulpctl
+// drives the simulator through it, and the presenter's views read the
+// operator's bookings and what it published.
+func ControlHandler(sim *Simulator, bookings *store.Bookings, log *store.EventLog) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /bookings", func(w http.ResponseWriter, _ *http.Request) {
+		out := []store.Summary{}
+		for _, b := range bookings.List() {
+			out = append(out, store.Summarize(b, log.List(b.Operator, b.Ref)))
+		}
+		control.Answer(w, http.StatusOK, BookingsResponse{Bookings: out})
+	})
+	mux.HandleFunc("GET /bookings/{ref}/events", func(w http.ResponseWriter, r *http.Request) {
+		ref := r.PathValue("ref")
+		for _, b := range bookings.List() {
+			if b.Ref == ref {
+				recs := log.List(b.Operator, b.Ref)
+				s := store.Summarize(b, recs)
+				control.Answer(w, http.StatusOK, BookingRecordsResponse{Summary: &s, Records: store.ViewRecords(recs)})
+				return
+			}
+		}
+		control.Answer(w, http.StatusNotFound, BookingRecordsResponse{Error: "no booking " + ref})
+	})
 	mux.HandleFunc("POST /disrupt", func(w http.ResponseWriter, r *http.Request) {
 		var req DisruptRequest
 		if err := control.Decode(r, &req); err != nil {
@@ -64,4 +85,17 @@ func ControlHandler(sim *Simulator) http.Handler {
 		}
 	})
 	return mux
+}
+
+// BookingsResponse is GET /bookings: the operator's bookings, newest first.
+type BookingsResponse struct {
+	Bookings []store.Summary `json:"bookings"`
+}
+
+// BookingRecordsResponse is GET /bookings/{ref}/events: the booking at a
+// glance and what was published for it, oldest first.
+type BookingRecordsResponse struct {
+	Summary *store.Summary     `json:"summary,omitempty"`
+	Records []store.RecordView `json:"records,omitempty"`
+	Error   string             `json:"error,omitempty"`
 }

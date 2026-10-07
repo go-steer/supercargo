@@ -45,7 +45,7 @@ func TestControlBook(t *testing.T) {
 			PlannedDeparture: "2026-10-07T18:00:00Z", PlannedArrival: "2026-10-13T08:00:00Z",
 		}
 	})
-	h := ControlHandler(s)
+	h := ControlHandler(s, nil)
 	code, resp := postBook(t, h, "application/json", BookRequest{Operator: "ocean-blue.example", Request: *request()})
 	if code != http.StatusOK || resp.Confirmation == nil || resp.Confirmation.BookingRef != "OB-BKG-1" {
 		t.Fatalf("book: HTTP %d %+v", code, resp)

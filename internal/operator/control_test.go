@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-steer/supercargo/internal/store"
 )
 
 func post(t *testing.T, h http.Handler, host, contentType, body string) (int, DisruptResponse) {
@@ -41,7 +43,7 @@ func TestControlDisrupt(t *testing.T) {
 	s := newSimulated(t)
 	ref := s.book(t, 1)
 	s.advance(2 * time.Second)
-	h := ControlHandler(s.sim)
+	h := ControlHandler(s.sim, s.svc.Bookings, store.NewEventLog(0))
 	code, resp := post(t, h, "127.0.0.1:9101", "application/json",
 		`{"bookingRef":"`+ref+`","delay":"72h","reason":"Engine repair, unscheduled call at Halifax."}`)
 	if code != http.StatusOK || resp.Alert == nil || resp.Alert.NewETA != "2026-10-16T08:00:00Z" {
@@ -76,7 +78,7 @@ func TestControlDisrupt(t *testing.T) {
 	s2 := newSimulated(t)
 	ref2 := s2.book(t, 1)
 	s2.advance(time.Second + 162*time.Second) // past the arrival, before gate-out
-	if code, _ := post(t, ControlHandler(s2.sim), "127.0.0.1:1", "application/json",
+	if code, _ := post(t, ControlHandler(s2.sim, s2.svc.Bookings, store.NewEventLog(0)), "127.0.0.1:1", "application/json",
 		`{"bookingRef":"`+ref2+`","delay":"1h","reason":"Late."}`); code != http.StatusConflict {
 		t.Errorf("after arrival: HTTP %d, want 409", code)
 	}

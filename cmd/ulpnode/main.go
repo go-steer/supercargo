@@ -20,6 +20,7 @@
 //	                                                send a booking (after an explicit y)
 //	ulpnode ask    --config node.yaml --booking OB-BKG-1042 "Why the delay?"
 //	                                                ask the booking's operator a question
+//	ulpnode watch  --config node.yaml               follow the node's activity stream
 package main
 
 import (
@@ -40,6 +41,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/app"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
@@ -59,6 +61,7 @@ const usage = `usage:
   ulpnode serve  --config FILE [--log-format text|json]
   ulpnode keygen --kid KID --out FILE
   ulpnode ask    --config FILE --booking REF [--operator DOMAIN] QUESTION...
+  ulpnode watch  --config FILE [--since N]
   ulpnode book   --config FILE --operator DOMAIN --request FILE [--yes]`
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -74,6 +77,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return book(args[1:], stdin, stdout, stderr)
 	case "ask":
 		return ask(args[1:], stdout, stderr)
+	case "watch":
+		return watch(context.Background(), args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unknown command %q\n%s", args[0], usage)
 	}
@@ -300,4 +305,62 @@ func ask(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "\n  Sources: %s\n", strings.Join(sources, ", "))
 	}
 	return nil
+}
+
+// watch follows a running node's activity stream through its control
+// socket, printing one JSON entry per line, and reconnects from the last
+// entry seen if the stream ends.
+func watch(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path := fs.String("config", "", "the node's configuration (YAML)")
+	since := fs.Uint64("since", 0, "replay the kept entries after this sequence number")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *path == "" {
+		return errors.New("watch: --config is required")
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	if cfg.Control == nil {
+		return errors.New("watch: the config has no control socket")
+	}
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	c := control.Client(cfg.Control.Socket, 0) // a stream has no overall timeout
+	enc := json.NewEncoder(stdout)
+	last := *since
+	pause := 200 * time.Millisecond
+	for first := true; ; first = false {
+		err := activity.Stream(ctx, c, "http://control/events", last, func(e activity.Entry, err error) error {
+			pause = 200 * time.Millisecond // connected: reset the backoff
+			if errors.Is(err, activity.ErrGap) {
+				fmt.Fprintln(stderr, "watch: some entries were missed")
+				return nil
+			}
+			last = e.Seq
+			return enc.Encode(e)
+		})
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err != nil && first {
+			return fmt.Errorf("watch: %w", err) // the node isn't running: say so
+		}
+		// The stream ended (this client fell behind, or the node went away):
+		// pick up where it left off, backing off so a node that stays down
+		// or keeps closing can't spin us.
+		if err != nil {
+			fmt.Fprintf(stderr, "watch: %v; reconnecting\n", err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(pause):
+		}
+		pause = min(2*pause, 5*time.Second)
+	}
 }

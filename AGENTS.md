@@ -157,7 +157,11 @@ are in:
   `internal/skills` (built-in `shipment-inquiry`, company skills from
   `skills.dir`). Milestone 4 is complete.
 
+- The node API (#15): `internal/activity` (the activity stream, which the
+  log renders from), the control API's reads, and `ulpnode watch`.
+
 Next is milestone 5: `ulpchat` (the shipper assistant with tools) and the
-alert summarizer. It is a chat CLI: discuss the interface with the
-maintainer before building it. Cited cause IDs in alerts must be checked
-against the shipper's log before an alert reaches a model.
+alert summarizer, as a full-screen TUI; the UI decisions and mockups are in
+issues #29 (M5) and #30 (M9, the browser UI), deployment in #38 and
+telemetry in #49. Cited cause IDs in alerts must be checked against the
+shipper's log before an alert reaches a model.
