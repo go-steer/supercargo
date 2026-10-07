@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# A local trace viewer for the demo (docs/DESIGN.md, A.16): Jaeger, which
+# takes OTLP directly, in a container.
+#
+#   dev/demo/otel up     # start it; then run the demo with
+#                        # ULP_OTEL_ENDPOINT=localhost:4318 and open the UI
+#   dev/demo/otel down   # stop it (traces are kept in memory only)
+#
+# Environment: OTEL_UI_PORT (16686), OTEL_OTLP_PORT (4318), JAEGER_IMAGE.
+set -euo pipefail
+
+name=supercargo-jaeger
+image="${JAEGER_IMAGE:-cr.jaegertracing.io/jaegertracing/jaeger:2.11.0}"
+ui="${OTEL_UI_PORT:-16686}"
+otlp="${OTEL_OTLP_PORT:-4318}"
+
+case "${1:-}" in
+up)
+  command -v docker >/dev/null || { echo "otel: docker is not installed" >&2; exit 1; }
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  # Bound to localhost only: the viewer has no authentication.
+  docker run -d --rm --name "$name" -p "127.0.0.1:$ui:16686" -p "127.0.0.1:$otlp:4318" "$image" >/dev/null
+  echo "Jaeger is up: the UI at http://localhost:$ui, OTLP/HTTP at localhost:$otlp."
+  echo "Run the demo with:  ULP_OTEL_ENDPOINT=localhost:$otlp dev/demo/hello-ulp --tmux"
+  ;;
+down)
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  echo "Jaeger is stopped."
+  ;;
+*)
+  echo "usage: dev/demo/otel up|down" >&2
+  exit 2
+  ;;
+esac

@@ -63,6 +63,7 @@ github.com/go-steer/supercargo/internal/llm            100.0
 github.com/go-steer/supercargo/internal/llm/fake       100.0
 github.com/go-steer/supercargo/internal/llm/anthropic   97.0  # 98.5
 github.com/go-steer/supercargo/internal/skills          96.0  # 97.0
+github.com/go-steer/supercargo/internal/telemetry       94.0  # 95.3
 github.com/go-steer/supercargo/internal/assistant       94.5  # 95.7
 github.com/go-steer/supercargo/pkg/transport/rest       90.0  # 91.8
 github.com/go-steer/supercargo/pkg/transport/a2a        95.0  # 96.2

@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -76,6 +77,26 @@ type Config struct {
 	LLM    *LLM    `yaml:"llm"`
 	Skills *Skills `yaml:"skills"`
 	MCP    *MCP    `yaml:"mcp"`
+
+	// Telemetry exports traces (docs/DESIGN.md, A.16). Absent: nothing is
+	// exported unless the standard OTEL_EXPORTER_OTLP_* variables say so.
+	Telemetry *Telemetry `yaml:"telemetry"`
+}
+
+// Telemetry configures OpenTelemetry export over OTLP.
+type Telemetry struct {
+	// Protocol is "http" (OTLP/HTTP, port 4318; the default) or "grpc"
+	// (port 4317).
+	Protocol string `yaml:"protocol"`
+	// Endpoint is the collector: host:port (e.g. localhost:4318) or, for
+	// http, a URL. Empty leaves it to OTEL_EXPORTER_OTLP_*.
+	Endpoint string `yaml:"endpoint"`
+	// Insecure sends without TLS (a local collector).
+	Insecure bool `yaml:"insecure"`
+	// SampleRatio is the share of traces kept, 0 to 1 (default 1).
+	SampleRatio *float64 `yaml:"sampleRatio"`
+	// ServiceName names this node in traces (default: its domain).
+	ServiceName string `yaml:"serviceName"`
 }
 
 // TLS configures transport security.
@@ -300,6 +321,32 @@ func (c *Config) validate() error {
 			}
 		default:
 			return fmt.Errorf("llm: provider %q is not %s or %s", c.LLM.Provider, ProviderFake, ProviderAnthropic)
+		}
+	}
+	if t := c.Telemetry; t != nil {
+		if t.SampleRatio != nil && !(*t.SampleRatio >= 0 && *t.SampleRatio <= 1) {
+			return fmt.Errorf("telemetry: sampleRatio %v is not between 0 and 1", *t.SampleRatio)
+		}
+		switch t.Protocol {
+		case "":
+			t.Protocol = "http"
+		case "http", "grpc":
+		default:
+			return fmt.Errorf("telemetry: protocol %q is not http or grpc", t.Protocol)
+		}
+		if t.Endpoint != "" && !validHostPort(t.Endpoint, false) {
+			u, err := url.Parse(t.Endpoint)
+			if err != nil || t.Protocol != "http" || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+				u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+				return fmt.Errorf("telemetry: endpoint %q is not host:port (or, for http, an http(s) URL without credentials or query)", t.Endpoint)
+			}
+			// A URL's scheme decides TLS: it must agree with insecure.
+			if (u.Scheme == "http") != t.Insecure {
+				return fmt.Errorf("telemetry: endpoint %q and insecure: %v disagree (http needs insecure: true, https insecure: false)", t.Endpoint, t.Insecure)
+			}
+		}
+		if strings.ContainsFunc(t.ServiceName, unsafeRune) || len(t.ServiceName) > 128 {
+			return fmt.Errorf("telemetry: serviceName %q is not a short plain name", t.ServiceName)
 		}
 	}
 	if c.Business != nil && (c.Role != RoleShipper || !filepath.IsAbs(c.Business.File)) {

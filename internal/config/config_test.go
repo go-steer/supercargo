@@ -56,6 +56,7 @@ skills: { dir: /etc/ulp/skills }
 mcp: { connectors: [{ name: tms, url: "https://tms.internal.ocean-blue.example/mcp" }] }
 simulator: { hoursPerSecond: 1 }
 control: { socket: /run/ulp/ocean-blue.sock }
+telemetry: { endpoint: "localhost:4318", insecure: true, sampleRatio: 0.5, serviceName: ocean-blue }
 `
 
 func TestParse(t *testing.T) {
@@ -66,6 +67,9 @@ func TestParse(t *testing.T) {
 	if c.Domain != "ocean-blue.example" || c.Operator.Transit != 134*time.Hour || c.Security.ReplayRetention != 15*time.Minute ||
 		c.Peers["cymbal-shoes.example"] != "cymbal-shoes:8443" || c.Discovery.TTL != time.Hour {
 		t.Errorf("parsed %+v", c)
+	}
+	if tm := c.Telemetry; tm == nil || tm.Protocol != "http" || tm.Endpoint != "localhost:4318" || !tm.Insecure || *tm.SampleRatio != 0.5 {
+		t.Errorf("telemetry %+v", c.Telemetry)
 	}
 	pinned := c.Pinned()
 	slices.Sort(pinned)
@@ -157,6 +161,16 @@ func TestParseRejects(t *testing.T) {
 		"unclean control socket":     {"socket: /run/ulp/ocean-blue.sock", "socket: /run/ulp/../ulp.sock"},
 		"long control socket":        {"socket: /run/ulp/ocean-blue.sock", "socket: /" + strings.Repeat("x", 100)},
 		"empty control socket":       {"socket: /run/ulp/ocean-blue.sock", `socket: ""`},
+		"telemetry ratio over 1":     {"sampleRatio: 0.5", "sampleRatio: 1.5"},
+		"telemetry ratio NaN":        {"sampleRatio: 0.5", "sampleRatio: .nan"},
+		"telemetry bad endpoint":     {`endpoint: "localhost:4318"`, `endpoint: "localhost"`},
+		"telemetry URL over grpc":    {`endpoint: "localhost:4318"`, `protocol: grpc, endpoint: "http://localhost:4317"`},
+		"telemetry ftp URL":          {`endpoint: "localhost:4318"`, `endpoint: "ftp://localhost:4318"`},
+		"telemetry http, secure":     {`endpoint: "localhost:4318", insecure: true`, `endpoint: "http://localhost:4318"`},
+		"telemetry https, insecure":  {`endpoint: "localhost:4318"`, `endpoint: "https://collector.example"`},
+		"telemetry URL credentials":  {`endpoint: "localhost:4318"`, `endpoint: "http://u:p@localhost:4318"`},
+		"telemetry bad protocol":     {`endpoint: "localhost:4318"`, `protocol: udp, endpoint: "localhost:4318"`},
+		"telemetry bad service name": {"serviceName: ocean-blue", "serviceName: \"ocean\\u202eblue\""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			in := strings.Replace(operatorYAML, edit[0], edit[1], 1)
