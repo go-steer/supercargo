@@ -25,6 +25,9 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/skills"
@@ -184,7 +187,12 @@ func (s *InquiryService) Handle(ctx context.Context, req *node.Request) (*node.R
 	if resp.GeneratedBy == "" {
 		resp.Answer, resp.CitedEventIDs = templateAnswer(view, records)
 		resp.GeneratedBy = intents.GeneratedByTemplate
+		if s.Model != nil {
+			trace.SpanFromContext(ctx).AddEvent("template fallback")
+		}
 	}
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("ulp.generated_by", resp.GeneratedBy),
+		attribute.Int("ulp.records_considered", len(records)))
 	if resp.CitedEventIDs == nil {
 		resp.CitedEventIDs = []string{}
 	}
@@ -199,6 +207,7 @@ func (s *InquiryService) ask(ctx context.Context, ref string, attempt int, req l
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	callCtx, span := llm.StartCall(callCtx, s.Model, req, attempt, s.skillIDs())
 	start := time.Now()
 	out, err := s.Model.Generate(callCtx, req)
 	call := ModelCall{Booking: ref, Attempt: attempt, Model: s.Model.Name(), PromptHash: llm.PromptHash(req), Skills: s.skillIDs(),
@@ -207,8 +216,12 @@ func (s *InquiryService) ask(ctx context.Context, ref string, attempt int, req l
 	var cited []string
 	if err != nil {
 		call.Outcome, call.Reason = "error", err.Error()
+		span.End(out, call.Outcome)
 	} else if answer, cited, err = validateAnswer(out.Text, ids); err != nil {
 		call.Outcome, call.Reason = "invalid", err.Error()
+		span.End(out, call.Outcome)
+	} else {
+		span.End(out, call.Outcome)
 	}
 	if s.OnModelCall != nil {
 		s.OnModelCall(call)

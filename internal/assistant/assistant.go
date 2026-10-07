@@ -34,6 +34,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+
 	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/skills"
@@ -51,6 +55,8 @@ func BuiltinSkills() []skills.Skill {
 	}
 	return out
 }
+
+const tracerName = "github.com/go-steer/supercargo/internal/assistant"
 
 // Self is the shipper the assistant works for.
 type Self struct {
@@ -175,11 +181,23 @@ Rules:
 // returns the reply. A model error leaves the conversation as it was, but
 // what tools did before it stands: the Reply returned with the error still
 // lists the drafts made.
-func (a *Assistant) Turn(ctx context.Context, c *Conversation, text string) (Reply, error) {
+func (a *Assistant) Turn(ctx context.Context, c *Conversation, text string) (r Reply, err error) {
 	text = strings.TrimSpace(text)
 	if text == "" || utf8.RuneCountInString(text) > MaxUserText {
 		return Reply{}, ErrTooLong
 	}
+	ctx, span := otel.Tracer(tracerName).Start(ctx, "ulp.assistant.turn")
+	defer func() {
+		span.SetAttributes(attribute.Int("ulp.drafts", len(r.Drafts)), attribute.Bool("ulp.stopped", r.Stopped))
+		if err != nil {
+			status := "model_error"
+			if errors.Is(err, ErrBusy) {
+				status = "busy"
+			}
+			span.SetStatus(codes.Error, status)
+		}
+		span.End()
+	}()
 	c.mu.Lock()
 	if c.busy {
 		c.mu.Unlock()
@@ -280,17 +298,20 @@ func (a *Assistant) generate(ctx context.Context, c *Conversation, round int) (l
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req := llm.GenerateRequest{System: a.system(), Messages: c.messages, Tools: Tools, MaxTokens: maxAssistantToken}
+	var skillIDs []string
+	for _, s := range a.Skills {
+		skillIDs = append(skillIDs, s.ID())
+	}
+	callCtx, span := llm.StartCall(callCtx, a.Model, req, round, skillIDs)
 	start := time.Now()
 	resp, err := a.Model.Generate(callCtx, req)
 	m := activity.Model{Attempt: round, Model: a.Model.Name(), PromptHash: llm.PromptHash(req),
 		InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens,
-		LatencyMS: time.Since(start).Round(time.Millisecond).Milliseconds(), Outcome: "ok"}
-	for _, s := range a.Skills {
-		m.Skills = append(m.Skills, s.ID())
-	}
+		LatencyMS: time.Since(start).Round(time.Millisecond).Milliseconds(), Outcome: "ok", Skills: skillIDs}
 	if err != nil {
 		m.Outcome, m.Reason = "error", err.Error()
 	}
+	span.End(resp, m.Outcome)
 	if a.OnModelCall != nil {
 		a.OnModelCall(m)
 	}
@@ -353,6 +374,8 @@ type callResult struct {
 // the model as error results, so it can explain or ask.
 func (a *Assistant) call(ctx context.Context, c *Conversation, t *turnState, call llm.ToolCall, i int, bad bool) callResult {
 	out := callResult{ToolResult: llm.ToolResult{CallID: call.ID}}
+	ctx, span := llm.StartTool(ctx, call, Tools)
+	defer span.End()
 	var result any
 	var err error
 	switch {
@@ -387,6 +410,7 @@ func (a *Assistant) call(ctx context.Context, c *Conversation, t *turnState, cal
 		}
 		out.Content, out.IsError = clean(err.Error()), true
 		ev.Error = out.Content
+		span.SetStatus(codes.Error, toolStatus(err))
 	}
 	if a.OnTool != nil {
 		a.OnTool(ev)
@@ -412,4 +436,19 @@ func clean(s string) string {
 		n++
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// toolStatus is a tool error as a span's status: a fixed category, never
+// the text, which can quote the model, a partner or a private date.
+func toolStatus(err error) string {
+	var te errTool
+	switch {
+	case errors.Is(err, llm.ErrUnknownTool):
+		return "unknown_tool"
+	case errors.Is(err, llm.ErrBadInput):
+		return "bad_input"
+	case errors.As(err, &te):
+		return "refused"
+	}
+	return "failed"
 }
