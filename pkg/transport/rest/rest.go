@@ -132,6 +132,11 @@ type ClientOptions struct {
 	MaxTimeout time.Duration
 	// Resolver replaces net.DefaultResolver (tests).
 	Resolver netguard.Resolver
+	// Header, if set, adds headers to each request from its context,
+	// such as trace context (W3C traceparent). It runs before the client
+	// sets Content-Type and Accept, which it can't change. It must be safe
+	// for concurrent use and must not panic.
+	Header func(ctx context.Context, h http.Header)
 }
 
 // Client posts envelopes to other parties' REST endpoints. Its HTTP client
@@ -142,6 +147,7 @@ type Client struct {
 	profiles  Profiles
 	allowHTTP bool
 	timeout   time.Duration
+	header    func(context.Context, http.Header)
 }
 
 // NewClient returns a Client that finds endpoints in profiles.
@@ -160,7 +166,7 @@ func NewClient(profiles Profiles, opts ClientOptions) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rest: %w", err)
 	}
-	return &Client{http: hc, profiles: profiles, allowHTTP: opts.AllowHTTP, timeout: timeout}, nil
+	return &Client{http: hc, profiles: profiles, allowHTTP: opts.AllowHTTP, timeout: timeout, header: opts.Header}, nil
 }
 
 // ErrNoResponse reports a 204: the receiver accepted the message and sent
@@ -242,6 +248,9 @@ func (c *Client) PostTo(ctx context.Context, receiver, endpoint string, msg []by
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(msg))
 	if err != nil {
 		return nil, fmt.Errorf("rest: %w", err)
+	}
+	if c.header != nil {
+		c.header(ctx, req.Header)
 	}
 	req.Header.Set("Content-Type", ContentType)
 	req.Header.Set("Accept", ContentType)

@@ -78,9 +78,19 @@ func Setup(ctx context.Context, c *config.Telemetry, service string) (Shutdown, 
 		ratio = *c.SampleRatio
 	}
 	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res),
-		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))))
+		sdktrace.WithSampler(sampler(ratio)))
 	otel.SetTracerProvider(tp)
 	return tp.Shutdown, nil
+}
+
+// sampler keeps ratio of traces, by trace ID. A local parent's decision
+// is followed (a trace is kept or dropped whole); a remote parent's flag
+// never decides, so a partner can't switch our tracing on or off, even a
+// trusted one (whose context is continued) or a stranger claiming to be
+// one.
+func sampler(ratio float64) sdktrace.Sampler {
+	root := sdktrace.TraceIDRatioBased(ratio)
+	return sdktrace.ParentBased(root, sdktrace.WithRemoteParentSampled(root), sdktrace.WithRemoteParentNotSampled(root))
 }
 
 func protocolFromEnv() string {

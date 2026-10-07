@@ -25,6 +25,8 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/go-steer/supercargo/internal/config"
@@ -159,4 +161,27 @@ func TestGRPC(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_ = shutdown(ctx)
+}
+
+// TestSamplerIgnoresRemoteFlags: a remote parent's flag never decides; a
+// local parent's does.
+func TestSamplerIgnoresRemoteFlags(t *testing.T) {
+	sc := func(sampled, remote bool) trace.SpanContext {
+		var f trace.TraceFlags
+		if sampled {
+			f = trace.FlagsSampled
+		}
+		return trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{1}, SpanID: trace.SpanID{2}, TraceFlags: f, Remote: remote})
+	}
+	decide := func(s sdktrace.Sampler, parent trace.SpanContext) sdktrace.SamplingDecision {
+		return s.ShouldSample(sdktrace.SamplingParameters{ParentContext: trace.ContextWithSpanContext(context.Background(), parent),
+			TraceID: trace.TraceID{1}, Name: "x"}).Decision
+	}
+	never, always := sampler(0), sampler(1)
+	if decide(never, sc(true, true)) != sdktrace.Drop || decide(always, sc(false, true)) != sdktrace.RecordAndSample {
+		t.Error("a remote flag decided")
+	}
+	if decide(never, sc(true, false)) != sdktrace.RecordAndSample || decide(always, sc(false, false)) != sdktrace.Drop {
+		t.Error("a local parent's decision wasn't followed")
+	}
 }

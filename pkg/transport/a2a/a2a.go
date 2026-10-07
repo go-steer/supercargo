@@ -258,6 +258,7 @@ type Client struct {
 	profiles  rest.Profiles
 	allowHTTP bool
 	timeout   time.Duration
+	header    func(context.Context, http.Header)
 }
 
 // NewClient returns a Client. The options mean what they mean for the REST
@@ -273,7 +274,7 @@ func NewClient(profiles rest.Profiles, opts rest.ClientOptions) (*Client, error)
 	if err != nil {
 		return nil, fmt.Errorf("a2a: %w", err)
 	}
-	return &Client{http: hc, profiles: profiles, allowHTTP: opts.AllowHTTP, timeout: timeout}, nil
+	return &Client{http: hc, profiles: profiles, allowHTTP: opts.AllowHTTP, timeout: timeout, header: opts.Header}, nil
 }
 
 // Post sends a serialized envelope to receiver's A2A endpoint and returns
@@ -311,6 +312,9 @@ func (c *Client) Post(ctx context.Context, receiver string, msg []byte) ([]byte,
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("a2a: %w", err)
+	}
+	if c.header != nil {
+		c.header(ctx, req.Header)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")

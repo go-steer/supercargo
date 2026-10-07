@@ -169,6 +169,7 @@ func TestParseRejects(t *testing.T) {
 		"telemetry http, secure":     {`endpoint: "localhost:4318", insecure: true`, `endpoint: "http://localhost:4318"`},
 		"telemetry https, insecure":  {`endpoint: "localhost:4318"`, `endpoint: "https://collector.example"`},
 		"telemetry URL credentials":  {`endpoint: "localhost:4318"`, `endpoint: "http://u:p@localhost:4318"`},
+		"telemetry bad trust peer":   {"serviceName: ocean-blue", "serviceName: ocean-blue, trustPeers: [\"*\"]"},
 		"telemetry bad protocol":     {`endpoint: "localhost:4318"`, `protocol: udp, endpoint: "localhost:4318"`},
 		"telemetry bad service name": {"serviceName: ocean-blue", "serviceName: \"ocean\\u202eblue\""},
 	} {

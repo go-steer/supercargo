@@ -318,3 +318,96 @@ func TestTraceEgress(t *testing.T) {
 	}
 	noBodies(t, exp.GetSpans(), "Mallory says hello")
 }
+
+// TestTraceRemoteContext: a partner's trace context is linked to, not
+// continued, unless the partner is trusted; a message that doesn't parse
+// is never continued.
+func TestTraceRemoteContext(t *testing.T) {
+	op, cy := newParty(t, "ob-2026-1"), newParty(t, "cy-2026-1")
+	keys := staticKeys{shipperDomain + "/cy-2026-1": cy.v}
+	remote := trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{1, 2, 3}, SpanID: trace.SpanID{4, 5, 6},
+		TraceFlags: trace.FlagsSampled, Remote: true})
+	h := envelope.NewHeader(intents.BookingRequest, shipperDomain, operatorDomain, time.Now())
+	b, _ := json.Marshal(bookingRequest())
+	for name, c := range map[string]struct {
+		trust     func(string) bool
+		msg       []byte
+		continued bool
+	}{
+		"untrusted":        {nil, nil, false},
+		"another trusted":  {func(d string) bool { return d == "mallory.example" }, nil, false},
+		"trusted":          {func(d string) bool { return d == shipperDomain }, nil, true},
+		"trusted, garbled": {func(string) bool { return true }, []byte("not a JWS"), false},
+	} {
+		tracer, exp := recorder()
+		cfg := baseConfig(t, op, keys, handlerFunc{handle: func(context.Context, *node.Request) (*node.Reply, error) { return nil, nil }})
+		cfg.Tracer, cfg.TrustTrace = tracer, c.trust
+		n, err := node.New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg := c.msg
+		if msg == nil {
+			h.MessageID = envelope.NewHeader(intents.BookingRequest, shipperDomain, operatorDomain, time.Now()).MessageID
+			msg, _ = envelope.Seal(&envelope.Envelope{Header: h, Body: b}, "cy-2026-1", cy.signer)
+		}
+		n.Process(node.WithRemoteTrace(context.Background(), remote), msg)
+		root := find(exp.GetSpans(), "ulp.ingress")
+		same := root.SpanContext.TraceID() == remote.TraceID() && root.Parent.SpanID() == remote.SpanID()
+		linked := len(root.Links) == 1 && root.Links[0].SpanContext.TraceID() == remote.TraceID()
+		if same != c.continued || linked == c.continued {
+			t.Errorf("%s: continued %v, linked %v", name, same, linked)
+		}
+		if parse := find(exp.GetSpans(), "ulp.parse"); parse.Parent.SpanID() != root.SpanContext.SpanID() || parse.StartTime.After(root.StartTime.Add(time.Millisecond)) {
+			t.Errorf("%s: parse span %+v", name, parse.Parent)
+		}
+	}
+	if node.RemoteTrace(node.WithRemoteTrace(context.Background(), trace.SpanContext{})).IsValid() {
+		t.Error("an invalid context was kept")
+	}
+}
+
+// TestTraceRemoteSampling: a partner's sampled flag doesn't make us record
+// (the sampler only follows our own parents), and its tracestate never
+// reaches our spans; a trusted claimed sender is continued even when its
+// signature fails (the documented trade-off: the trace starts first).
+func TestTraceRemoteSampling(t *testing.T) {
+	op, cy := newParty(t, "ob-2026-1"), newParty(t, "cy-2026-1")
+	mallory := newParty(t, "cy-2026-1")
+	keys := staticKeys{shipperDomain + "/cy-2026-1": cy.v}
+	ts, _ := trace.ParseTraceState("vendor=padding")
+	remote := trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{1}, SpanID: trace.SpanID{2},
+		TraceFlags: trace.FlagsSampled, TraceState: ts, Remote: true})
+	run := func(sampler sdktrace.Sampler, trust func(string) bool, signer party) tracetest.SpanStubs {
+		exp := tracetest.NewInMemoryExporter()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp), sdktrace.WithSampler(sampler)).Tracer("t")
+		cfg := baseConfig(t, op, keys, handlerFunc{handle: func(context.Context, *node.Request) (*node.Reply, error) { return nil, nil }})
+		cfg.Tracer, cfg.TrustTrace = tracer, trust
+		n, _ := node.New(cfg)
+		h := envelope.NewHeader(intents.BookingRequest, shipperDomain, operatorDomain, time.Now())
+		b, _ := json.Marshal(bookingRequest())
+		msg, _ := envelope.Seal(&envelope.Envelope{Header: h, Body: b}, "cy-2026-1", signer.signer)
+		n.Process(node.WithRemoteTrace(context.Background(), remote), msg)
+		return exp.GetSpans()
+	}
+	never := sdktrace.ParentBased(sdktrace.NeverSample(), sdktrace.WithRemoteParentSampled(sdktrace.NeverSample()))
+	if spans := run(never, nil, cy); len(spans) != 0 {
+		t.Errorf("an untrusted sampled flag recorded %d spans", len(spans))
+	}
+	if spans := run(never, func(string) bool { return true }, cy); len(spans) != 0 {
+		t.Errorf("a trusted sampled flag recorded %d spans", len(spans))
+	}
+	spans := run(sdktrace.AlwaysSample(), nil, cy)
+	for _, s := range spans {
+		for _, l := range s.Links {
+			if l.SpanContext.TraceState().Len() != 0 {
+				t.Error("the partner's tracestate is in our link")
+			}
+		}
+	}
+	spans = run(sdktrace.AlwaysSample(), func(d string) bool { return d == shipperDomain }, mallory)
+	root := find(spans, "ulp.ingress")
+	if root.SpanContext.TraceID() != remote.TraceID() || root.SpanContext.TraceState().Len() != 0 || attr(root, "ulp.code") != "bad_signature" {
+		t.Errorf("trusted claim, bad signature: %v %v", root.SpanContext, root.Attributes)
+	}
+}

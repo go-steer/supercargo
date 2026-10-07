@@ -320,3 +320,22 @@ func TestClientEndpoints(t *testing.T) {
 		t.Error("a bad peer map was accepted")
 	}
 }
+
+// TestClientHeader: the Header hook adds headers to A2A requests too.
+func TestClientHeader(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Traceparent")
+		replying(t, `{"kind":"message","messageId":"r","role":"agent","parts":[{"kind":"data","data":`+env+`}]}`, "")(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	c, err := NewClient(profiles{doc: profileFor(t, "http://ocean-blue.example/a2a")},
+		rest.ClientOptions{AllowHTTP: true, Peers: map[string]string{"ocean-blue.example": strings.TrimPrefix(srv.URL, "http://")},
+			Header: func(_ context.Context, h http.Header) { h.Set("Traceparent", "00-x-y-01") }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Post(context.Background(), "ocean-blue.example", []byte(env)); err != nil || got != "00-x-y-01" {
+		t.Errorf("%v, header %q", err, got)
+	}
+}

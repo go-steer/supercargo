@@ -30,6 +30,9 @@ import (
 	"slices"
 	"time"
 
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/config"
@@ -41,6 +44,7 @@ import (
 	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/internal/skills"
 	"github.com/go-steer/supercargo/internal/store"
+	"github.com/go-steer/supercargo/internal/telemetry"
 	"github.com/go-steer/supercargo/pkg/discovery"
 	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/sig"
@@ -118,7 +122,8 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	}
 	// Exchanges get 10s unless their context says otherwise; an inquiry,
 	// waiting on the operator's model, sets a longer deadline (shipper.AskTimeout).
-	clientOpts := rest.ClientOptions{Peers: cfg.Peers, AllowHTTP: insecure, TLSConfig: clientTLS, MaxTimeout: time.Minute}
+	clientOpts := rest.ClientOptions{Peers: cfg.Peers, AllowHTTP: insecure, TLSConfig: clientTLS, MaxTimeout: time.Minute,
+		Header: injectTrace}
 	client, err := rest.NewClient(cache, clientOpts)
 	if err != nil {
 		return nil, err
@@ -165,12 +170,13 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	n, err := node.New(node.Config{
 		Domain: cfg.Domain, Name: cfg.Name, Roles: []string{cfg.Role},
 		KID: kid, Signer: signer, PublicJWK: jwk, RESTURL: restURL, A2AURL: a2aURL, AllowHTTP: insecure,
-		Keys:     cache,
-		Replay:   store.NewReplay(store.ReplayOptions{Retention: cfg.Security.ReplayRetention}),
-		MaxSkew:  cfg.Security.MaxSkew,
-		Handlers: handlers,
-		Poster:   client,
-		A2A:      a2aClient,
+		Keys:       cache,
+		Replay:     store.NewReplay(store.ReplayOptions{Retention: cfg.Security.ReplayRetention}),
+		TrustTrace: trustTrace(cfg.Telemetry),
+		MaxSkew:    cfg.Security.MaxSkew,
+		Handlers:   handlers,
+		Poster:     client,
+		A2A:        a2aClient,
 		// Defence in depth for the shipper's private business context:
 		// nothing builds an envelope from it, and this refuses any that
 		// would carry its text.
@@ -199,7 +205,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	}
 	a.Server = &http.Server{
 		Addr:    cfg.Listen,
-		Handler: n.Handler(),
+		Handler: extractTrace(n.Handler()),
 		// Every timeout set: a client that trickles bytes must not hold a
 		// connection (and its goroutine) open indefinitely.
 		ReadHeaderTimeout: 5 * time.Second,
@@ -457,4 +463,38 @@ func agentSkills(name string, c *config.Skills) ([]skills.Skill, error) {
 		out = append(out, company...)
 	}
 	return out, nil
+}
+
+// traceContext is the only propagator: W3C traceparent and tracestate.
+// Baggage is never sent or accepted.
+var traceContext = propagation.TraceContext{}
+
+// injectTrace adds the trace context of an outbound exchange (its
+// ulp.egress span) to the request's headers: trace context travels in
+// HTTP, never in the signed envelope.
+func injectTrace(ctx context.Context, h http.Header) {
+	traceContext.Inject(ctx, propagation.HeaderCarrier(h))
+}
+
+// extractTrace passes a request's trace context to the pipeline, which
+// links to it, or continues it for a trusted peer (node.WithRemoteTrace).
+func extractTrace(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("traceparent") != "" {
+			sc := trace.SpanContextFromContext(traceContext.Extract(context.Background(), propagation.HeaderCarrier(r.Header)))
+			r = r.WithContext(node.WithRemoteTrace(r.Context(), sc))
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+// trustTrace is node.Config.TrustTrace from the telemetry config: the
+// peers whose trace context is continued.
+func trustTrace(t *config.Telemetry) func(string) bool {
+	// Only when exporting: otherwise a continued context would just be
+	// passed along.
+	if t == nil || len(t.TrustPeers) == 0 || !telemetry.Enabled(t, os.Getenv) {
+		return nil
+	}
+	return func(d string) bool { return slices.Contains(t.TrustPeers, d) }
 }

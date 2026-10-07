@@ -276,3 +276,31 @@ func TestClientPostRejects(t *testing.T) {
 		t.Error("posted to an unresolvable host")
 	}
 }
+
+// TestClientHeader: the Header hook adds headers from the request's
+// context, and can't change the content type.
+func TestClientHeader(t *testing.T) {
+	type key struct{}
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", ContentType)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	c, err := NewClient(profiles{doc: profileFor(t, "ocean-blue.example", "http://ocean-blue.example/ulp", true)},
+		ClientOptions{AllowHTTP: true, Peers: map[string]string{"ocean-blue.example": strings.TrimPrefix(srv.URL, "http://")},
+			Header: func(ctx context.Context, h http.Header) {
+				h.Set("Traceparent", ctx.Value(key{}).(string))
+				h.Set("Content-Type", "text/evil")
+			}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Post(context.WithValue(context.Background(), key{}, "00-abc-def-01"), "ocean-blue.example", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got.Get("Traceparent") != "00-abc-def-01" || got.Get("Content-Type") != ContentType {
+		t.Errorf("headers %v", got)
+	}
+}

@@ -16,6 +16,7 @@ package node
 
 import (
 	"context"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -46,6 +47,51 @@ const (
 	AttrReason    = attribute.Key("ulp.reason")
 	AttrDecision  = attribute.Key("ulp.decision")
 )
+
+// remoteKey carries a partner's trace context, from the HTTP headers.
+type remoteKey struct{}
+
+// WithRemoteTrace returns ctx carrying sc, the trace context a request
+// arrived with (W3C traceparent, extracted by the HTTP layer). Process
+// links its trace to it, or, for a peer TrustTrace trusts, continues it.
+func WithRemoteTrace(ctx context.Context, sc trace.SpanContext) context.Context {
+	if !sc.IsValid() {
+		return ctx
+	}
+	return context.WithValue(ctx, remoteKey{}, sc)
+}
+
+// RemoteTrace is the trace context WithRemoteTrace put in ctx, if any.
+func RemoteTrace(ctx context.Context) trace.SpanContext {
+	sc, _ := ctx.Value(remoteKey{}).(trace.SpanContext)
+	return sc
+}
+
+// ingressTrace starts an inbound message's trace. A partner's trace
+// context is untrusted input: by default the message starts a new trace
+// that links to it, so a partner can't graft our spans into its trace. A
+// sender TrustTrace trusts is continued instead. The trust is on the
+// claimed sender (the trace starts before verification): at worst a
+// stranger grafts our spans onto a trace of its choosing in our own
+// backend. Sampling never follows a remote flag (internal/telemetry), and
+// the partner's tracestate is dropped either way.
+func (n *Node) ingressTrace(ctx context.Context, sender string, start time.Time) (context.Context, trace.Span) {
+	opts := []trace.SpanStartOption{trace.WithSpanKind(trace.SpanKindServer), trace.WithTimestamp(start)}
+	remote := RemoteTrace(ctx)
+	if remote.IsValid() {
+		remote = trace.NewSpanContext(trace.SpanContextConfig{TraceID: remote.TraceID(), SpanID: remote.SpanID(),
+			TraceFlags: remote.TraceFlags(), Remote: true})
+	}
+	switch {
+	case remote.IsValid() && sender != "" && n.cfg.TrustTrace != nil && n.cfg.TrustTrace(sender):
+		ctx = trace.ContextWithRemoteSpanContext(ctx, remote)
+	case remote.IsValid():
+		opts = append(opts, trace.WithNewRoot(), trace.WithLinks(trace.Link{SpanContext: remote}))
+	default:
+		opts = append(opts, trace.WithNewRoot())
+	}
+	return n.start(ctx, "ulp.ingress", opts...)
+}
 
 func (n *Node) start(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	return n.tracer.Start(ctx, name, opts...)

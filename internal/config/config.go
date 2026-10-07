@@ -97,6 +97,10 @@ type Telemetry struct {
 	SampleRatio *float64 `yaml:"sampleRatio"`
 	// ServiceName names this node in traces (default: its domain).
 	ServiceName string `yaml:"serviceName"`
+	// TrustPeers are partners whose trace context this node continues
+	// (both export to one backend, as in the demo). Everyone else's is
+	// only linked to.
+	TrustPeers []string `yaml:"trustPeers"`
 }
 
 // TLS configures transport security.
@@ -343,6 +347,11 @@ func (c *Config) validate() error {
 			// A URL's scheme decides TLS: it must agree with insecure.
 			if (u.Scheme == "http") != t.Insecure {
 				return fmt.Errorf("telemetry: endpoint %q and insecure: %v disagree (http needs insecure: true, https insecure: false)", t.Endpoint, t.Insecure)
+			}
+		}
+		for _, d := range t.TrustPeers {
+			if !envelope.ValidDomain(d) {
+				return fmt.Errorf("telemetry: trustPeers entry %q is not a lowercase domain", d)
 			}
 		}
 		if strings.ContainsFunc(t.ServiceName, unsafeRune) || len(t.ServiceName) > 128 {
