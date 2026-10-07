@@ -18,78 +18,94 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/internal/logsafe"
 )
 
-// Event types, classifiers and codes (docs/DESIGN.md, section A.5): a
-// DCSA-style subset.
+// Event types, classifiers and codes (docs/DESIGN.md, section A.5): the
+// DCSA Track & Trace event as the ULP payload specification defines it.
 const (
-	EventTypeEquipment = "EQUIPMENT"
+	EventTypeShipment  = "SHIPMENT"
 	EventTypeTransport = "TRANSPORT"
+	EventTypeEquipment = "EQUIPMENT"
 
 	ClassifierActual    = "ACT"
 	ClassifierEstimated = "EST"
 	ClassifierPlanned   = "PLN"
 )
 
-// eventCodes are the codes each event type may carry.
+// DialectDCSATnT is the payload schema of a track & trace event and of
+// the status request and response: DCSA Track & Trace 2.2.
+var DialectDCSATnT = envelope.Dialect{Standard: "DCSA_TNT", Version: "2.2.0", SchemaURL: "https://dcsa.org/standards/track-and-trace"}
+
+// eventCodes are the DCSA event type codes each event type may carry.
 var eventCodes = map[string]map[string]bool{
-	EventTypeEquipment: {"GTIN": true, "LOAD": true, "DISC": true, "GTOT": true},
-	EventTypeTransport: {"DEPA": true, "ARRI": true},
+	EventTypeShipment:  set("RECE", "DRFT", "PENA", "PENU", "REJE", "APPR", "ISSU", "SURR", "SUBM", "VOID", "CONF", "REQS", "CMPL", "HOLD", "RELS"),
+	EventTypeTransport: set("ARRI", "DEPA"),
+	EventTypeEquipment: set("LOAD", "DISC", "GTIN", "GTOT", "STUF", "STRP", "PICK", "DROP", "INSP", "RSEA", "RMVD"),
+}
+
+func set(codes ...string) map[string]bool {
+	m := map[string]bool{}
+	for _, c := range codes {
+		m[c] = true
+	}
+	return m
 }
 
 var classifiers = map[string]bool{ClassifierActual: true, ClassifierEstimated: true, ClassifierPlanned: true}
 
 // TnTEventBody is the body of ulp.tnt.event, a shipment milestone the
-// operator pushes to subscribers.
+// operator pushes to subscribers: the DCSA Track & Trace event, with the
+// ULP payload specification's member names.
 type TnTEventBody struct {
-	EventID             string     `json:"eventId"`
-	EventType           string     `json:"eventType"`
-	EventClassifierCode string     `json:"eventClassifierCode"`
-	EventCode           string     `json:"eventCode"`
-	EventDateTime       string     `json:"eventDateTime"`
-	Location            Location   `json:"location"`
-	EquipmentRef        string     `json:"equipmentRef,omitempty"`
-	Transport           *Transport `json:"transport,omitempty"`
-}
-
-// Transport names the vessel and voyage an event concerns.
-type Transport struct {
-	Vessel string `json:"vessel"`
-	Voyage string `json:"voyage"`
+	EventID             string `json:"event_id"`
+	EventType           string `json:"event_type"`
+	EventClassifierCode string `json:"event_classifier_code"`
+	EventDateTime       string `json:"event_date_time"`
+	EventTypeCode       string `json:"event_type_code"`
+	Description         string `json:"description"`
+	UNLocationCode      string `json:"un_location_code"`
+	FacilityName        string `json:"facility_name,omitempty"`
+	VesselName          string `json:"vessel_name,omitempty"`
+	VoyageNumber        string `json:"voyage_number,omitempty"`
+	EquipmentReference  string `json:"equipment_reference,omitempty"`
 }
 
 // Intent implements Body.
 func (*TnTEventBody) Intent() string { return TnTEvent }
 
-// Validate implements Body. An equipment event names its container; a
-// transport event names its vessel and voyage.
+// Validate implements Body. An equipment event names its container.
 func (b *TnTEventBody) Validate() error {
-	errs := []error{ref("eventId", b.EventID), b.Location.validate("location")}
+	errs := []error{ref("event_id", b.EventID), text("description", b.Description, 280, false),
+		match("un_location_code", b.UNLocationCode, unLocodePattern)}
 	codes, ok := eventCodes[b.EventType]
 	switch {
 	case !ok:
-		errs = append(errs, fmt.Errorf("eventType: %s is not EQUIPMENT or TRANSPORT", logsafe.Quote(b.EventType)))
-	case !codes[b.EventCode]:
-		errs = append(errs, fmt.Errorf("eventCode: %s is not a %s event code", logsafe.Quote(b.EventCode), b.EventType))
+		errs = append(errs, fmt.Errorf("event_type: %s is not SHIPMENT, TRANSPORT or EQUIPMENT", logsafe.Quote(b.EventType)))
+	case !codes[b.EventTypeCode]:
+		errs = append(errs, fmt.Errorf("event_type_code: %s is not a %s event code", logsafe.Quote(b.EventTypeCode), b.EventType))
 	}
 	if !classifiers[b.EventClassifierCode] {
-		errs = append(errs, fmt.Errorf("eventClassifierCode: %s is not ACT, EST or PLN", logsafe.Quote(b.EventClassifierCode)))
+		errs = append(errs, fmt.Errorf("event_classifier_code: %s is not ACT, EST or PLN", logsafe.Quote(b.EventClassifierCode)))
 	}
-	if _, err := timestamp("eventDateTime", b.EventDateTime); err != nil {
+	if _, err := timestamp("event_date_time", b.EventDateTime); err != nil {
 		errs = append(errs, err)
 	}
-	if b.EventType == EventTypeEquipment && b.EquipmentRef == "" {
-		errs = append(errs, errors.New("equipmentRef is required for an EQUIPMENT event"))
+	if b.EventType == EventTypeEquipment && b.EquipmentReference == "" {
+		errs = append(errs, errors.New("equipment_reference is required for an EQUIPMENT event"))
 	}
-	if b.EquipmentRef != "" {
-		errs = append(errs, match("equipmentRef", b.EquipmentRef, containerPattern))
+	if b.EquipmentReference != "" {
+		errs = append(errs, match("equipment_reference", b.EquipmentReference, containerPattern))
 	}
-	if b.EventType == EventTypeTransport && b.Transport == nil {
-		errs = append(errs, errors.New("transport is required for a TRANSPORT event"))
+	if b.FacilityName != "" {
+		errs = append(errs, text("facility_name", b.FacilityName, 128, false))
 	}
-	if b.Transport != nil {
-		errs = append(errs, text("transport.vessel", b.Transport.Vessel, 128, false), ref("transport.voyage", b.Transport.Voyage))
+	if b.VesselName != "" {
+		errs = append(errs, text("vessel_name", b.VesselName, 128, false))
+	}
+	if b.VoyageNumber != "" {
+		errs = append(errs, ref("voyage_number", b.VoyageNumber))
 	}
 	return errors.Join(errs...)
 }
@@ -116,13 +132,13 @@ const MaxCauseEvents = MaxCitations
 // TnTAlertBody is the body of ulp.tnt.alert: the operator telling
 // subscribers, unasked, that something changed.
 type TnTAlertBody struct {
-	AlertID       string   `json:"alertId"`
+	AlertID       string   `json:"alert_id"`
 	Kind          string   `json:"kind"`
 	Severity      string   `json:"severity"`
 	Summary       string   `json:"summary"`
-	PreviousETA   string   `json:"previousEta,omitempty"`
-	NewETA        string   `json:"newEta,omitempty"`
-	CauseEventIDs []string `json:"causeEventIds"`
+	PreviousETA   string   `json:"previous_eta,omitempty"`
+	NewETA        string   `json:"new_eta,omitempty"`
+	CauseEventIDs []string `json:"cause_event_ids"`
 }
 
 // Intent implements Body.
@@ -131,7 +147,7 @@ func (*TnTAlertBody) Intent() string { return TnTAlert }
 // Validate implements Body. A delay or early alert carries both ETAs, in
 // the order its kind says.
 func (b *TnTAlertBody) Validate() error {
-	errs := []error{ref("alertId", b.AlertID), text("summary", b.Summary, 280, false)}
+	errs := []error{ref("alert_id", b.AlertID), text("summary", b.Summary, 280, false)}
 	if !alertKinds[b.Kind] {
 		errs = append(errs, fmt.Errorf("kind: %s is not delay, early or exception", logsafe.Quote(b.Kind)))
 	}
@@ -139,25 +155,25 @@ func (b *TnTAlertBody) Validate() error {
 		errs = append(errs, fmt.Errorf("severity: %s is not low, medium or high", logsafe.Quote(b.Severity)))
 	}
 	if b.Kind == AlertDelay || b.Kind == AlertEarly {
-		prev, err1 := timestamp("previousEta", b.PreviousETA)
-		next, err2 := timestamp("newEta", b.NewETA)
+		prev, err1 := timestamp("previous_eta", b.PreviousETA)
+		next, err2 := timestamp("new_eta", b.NewETA)
 		errs = append(errs, err1, err2)
 		if err1 == nil && err2 == nil {
 			if b.Kind == AlertDelay && !next.After(prev) {
-				errs = append(errs, errors.New("a delay's newEta is not after its previousEta"))
+				errs = append(errs, errors.New("a delay's new_eta is not after its previous_eta"))
 			}
 			if b.Kind == AlertEarly && !next.Before(prev) {
-				errs = append(errs, errors.New("an early alert's newEta is not before its previousEta"))
+				errs = append(errs, errors.New("an early alert's new_eta is not before its previous_eta"))
 			}
 		}
 	} else {
-		for field, v := range map[string]string{"previousEta": b.PreviousETA, "newEta": b.NewETA} {
+		for field, v := range map[string]string{"previous_eta": b.PreviousETA, "new_eta": b.NewETA} {
 			if v != "" {
 				_, err := timestamp(field, v)
 				errs = append(errs, err)
 			}
 		}
 	}
-	errs = append(errs, citations("causeEventIds", b.CauseEventIDs))
+	errs = append(errs, citations("cause_event_ids", b.CauseEventIDs))
 	return errors.Join(errs...)
 }

@@ -50,8 +50,8 @@ func pushReq(sender, ref string, body intents.Body) *node.Request {
 }
 
 var (
-	anEvent = &intents.TnTEventBody{EventID: "EV-1", EventType: "EQUIPMENT", EventClassifierCode: "ACT", EventCode: "GTIN",
-		EventDateTime: "2026-10-07T11:20:00Z", Location: intents.Location{UNLocode: "NLRTM", Name: "R"}, EquipmentRef: "OCBU0000004"}
+	anEvent = &intents.TnTEventBody{EventID: "EV-1", EventType: "EQUIPMENT", EventClassifierCode: "ACT", EventTypeCode: "GTIN",
+		EventDateTime: "2026-10-07T11:20:00Z", UNLocationCode: "NLRTM", FacilityName: "R", Description: "An event", EquipmentReference: "OCBU0000004"}
 	anAlert = &intents.TnTAlertBody{AlertID: "AL-1", Kind: "exception", Severity: "low", Summary: "Hold", CauseEventIDs: []string{}}
 )
 

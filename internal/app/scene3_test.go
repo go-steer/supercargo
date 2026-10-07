@@ -146,7 +146,7 @@ llm: { provider: fake }
 			var e intents.TnTEventBody
 			_ = json.Unmarshal(r.Body, &e)
 			if r.Intent == intents.TnTEvent {
-				out = append(out, e.EventCode+" "+e.EventClassifierCode)
+				out = append(out, e.EventTypeCode+" "+e.EventClassifierCode)
 			} else {
 				out = append(out, "alert")
 			}

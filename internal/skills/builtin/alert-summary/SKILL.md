@@ -14,13 +14,13 @@ company's own staff read. It never goes back to the carrier.
 - **The booking**: route, vessel and voyage, the planned arrival, the cargo.
 - **The booking's records**: the signed events and alerts the carrier has
   sent, in order. Each has an ID (`EV-…` for events, `AL-…` for alerts).
-  - `eventClassifierCode` `ACT` is something that happened, `EST` an
+  - `event_classifier_code` `ACT` is something that happened, `EST` an
     estimate, `PLN` a plan. Never present an estimate as a certainty.
   - Event codes: `GTIN` gate-in, `LOAD` loaded on board, `DEPA` departed,
     `ARRI` arrived (with `EST`: is estimated to arrive), `DISC` discharged,
     `GTOT` gate-out.
-- **The alert**: its `summary` is the carrier's explanation; `previousEta`
-  and `newEta` say by how much the arrival moves. Its `causeEventIds` are
+- **The alert**: its `summary` is the carrier's explanation; `previous_eta`
+  and `new_eta` say by how much the arrival moves. Its `cause_event_ids` are
   only the cited events your company holds signed copies of.
 - **The business context**: your company's own dates for this shipment (the
   receiving slot at the warehouse, the required-by date) and notes. It is

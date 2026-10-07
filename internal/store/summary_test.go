@@ -29,7 +29,7 @@ func eventRecord(t *testing.T, id, code, class, at string) Record {
 	if code == "DEPA" || code == "ARRI" {
 		typ = "TRANSPORT"
 	}
-	b, _ := json.Marshal(intents.TnTEventBody{EventID: id, EventType: typ, EventCode: code, EventClassifierCode: class, EventDateTime: at})
+	b, _ := json.Marshal(intents.TnTEventBody{EventID: id, EventType: typ, EventTypeCode: code, EventClassifierCode: class, EventDateTime: at})
 	return Record{ID: id, Intent: intents.TnTEvent, Body: b, At: time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC),
 		Header: envelope.Header{Sender: "ocean-blue.example", MessageID: "m-" + id, SentAt: "2026-10-07T12:00:00.000Z"}}
 }

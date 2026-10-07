@@ -105,14 +105,14 @@ func Summarize(b Booking, recs []Record) Summary {
 				continue // the node's own, validated when stored
 			}
 			s.Events++
-			s.LastEvent = strings.Join([]string{e.EventType, e.EventCode, e.EventClassifierCode}, " ")
+			s.LastEvent = strings.Join([]string{e.EventType, e.EventTypeCode, e.EventClassifierCode}, " ")
 			s.LastAt = e.EventDateTime
 			if e.EventClassifierCode == intents.ClassifierActual {
-				if st, ok := statuses[e.EventCode]; ok {
+				if st, ok := statuses[e.EventTypeCode]; ok {
 					s.Status = st
 				}
 			}
-			if e.EventCode == "ARRI" && !arrived {
+			if e.EventTypeCode == "ARRI" && !arrived {
 				s.ETA, s.ETASource = e.EventDateTime, e.EventID
 				arrived = e.EventClassifierCode == intents.ClassifierActual
 			}

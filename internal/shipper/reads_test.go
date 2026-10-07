@@ -107,7 +107,7 @@ func TestControlLeakRefusal(t *testing.T) {
 
 func TestControlReads(t *testing.T) {
 	s := answering(t, "x", nil, "")
-	ev, _ := json.Marshal(intents.TnTEventBody{EventID: "EV-2", EventType: "TRANSPORT", EventCode: "DEPA", EventClassifierCode: "ACT",
+	ev, _ := json.Marshal(intents.TnTEventBody{EventID: "EV-2", EventType: "TRANSPORT", EventTypeCode: "DEPA", EventClassifierCode: "ACT",
 		EventDateTime: "2026-10-07T18:00:00Z"})
 	if _, err := s.Events.Add("ocean-blue.example", "OB-BKG-1", store.Record{ID: "EV-2", Intent: intents.TnTEvent, Body: ev,
 		At: time.Now(), Header: envelope.Header{Sender: "ocean-blue.example", MessageID: "m-2"}}); err != nil {

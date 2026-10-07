@@ -54,13 +54,13 @@ func booked(t *testing.T, d *demo, mutate func(*intents.BookingRequestBody)) sto
 func event(id, code string) *intents.TnTEventBody {
 	typ := intents.EventTypeEquipment
 	e := &intents.TnTEventBody{
-		EventID: id, EventType: typ, EventClassifierCode: intents.ClassifierActual, EventCode: code,
-		EventDateTime: "2026-10-07T11:20:00Z", Location: intents.Location{UNLocode: "NLRTM", Name: "Rotterdam"},
-		EquipmentRef: "OCBU0000004",
+		EventID: id, EventType: typ, EventClassifierCode: intents.ClassifierActual, EventTypeCode: code,
+		EventDateTime: "2026-10-07T11:20:00Z", UNLocationCode: "NLRTM", FacilityName: "Rotterdam", Description: "An event",
+		EquipmentReference: "OCBU0000004",
 	}
 	if code == "DEPA" || code == "ARRI" {
-		e.EventType, e.EquipmentRef = intents.EventTypeTransport, ""
-		e.Transport = &intents.Transport{Vessel: "Ocean Blue Aurora", Voyage: "42W"}
+		e.EventType, e.EquipmentReference = intents.EventTypeTransport, ""
+		e.VesselName, e.VoyageNumber = "Ocean Blue Aurora", "42W"
 	}
 	return e
 }

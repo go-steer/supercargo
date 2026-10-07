@@ -133,6 +133,8 @@ func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Bod
 			return nil, fmt.Errorf("node: refused to send %s: %w", h.Intent, err)
 		}
 	}
+	// The header names the payload schema the intent requires (or none).
+	intents.SetDialect(&h)
 	out := &envelope.Envelope{Header: h, Body: b}
 	msg, err := envelope.Seal(out, n.cfg.KID, n.cfg.Signer)
 	if err != nil {

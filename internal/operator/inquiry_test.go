@@ -60,11 +60,11 @@ func newInquiryFixture(t *testing.T, model llm.Model) *inquiryFixture {
 		}
 	}
 	dep := &intents.TnTEventBody{EventID: "EV-000002", EventType: intents.EventTypeTransport, EventClassifierCode: intents.ClassifierActual,
-		EventCode: "DEPA", EventDateTime: "2026-10-07T18:00:00Z", Location: intents.Location{UNLocode: "NLRTM", Name: "Rotterdam"},
-		Transport: &intents.Transport{Vessel: "Ocean Blue Aurora", Voyage: "42W"}}
+		EventTypeCode: "DEPA", EventDateTime: "2026-10-07T18:00:00Z", UNLocationCode: "NLRTM", FacilityName: "Rotterdam", Description: "An event",
+		VesselName: "Ocean Blue Aurora", VoyageNumber: "42W"}
 	est := *dep
-	est.EventID, est.EventClassifierCode, est.EventCode, est.EventDateTime = "EV-000003", intents.ClassifierEstimated, "ARRI", "2026-10-16T08:00:00Z"
-	est.Location = intents.Location{UNLocode: "USEWR", Name: "Newark"}
+	est.EventID, est.EventClassifierCode, est.EventTypeCode, est.EventDateTime = "EV-000003", intents.ClassifierEstimated, "ARRI", "2026-10-16T08:00:00Z"
+	est.UNLocationCode, est.FacilityName = "USEWR", "Newark"
 	alert := &intents.TnTAlertBody{AlertID: "AL-000004", Kind: intents.AlertDelay, Severity: intents.SeverityHigh,
 		Summary: "Engine repair, unscheduled call at Halifax.", PreviousETA: "2026-10-13T08:00:00Z", NewETA: "2026-10-16T08:00:00Z",
 		CauseEventIDs: []string{"EV-000003"}}
@@ -73,7 +73,7 @@ func newInquiryFixture(t *testing.T, model llm.Model) *inquiryFixture {
 	record("OB-BKG-1", &est, "EV-000003")
 	record("OB-BKG-1", alert, "AL-000004")
 	other := ev("EV-000099")
-	other.Location.Name = "Antwerp secret depot"
+	other.FacilityName = "Antwerp secret depot"
 	record("OB-BKG-2", other, "EV-000099")
 	f.svc = &InquiryService{Bookings: bookings, Log: log, Model: model, Name: "Ocean Blue", Timeout: time.Second,
 		OnModelCall: func(c ModelCall) { f.calls = append(f.calls, c) }}
@@ -212,7 +212,7 @@ func TestInquiryTemplateFallbacks(t *testing.T) {
 	if resp.GeneratedBy != intents.GeneratedByTemplate || len(f.calls) != 0 {
 		t.Errorf("no model: %+v", resp)
 	}
-	want := "Current estimated arrival in Newark: 2026-10-16T08:00:00Z (EV-000003). " +
+	want := "Current estimated arrival at Newark: 2026-10-16T08:00:00Z (EV-000003). " +
 		"Latest alert: Engine repair, unscheduled call at Halifax (delay, high severity, AL-000004)."
 	if resp.Answer != want || strings.Join(resp.CitedEventIDs, ",") != "EV-000003,AL-000004" {
 		t.Errorf("template:\n got %q %v\nwant %q", resp.Answer, resp.CitedEventIDs, want)
@@ -242,9 +242,9 @@ func TestTemplateAnswer(t *testing.T) {
 		t.Errorf("gate-in only: %q %v", a, cited)
 	}
 	arr := &intents.TnTEventBody{EventID: "EV-2", EventType: intents.EventTypeTransport, EventClassifierCode: intents.ClassifierActual,
-		EventCode: "ARRI", EventDateTime: "2026-10-13T08:00:00Z", Location: intents.Location{UNLocode: "USEWR", Name: "Newark"},
-		Transport: &intents.Transport{Vessel: "Aurora", Voyage: "42W"}}
-	if a, cited := templateAnswer(b, []recordView{{Kind: "event", Event: gtin}, {Kind: "event", Event: arr}}); !strings.Contains(a, "The vessel arrived in Newark") ||
+		EventTypeCode: "ARRI", EventDateTime: "2026-10-13T08:00:00Z", UNLocationCode: "USEWR", FacilityName: "Newark", Description: "An event",
+		VesselName: "Aurora", VoyageNumber: "42W"}
+	if a, cited := templateAnswer(b, []recordView{{Kind: "event", Event: gtin}, {Kind: "event", Event: arr}}); !strings.Contains(a, "The vessel arrived at Newark") ||
 		strings.Join(cited, ",") != "EV-2" {
 		t.Errorf("arrived: %q %v", a, cited)
 	}

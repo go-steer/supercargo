@@ -83,8 +83,8 @@ func subscribed(intentsList ...string) store.Booking {
 
 func ev(id string) *intents.TnTEventBody {
 	return &intents.TnTEventBody{EventID: id, EventType: intents.EventTypeEquipment, EventClassifierCode: intents.ClassifierActual,
-		EventCode: "GTIN", EventDateTime: "2026-10-07T11:20:00Z", Location: intents.Location{UNLocode: "NLRTM", Name: "Rotterdam"},
-		EquipmentRef: "OCBU0000004"}
+		EventTypeCode: "GTIN", EventDateTime: "2026-10-07T11:20:00Z", UNLocationCode: "NLRTM", FacilityName: "Rotterdam", Description: "An event",
+		EquipmentReference: "OCBU0000004"}
 }
 
 type drops struct {
@@ -199,7 +199,7 @@ func TestPublishRejects(t *testing.T) {
 		t.Error("published a confirmation")
 	}
 	bad := ev("EV-1")
-	bad.EventCode = "LOST"
+	bad.EventTypeCode = "LOST"
 	if err := p.Publish(subscribed(intents.TnTEvent), bad); err == nil {
 		t.Error("published an invalid event")
 	}
@@ -302,7 +302,7 @@ func TestPublishDuplicateID(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed := ev("EV-1")
-	changed.EventCode = "LOAD"
+	changed.EventTypeCode = "LOAD"
 	if err := p.Publish(b, changed); !errors.Is(err, ErrDuplicate) {
 		t.Fatalf("republishing EV-1 = %v, want ErrDuplicate", err)
 	}
@@ -334,11 +334,11 @@ func TestPublishCopiesBody(t *testing.T) {
 	if err := p.Publish(b, e); err != nil {
 		t.Fatal(err)
 	}
-	e.EventCode = "LOAD"
+	e.EventTypeCode = "LOAD"
 	close(release)
 	select {
 	case body := <-got:
-		if body.(*intents.TnTEventBody).EventCode != "GTIN" {
+		if body.(*intents.TnTEventBody).EventTypeCode != "GTIN" {
 			t.Errorf("pushed %+v, want the body as published", body)
 		}
 	case <-time.After(3 * time.Second):

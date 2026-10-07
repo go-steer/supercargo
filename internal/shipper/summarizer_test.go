@@ -73,8 +73,8 @@ func summarizerWith(t *testing.T, m llm.Model, alert *intents.TnTAlertBody) (*Su
 	}
 	b := summaryBooking()
 	log := store.NewEventLog(0)
-	ev, _ := json.Marshal(intents.TnTEventBody{EventID: "EV-1", EventType: "TRANSPORT", EventCode: "ARRI", EventClassifierCode: "EST",
-		EventDateTime: "2026-10-16T08:00:00Z", Location: intents.Location{UNLocode: "USEWR", Name: "Newark"}})
+	ev, _ := json.Marshal(intents.TnTEventBody{EventID: "EV-1", EventType: "TRANSPORT", EventTypeCode: "ARRI", EventClassifierCode: "EST",
+		EventDateTime: "2026-10-16T08:00:00Z", UNLocationCode: "USEWR", FacilityName: "Newark", Description: "An event"})
 	al, _ := json.Marshal(alert)
 	for _, r := range []store.Record{{ID: "EV-1", Intent: intents.TnTEvent, Body: ev}, {ID: alert.AlertID, Intent: intents.TnTAlert, Body: al}} {
 		if _, err := log.Add(b.Operator, b.Ref, r); err != nil {
@@ -421,7 +421,7 @@ func TestSummarizerDefaults(t *testing.T) {
 		t.Errorf("summary: %+v", v)
 	}
 	s.Close()
-	if !strings.Contains(m.Calls()[0].Messages[0].Text, `"causeEventIds":[]`) {
+	if !strings.Contains(m.Calls()[0].Messages[0].Text, `"cause_event_ids":[]`) {
 		t.Error("the alert's causes reached the model as null")
 	}
 	// A reply with invalid UTF-8 decodes to U+FFFD, which is refused.

@@ -20,6 +20,7 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/envelope"
@@ -205,11 +206,12 @@ func (s *Simulator) Start(b store.Booking) error {
 		return fmt.Errorf("operator: booking %s: %w", b.Ref, err)
 	}
 	origin, dest := b.Request.Origin, b.Request.Destination
-	transport := &intents.Transport{Vessel: c.Vessel.Name, Voyage: c.Vessel.Voyage}
+	vessel, voyage := c.Vessel.Name, c.Vessel.Voyage
 	equipment := func(code string, loc intents.Location, when time.Time, ref string) step {
 		return step{at: when, body: func(id string, at time.Time) intents.Body {
 			return &intents.TnTEventBody{EventID: id, EventType: intents.EventTypeEquipment, EventClassifierCode: intents.ClassifierActual,
-				EventCode: code, EventDateTime: stamp(at), Location: loc, EquipmentRef: ref}
+				EventTypeCode: code, EventDateTime: stamp(at), UNLocationCode: loc.UNLocode, FacilityName: facility(loc),
+				Description: describe("Container %s %s %s", ref, equipmentWords[code], facility(loc)), EquipmentReference: ref}
 		}}
 	}
 	var steps []step
@@ -219,17 +221,19 @@ func (s *Simulator) Start(b store.Booking) error {
 	steps = append(steps,
 		step{at: dep, body: func(id string, at time.Time) intents.Body {
 			return &intents.TnTEventBody{EventID: id, EventType: intents.EventTypeTransport, EventClassifierCode: intents.ClassifierActual,
-				EventCode: "DEPA", EventDateTime: stamp(at), Location: origin, Transport: transport}
+				EventTypeCode: "DEPA", EventDateTime: stamp(at), UNLocationCode: origin.UNLocode, FacilityName: facility(origin),
+				Description: describe("%s %s departed %s", vessel, voyage, facility(origin)), VesselName: vessel, VoyageNumber: voyage}
 		}},
 	)
 	tl := &timeline{booking: b, realStart: s.Now().Add(s.StartDelay), simStart: dep.Add(-simLeadIn), arrival: arr}
 	if dep.Add(estimateAfter).Before(arr) { // a voyage that short has no time for an estimate
-		steps = append(steps, step{at: dep.Add(estimateAfter), body: func(id string, _ time.Time) intents.Body { return s.estimate(id, tl) }})
+		steps = append(steps, step{at: dep.Add(estimateAfter), body: func(id string, _ time.Time) intents.Body { return s.estimate(id, tl, "") }})
 	}
 	steps = append(steps,
 		step{at: arr, afterArrival: true, arrive: true, body: func(id string, at time.Time) intents.Body {
 			return &intents.TnTEventBody{EventID: id, EventType: intents.EventTypeTransport, EventClassifierCode: intents.ClassifierActual,
-				EventCode: "ARRI", EventDateTime: stamp(at), Location: dest, Transport: transport}
+				EventTypeCode: "ARRI", EventDateTime: stamp(at), UNLocationCode: dest.UNLocode, FacilityName: facility(dest),
+				Description: describe("%s %s arrived at %s", vessel, voyage, facility(dest)), VesselName: vessel, VoyageNumber: voyage}
 		}},
 	)
 	for _, ref := range c.EquipmentRefs {
@@ -253,14 +257,38 @@ func (s *Simulator) Start(b store.Booking) error {
 	return nil
 }
 
-// estimate is the ARRI EST event for tl's current arrival estimate. It is
-// called with s.mu held.
-func (s *Simulator) estimate(id string, tl *timeline) intents.Body {
+// estimate is the ARRI EST event for tl's current arrival estimate; why,
+// if set, says what moved it. It is called with s.mu held.
+func (s *Simulator) estimate(id string, tl *timeline, why string) intents.Body {
 	c := tl.booking.Confirmation
+	dest := tl.booking.Request.Destination
+	desc := fmt.Sprintf("%s %s expected at %s", c.Vessel.Name, c.Vessel.Voyage, facility(dest))
+	if why != "" {
+		desc += ": " + why
+	}
+	desc = clip(desc, 280)
 	return &intents.TnTEventBody{EventID: id, EventType: intents.EventTypeTransport, EventClassifierCode: intents.ClassifierEstimated,
-		EventCode: "ARRI", EventDateTime: stamp(tl.arrival), Location: tl.booking.Request.Destination,
-		Transport: &intents.Transport{Vessel: c.Vessel.Name, Voyage: c.Vessel.Voyage}}
+		EventTypeCode: "ARRI", EventDateTime: stamp(tl.arrival), UNLocationCode: dest.UNLocode, FacilityName: facility(dest),
+		Description: desc, VesselName: c.Vessel.Name, VoyageNumber: c.Vessel.Voyage}
 }
+
+// facility names a port in events: "Port of Rotterdam", within the
+// event's 128-character limit (a place name comes from the booking).
+func facility(loc intents.Location) string { return clip("Port of "+loc.Name, 128) }
+
+// describe is an event description within its 280-character limit.
+func describe(format string, a ...any) string { return clip(fmt.Sprintf(format, a...), 280) }
+
+// clip cuts s to n characters, marking the cut.
+func clip(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n-1]) + "…"
+}
+
+// equipmentWords describe equipment events in their descriptions.
+var equipmentWords = map[string]string{"GTIN": "gated in at", "LOAD": "loaded at", "DISC": "discharged at", "GTOT": "gated out at"}
 
 // Advance publishes every step that is due. Run calls it on each tick;
 // tests call it directly.
@@ -328,7 +356,7 @@ func (s *Simulator) Disrupt(ref string, delay time.Duration, reason string) (*in
 	// A push recorded but not queued (ErrNotQueued) still happened: the
 	// subscriber catches up by asking. Anything else recorded nothing.
 	estID := s.nextID("EV")
-	if err := s.publish(tl, s.estimate(estID, tl)); err != nil && !errors.Is(err, ErrNotQueued) {
+	if err := s.publish(tl, s.estimate(estID, tl, reason)); err != nil && !errors.Is(err, ErrNotQueued) {
 		tl.shift(-delay) // nothing was said, so nothing changed
 		return nil, err
 	}

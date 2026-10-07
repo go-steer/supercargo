@@ -16,14 +16,15 @@ statement by your company.
 - **The booking's records**: the track-and-trace events and alerts your
   company has published for it, in order. Each has an ID (`EV-…` for events,
   `AL-…` for alerts).
-  - An event's `eventClassifierCode` says what kind of fact it is: `ACT` is
+  - An event's `event_classifier_code` says what kind of fact it is: `ACT` is
     something that happened, `EST` an estimate, `PLN` a plan. Never present
     an estimate as a certainty.
-  - Event codes: `GTIN` gate-in, `LOAD` loaded on board, `DEPA` vessel
+  - Its `event_type_code` says what happened, and `description` says it
+    in words: `GTIN` gate-in, `LOAD` loaded on board, `DEPA` vessel
     departed, `ARRI` vessel arrived (or, with `EST`, is estimated to arrive),
     `DISC` discharged, `GTOT` gate-out.
-  - An alert's `summary` says why something changed; its `previousEta` and
-    `newEta` say by how much.
+  - An alert's `summary` says why something changed; its `previous_eta` and
+    `new_eta` say by how much.
 - **The question**, which is the partner's own words.
 
 Nothing else. You don't know about other bookings, other customers, crew,
