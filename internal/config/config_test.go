@@ -93,6 +93,19 @@ keys: [{kid: cy-1, privateKeyFile: k.pem}]}`
 	if err != nil || c.Control.Socket != "/tmp/cy/ulp.sock" {
 		t.Errorf("a shipper's control socket: %+v, %v", c, err)
 	}
+	// Business context: a shipper's, at an absolute path.
+	c, err = Parse([]byte(strings.TrimSuffix(minimal, "}") + ", business: {file: /etc/ulp/business.yaml}}"))
+	if err != nil || c.Business.File != "/etc/ulp/business.yaml" {
+		t.Errorf("a shipper's business file: %+v, %v", c, err)
+	}
+	for _, bad := range []string{", business: {file: business.yaml}}", ", business: {file: ''}}"} {
+		if _, err := Parse([]byte(strings.TrimSuffix(minimal, "}") + bad)); err == nil {
+			t.Errorf("a shipper with %s was accepted", bad)
+		}
+	}
+	if _, err := Parse([]byte(operatorYAML + "business: { file: /etc/ulp/business.yaml }\n")); err == nil {
+		t.Error("an operator with a business file was accepted")
+	}
 	// Anthropic: the key's variable defaults to ANTHROPIC_API_KEY.
 	c, err = Parse([]byte(strings.Replace(operatorYAML, "provider: fake, model: m, apiKeyEnv: LLM_API_KEY", "provider: anthropic", 1)))
 	if err != nil || c.LLM.APIKeyEnv != "ANTHROPIC_API_KEY" || c.LLM.Model != "" {

@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/discovery"
@@ -101,6 +102,10 @@ func ControlHandler(s *Shipper, profiles rest.Profiles) http.Handler {
 			return
 		}
 		conf, err := s.Book(r.Context(), req.Operator, &req.Request)
+		if errors.Is(err, business.ErrLeak) {
+			control.Answer(w, http.StatusUnprocessableEntity, BookResponse{Error: leakMessage})
+			return
+		}
 		if err != nil {
 			control.Answer(w, http.StatusBadGateway, BookResponse{Error: err.Error()})
 			return
@@ -131,6 +136,8 @@ func ControlHandler(s *Shipper, profiles rest.Profiles) http.Handler {
 		switch {
 		case errors.Is(err, ErrNotOurBooking):
 			control.Answer(w, http.StatusNotFound, AskResponse{Error: err.Error()})
+		case errors.Is(err, business.ErrLeak):
+			control.Answer(w, http.StatusUnprocessableEntity, AskResponse{Error: leakMessage})
 		case err != nil:
 			control.Answer(w, http.StatusBadGateway, AskResponse{Error: err.Error()})
 		default:
@@ -205,3 +212,8 @@ func (s *Shipper) records(operator, ref string) []store.Record {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// leakMessage explains a send refused by the business-context guard: a
+// local decision, nothing to do with the partner.
+const leakMessage = "not sent: it would carry text from your private business context " +
+	"(a shipment note, a warehouse name or a receiving window); reword it and try again"

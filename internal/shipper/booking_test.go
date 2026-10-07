@@ -51,7 +51,7 @@ func (p poster) PostTo(ctx context.Context, r, _ string, m []byte) ([]byte, erro
 	return p(ctx, r, m)
 }
 
-func shipperWith(t *testing.T, answer func(req envelope.Header) (string, any)) *Shipper {
+func shipperWith(t *testing.T, answer func(req envelope.Header) (string, any), opts ...func(*node.Config)) *Shipper {
 	t.Helper()
 	cyPub, cyPriv, _ := ed25519.GenerateKey(rand.Reader)
 	obPub, obPriv, _ := ed25519.GenerateKey(rand.Reader)
@@ -59,7 +59,7 @@ func shipperWith(t *testing.T, answer func(req envelope.Header) (string, any)) *
 	obSigner, _ := sig.NewEd25519Signer(obPriv)
 	cyJWK, _ := sig.Ed25519JWK(cyPub, "cy-1")
 	obV, _ := sig.NewEd25519Verifier(obPub)
-	n, err := node.New(node.Config{
+	cfg := node.Config{
 		Domain: "cymbal-shoes.example", Name: "Cymbal Shoes", Roles: []string{"shipper"},
 		KID: "cy-1", Signer: cySigner, PublicJWK: cyJWK,
 		Keys: keys{"ocean-blue.example/ob-1": obV}, Replay: store.NewReplay(store.ReplayOptions{}),
@@ -77,7 +77,11 @@ func shipperWith(t *testing.T, answer func(req envelope.Header) (string, any)) *
 			b, _ := json.Marshal(body)
 			return envelope.Seal(&envelope.Envelope{Header: h, Body: b}, "ob-1", obSigner)
 		}),
-	})
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	n, err := node.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

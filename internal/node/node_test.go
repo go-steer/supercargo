@@ -266,6 +266,58 @@ func TestExchangeMisuse(t *testing.T) {
 	}
 }
 
+// TestOutboundGuard: a guard that refuses a body stops the send before
+// anything is sealed or posted.
+func TestOutboundGuard(t *testing.T) {
+	op := newParty(t, "ob-2026-1")
+	h := handlerFunc{handle: func(context.Context, *node.Request) (*node.Reply, error) { return nil, nil }}
+	hdr := envelope.NewHeader(intents.BookingRequest, operatorDomain, shipperDomain, time.Now())
+	posted := 0
+	c := baseConfig(t, op, staticKeys{}, h)
+	c.Poster = posterFunc(func(context.Context, string, []byte) ([]byte, error) { posted++; return nil, rest.ErrNoResponse })
+	c.OutboundGuard = func(body []byte) error {
+		if strings.Contains(string(body), "sneakers") {
+			return errors.New("private")
+		}
+		return nil
+	}
+	n, _ := node.New(c)
+	if _, err := n.Exchange(context.Background(), hdr, bookingRequest()); err == nil || !strings.Contains(err.Error(), "refused to send") {
+		t.Errorf("a guarded body: %v, want refused", err)
+	}
+	if posted != 0 {
+		t.Error("a refused body was posted")
+	}
+	body := bookingRequest()
+	body.Cargo.Description = "Footwear"
+	if _, err := n.Exchange(context.Background(), hdr, body); err != nil || posted != 1 {
+		t.Errorf("an allowed body: %v, posted %d", err, posted)
+	}
+}
+
+// TestOutboundGuardOnReplies: a reply the guard refuses isn't sent: the
+// sender gets a bare 500, nothing signed.
+func TestOutboundGuardOnReplies(t *testing.T) {
+	op, cy := newParty(t, "ob-2026-1"), newParty(t, "cy-2026-1")
+	h := handlerFunc{handle: func(context.Context, *node.Request) (*node.Reply, error) {
+		return &node.Reply{Body: confirmationFor("OB-BKG-7"), BookingRef: "OB-BKG-7"}, nil
+	}}
+	c := baseConfig(t, op, staticKeys{shipperDomain + "/cy-2026-1": cy.v}, h)
+	c.OutboundGuard = func(body []byte) error {
+		if strings.Contains(string(body), "OB-BKG-7") {
+			return errors.New("private")
+		}
+		return nil
+	}
+	n, _ := node.New(c)
+	hdr := envelope.NewHeader(intents.BookingRequest, shipperDomain, operatorDomain, time.Now())
+	b, _ := json.Marshal(bookingRequest())
+	msg, _ := envelope.Seal(&envelope.Envelope{Header: hdr, Body: b}, "cy-2026-1", cy.signer)
+	if res := n.Process(context.Background(), msg); res.Response != nil || res.Status != http.StatusInternalServerError {
+		t.Errorf("a guarded reply: %d with %d bytes, want a bare 500", res.Status, len(res.Response))
+	}
+}
+
 func TestExchangeEdges(t *testing.T) {
 	op, cy := newParty(t, "ob-2026-1"), newParty(t, "cy-2026-1")
 	h := handlerFunc{handle: func(context.Context, *node.Request) (*node.Reply, error) { return nil, nil }}

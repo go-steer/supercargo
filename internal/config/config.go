@@ -70,6 +70,7 @@ type Config struct {
 	Operator  *Operator  `yaml:"operator"`
 	Simulator *Simulator `yaml:"simulator"` // operator only
 	Control   *Control   `yaml:"control"`
+	Business  *Business  `yaml:"business"` // shipper only
 
 	// Sections for later milestones, accepted so a full config loads.
 	LLM    *LLM    `yaml:"llm"`
@@ -132,6 +133,13 @@ type LLM struct {
 	Provider  string `yaml:"provider"`
 	Model     string `yaml:"model"`
 	APIKeyEnv string `yaml:"apiKeyEnv"`
+}
+
+// Business points at a shipper's private business context file
+// (internal/business): delivery deadlines and receiving slots its own model
+// uses, never sent to partners.
+type Business struct {
+	File string `yaml:"file"`
 }
 
 // Skills configures company agent skills (milestone 4).
@@ -293,6 +301,9 @@ func (c *Config) validate() error {
 		default:
 			return fmt.Errorf("llm: provider %q is not %s or %s", c.LLM.Provider, ProviderFake, ProviderAnthropic)
 		}
+	}
+	if c.Business != nil && (c.Role != RoleShipper || !filepath.IsAbs(c.Business.File)) {
+		return fmt.Errorf("business: for shipper nodes only, with an absolute file path (got %q)", c.Business.File)
 	}
 	if c.Skills != nil && (c.Skills.Dir == "" || !filepath.IsAbs(c.Skills.Dir)) {
 		return fmt.Errorf("skills: dir %q must be an absolute path", c.Skills.Dir)
