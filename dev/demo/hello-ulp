@@ -27,8 +27,9 @@
 # Environment: OP_PORT (8441), SH_PORT (8442), HOURS_PER_SECOND (1: the
 # voyage departs about half a minute after booking and arrives about two
 # and a half minutes later), ULP_LLM (fake: deterministic answers, no key;
-# anthropic: Ocean Blue answers inquiries with Claude, the key from
-# ANTHROPIC_API_KEY in the operator's terminal), HELLO_ULP_SESSION (the
+# anthropic: Ocean Blue answers inquiries and Cymbal summarizes alerts with
+# Claude, the key from ANTHROPIC_API_KEY in both nodes' terminals),
+# HELLO_ULP_SESSION (the
 # tmux session name, hello-ulp; give tests their own so they never replace
 # a running demo).
 #
@@ -118,7 +119,10 @@ Hello ULP is set up in $dir. Open four terminals:
        $disrupt
 
      Cymbal's log shows the signed delay alert: "alert recorded",
-     severity=high, the ETA moving from the 13th to the 16th.
+     severity=high, the ETA moving from the 13th to the 16th. Then Cymbal's
+     own model says what that means for Cymbal: an "alert summary" line,
+     impact=misses, since the vessel now arrives after Cymbal's receiving
+     slot on the 15th (from its private business file, never sent).
 
   5. Ask Ocean Blue why, as Cymbal Shoes:
        $ask

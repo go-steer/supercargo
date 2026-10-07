@@ -34,6 +34,7 @@ const (
 	KindModel    = "model"
 	KindVoyage   = "voyage"
 	KindPush     = "push"
+	KindSummary  = "summary"
 )
 
 // Entry is one thing the node did. Exactly one of the kind-specific fields
@@ -47,6 +48,7 @@ type Entry struct {
 	Model    *Model    `json:"model,omitempty"`
 	Voyage   *Voyage   `json:"voyage,omitempty"`
 	Push     *Push     `json:"push,omitempty"`
+	Summary  *Summary  `json:"summary,omitempty"`
 }
 
 // Envelope is a message in or out and what the node decided about it
@@ -236,4 +238,21 @@ func (b *Bus) Seq() uint64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.seq
+}
+
+// Summary is the shipper's notification about an alert: what it means for
+// its own business. It may draw on private context, so it lives only in
+// this node's activity (its log and control API), never in an envelope.
+type Summary struct {
+	Booking string `json:"booking"`
+	AlertID string `json:"alertId"`
+	Text    string `json:"text"`
+	// Impact is "misses", "tight", "ok" or "unknown", against the
+	// shipper's receiving slot or required date.
+	Impact      string   `json:"impact"`
+	GeneratedBy string   `json:"generatedBy"` // llm or template
+	Cited       []string `json:"cited,omitempty"`
+	// UnheldCauses are cause event IDs the alert cites that this shipper
+	// holds no signed copy of.
+	UnheldCauses []string `json:"unheldCauses,omitempty"`
 }

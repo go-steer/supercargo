@@ -87,6 +87,7 @@ listen: "` + shAddr + `"
 tls: { mode: insecure-dev }
 keys: [{ kid: cy-1, privateKeyFile: "` + keyFile(t) + `" }]
 control: { socket: "` + shSock + `" }
+llm: { provider: fake }
 ` + peers))
 	if err != nil {
 		t.Fatal(err)
@@ -245,7 +246,8 @@ control: { socket: "` + shSock + `" }
 		}
 		return out
 	}
-	if m := missing(shSock, "envelope in ulp.tnt.event via rest", "record recorded", "envelope out ulp.tnt.inquiry via a2a"); len(m) != 0 {
+	if m := missing(shSock, "envelope in ulp.tnt.event via rest", "record recorded", "envelope out ulp.tnt.inquiry via a2a",
+		"summary", "model"); len(m) != 0 {
 		t.Errorf("the shipper's stream lacks %v", m)
 	}
 	if m := missing(opSock, "voyage", "record published", "model", "envelope in ulp.tnt.inquiry via a2a"); len(m) != 0 {
@@ -259,7 +261,8 @@ control: { socket: "` + shSock + `" }
 			t.Errorf("operator log lacks %s", want)
 		}
 	}
-	for _, want := range []string{`"intent":"ulp.tnt.event"`, `"verified":true`, `"msg":"event recorded"`, `"msg":"alert recorded"`, `"severity":"high"`} {
+	for _, want := range []string{`"intent":"ulp.tnt.event"`, `"verified":true`, `"msg":"event recorded"`, `"msg":"alert recorded"`, `"severity":"high"`,
+		`"msg":"alert summary"`, `"generatedBy":"llm"`} {
 		if !strings.Contains(shLog.String(), want) {
 			t.Errorf("shipper log lacks %s", want)
 		}

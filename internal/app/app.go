@@ -69,6 +69,8 @@ type App struct {
 	// Activity is the node's activity stream: the log's source, served live
 	// on the control API at /events.
 	Activity *activity.Bus
+	// Summarizer writes the shipper's alert notifications.
+	Summarizer *shipper.Summarizer
 
 	// The operator's push path and simulator, and the presenter's control
 	// API (nil unless configured).
@@ -137,20 +139,17 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			return nil, err
 		}
 	}
-	if cfg.Role == config.RoleShipper {
-		inbound := &shipper.Inbound{Bookings: a.Bookings, Log: a.Events, Now: time.Now,
-			OnEvent: func(b store.Booking, e *intents.TnTEventBody) { a.record(activity.ActionRecorded, b.Ref, e) },
-			OnAlert: func(b store.Booking, al *intents.TnTAlertBody) { a.record(activity.ActionRecorded, b.Ref, al) },
-		}
-		handlers[intents.TnTEvent] = inbound
-		handlers[intents.TnTAlert] = inbound
-	}
 	var guard func([]byte) error
 	if cfg.Business != nil {
 		if a.Business, err = business.Load(cfg.Business.File); err != nil {
 			return nil, err
 		}
 		guard = a.Business.Guard()
+	}
+	if cfg.Role == config.RoleShipper {
+		if err := a.shipperRole(handlers); err != nil {
+			return nil, err
+		}
 	}
 	restURL, a2aURL := "", ""
 	if cfg.Role == config.RoleOperator {
@@ -278,6 +277,11 @@ func (a *App) shutdown() {
 	}
 	// End the activity streams: http.Server.Shutdown waits for every
 	// connection to go idle, and a stream never would.
+	if a.Summarizer != nil {
+		// Before the bus: what is still queued is summarized from the
+		// template and logged.
+		a.Summarizer.Close()
+	}
 	a.Activity.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -309,20 +313,16 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	for _, d := range o.Deny {
 		deny[d] = true
 	}
-	model, err := newModel(cfg.LLM)
+	model, err := newModel(cfg.LLM, operator.FakeInquiryModel())
 	if err != nil {
 		return err
 	}
-	agentSkills, err := inquirySkills(cfg.Skills)
+	agentSkills, err := agentSkills("shipment-inquiry", cfg.Skills)
 	if err != nil {
 		return err
 	}
 	if model != nil {
-		var ids []string
-		for _, s := range agentSkills {
-			ids = append(ids, s.ID()+" ("+s.Source+")")
-		}
-		log.Info("inquiry responder", "model", model.Name(), "skills", ids)
+		log.Info("inquiry responder", "model", model.Name(), "skills", skillIDs(agentSkills))
 	}
 	handlers[intents.TnTInquiry] = &operator.InquiryService{Bookings: a.Bookings, Log: a.Events, Model: model, Name: cfg.Name, Skills: agentSkills,
 		OnModelCall: func(c operator.ModelCall) {
@@ -345,6 +345,49 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 		},
 	}
 	return nil
+}
+
+// shipperRole sets up the inbound push handler and the alert summarizer
+// behind it.
+func (a *App) shipperRole(handlers map[string]node.Handler) error {
+	cfg := a.Config
+	model, err := newModel(cfg.LLM, shipper.FakeSummaryModel())
+	if err != nil {
+		return err
+	}
+	agentSkills, err := agentSkills("alert-summary", cfg.Skills)
+	if err != nil {
+		return err
+	}
+	if model != nil {
+		a.Logger.Info("alert summarizer", "model", model.Name(), "skills", skillIDs(agentSkills))
+	}
+	a.Summarizer = &shipper.Summarizer{Log: a.Events, Business: a.Business, Model: model, Skills: agentSkills, Name: cfg.Name,
+		OnSummary: func(s activity.Summary) {
+			a.Activity.Publish(activity.Entry{Kind: activity.KindSummary, Summary: &s})
+		},
+		OnModelCall: func(m activity.Model) {
+			a.Activity.Publish(activity.Entry{Kind: activity.KindModel, Model: &m})
+		},
+	}
+	inbound := &shipper.Inbound{Bookings: a.Bookings, Log: a.Events, Now: time.Now,
+		OnEvent: func(b store.Booking, e *intents.TnTEventBody) { a.record(activity.ActionRecorded, b.Ref, e) },
+		OnAlert: func(b store.Booking, al *intents.TnTAlertBody) {
+			a.record(activity.ActionRecorded, b.Ref, al)
+			a.Summarizer.Enqueue(b, al)
+		},
+	}
+	handlers[intents.TnTEvent] = inbound
+	handlers[intents.TnTAlert] = inbound
+	return nil
+}
+
+func skillIDs(all []skills.Skill) []string {
+	var ids []string
+	for _, s := range all {
+		ids = append(ids, s.ID()+" ("+s.Source+")")
+	}
+	return ids
 }
 
 // record publishes an event or alert recorded or published for ref. The
@@ -382,14 +425,14 @@ func loadPool(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-// newModel builds the configured model: none (template answers only), the
-// fake, or Claude with its key from the environment.
-func newModel(c *config.LLM) (llm.Model, error) {
+// newModel builds the configured model: none (template output only), the
+// role's fake, or Claude with its key from the environment.
+func newModel(c *config.LLM, fake llm.Model) (llm.Model, error) {
 	switch {
 	case c == nil:
 		return nil, nil
 	case c.Provider == config.ProviderFake:
-		return operator.FakeInquiryModel(), nil
+		return fake, nil
 	}
 	key := os.Getenv(c.APIKeyEnv)
 	if key == "" {
@@ -398,10 +441,13 @@ func newModel(c *config.LLM) (llm.Model, error) {
 	return anthropic.New(anthropic.Options{APIKey: key, Model: c.Model, CacheSystem: true})
 }
 
-// inquirySkills are the inquiry responder's agent skills: the built-in
-// shipment-inquiry skill, then the company's own.
-func inquirySkills(c *config.Skills) ([]skills.Skill, error) {
-	builtin, _ := skills.Find(skills.Builtin(), "shipment-inquiry")
+// agentSkills are a model's agent skills: the named built-in skill (the
+// inquiry responder's or the summarizer's), then the company's own.
+func agentSkills(name string, c *config.Skills) ([]skills.Skill, error) {
+	builtin, ok := skills.Find(skills.Builtin(), name)
+	if !ok {
+		panic("app: no built-in skill " + name) // a build defect; the tests catch it
+	}
 	out := []skills.Skill{builtin}
 	if c != nil {
 		company, err := skills.LoadDir(c.Dir)
