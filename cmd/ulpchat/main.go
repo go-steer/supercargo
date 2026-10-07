@@ -20,12 +20,16 @@
 package main
 
 import (
+	"context"
+
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"time"
+
+	"go.opentelemetry.io/otel"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -36,6 +40,7 @@ import (
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/internal/skills"
+	"github.com/go-steer/supercargo/internal/telemetry"
 	"github.com/go-steer/supercargo/internal/ui/theme"
 )
 
@@ -73,6 +78,21 @@ func run(args []string, stderr io.Writer, start func(tea.Model) error) error {
 	if err != nil {
 		return err
 	}
+	// The assistant's turns, model calls and tool calls export with the
+	// node's telemetry settings, as their own service. Export errors are
+	// dropped: the TUI owns the terminal.
+	shutdown, err := telemetry.Setup(context.Background(), cfg.Telemetry, "ulpchat ("+cfg.Domain+")")
+	if err != nil {
+		return fmt.Errorf("telemetry: %w", err)
+	}
+	if telemetry.Enabled(cfg.Telemetry, os.Getenv) {
+		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(error) {}))
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdown(ctx)
+	}()
 	return start(chatui.New(chatui.Options{Assistant: a, Theme: *themeName, Node: cfg.Control.Socket}))
 }
 

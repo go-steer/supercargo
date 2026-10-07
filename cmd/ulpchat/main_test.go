@@ -24,6 +24,9 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
+
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/go-steer/supercargo/internal/config"
@@ -64,6 +67,17 @@ func TestRun(t *testing.T) {
 		"business: { file: \""+biz+"\" }\nskills: { dir: \""+skillDir+"\" }\n")
 	if err := run([]string{"--config", good, "--theme", "light"}, io.Discard, start); err != nil || started == nil {
 		t.Fatalf("run: %v", err)
+	}
+	// With telemetry configured (a collector that isn't there), ulpchat
+	// still runs, and flushes quietly at exit.
+	t.Cleanup(func() {
+		otel.SetTracerProvider(tracenoop.NewTracerProvider())
+		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(error) {}))
+	})
+	traced := writeConfig(t, config.RoleShipper, "control: { socket: /tmp/cy.sock }\nllm: { provider: fake }\n"+
+		"telemetry: { endpoint: \"127.0.0.1:1\", insecure: true }\n")
+	if err := run([]string{"--config", traced}, io.Discard, start); err != nil {
+		t.Errorf("run with telemetry: %v", err)
 	}
 	a, err := newAssistant(mustLoad(t, good))
 	if err != nil {
@@ -109,4 +123,12 @@ func mustLoad(t *testing.T, path string) *config.Config {
 		t.Fatal(err)
 	}
 	return c
+}
+
+// TestMain keeps a developer's own OTEL_* settings out of the tests.
+func TestMain(m *testing.M) {
+	for _, k := range []string{"OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"} {
+		_ = os.Unsetenv(k)
+	}
+	os.Exit(m.Run())
 }
