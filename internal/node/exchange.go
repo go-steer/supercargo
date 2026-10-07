@@ -22,6 +22,9 @@ import (
 	"slices"
 	"time"
 
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/transport/a2a"
@@ -57,7 +60,7 @@ func (n *Node) Exchange(ctx context.Context, h envelope.Header, body intents.Bod
 	if n.cfg.Poster == nil {
 		return nil, errors.New("node: no Poster configured")
 	}
-	return n.exchange(ctx, h, body, expect, func(msg []byte) ([]byte, string, error) {
+	return n.exchange(ctx, h, body, expect, func(ctx context.Context, msg []byte) ([]byte, string, error) {
 		resp, err := n.cfg.Poster.Post(ctx, h.Receiver, msg)
 		return resp, "rest", err
 	})
@@ -74,7 +77,7 @@ func (n *Node) ExchangeA2A(ctx context.Context, h envelope.Header, body intents.
 	if n.cfg.Poster == nil {
 		return nil, errors.New("node: no Poster configured")
 	}
-	return n.exchange(ctx, h, body, expect, func(msg []byte) ([]byte, string, error) {
+	return n.exchange(ctx, h, body, expect, func(ctx context.Context, msg []byte) ([]byte, string, error) {
 		resp, err := n.cfg.A2A.Post(ctx, h.Receiver, msg)
 		if !errors.Is(err, a2a.ErrNoEndpoint) {
 			return resp, "a2a", err
@@ -93,14 +96,28 @@ func (n *Node) Push(ctx context.Context, h envelope.Header, body intents.Body, e
 	if n.cfg.Poster == nil {
 		return errors.New("node: no Poster configured")
 	}
-	_, err := n.exchange(ctx, h, body, nil, func(msg []byte) ([]byte, string, error) {
+	_, err := n.exchange(ctx, h, body, nil, func(ctx context.Context, msg []byte) ([]byte, string, error) {
 		resp, err := n.cfg.Poster.PostTo(ctx, h.Receiver, endpoint, msg)
 		return resp, "rest", err
 	})
 	return err
 }
 
-func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Body, expect []string, post func([]byte) ([]byte, string, error)) (*Request, error) {
+func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Body, expect []string, post func(context.Context, []byte) ([]byte, string, error)) (res *Request, err error) {
+	ctx, span := n.start(ctx, "ulp.egress", trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(AttrIntent.String(h.Intent), AttrReceiver.String(h.Receiver), AttrMessageID.String(h.MessageID)))
+	defer func() {
+		// A partner's refusal is recorded by its code: its detail is the
+		// partner's free text.
+		var re *RemoteError
+		if errors.As(err, &re) {
+			span.SetAttributes(AttrCode.String(re.Code))
+			span.SetStatus(codes.Error, re.Code)
+			span.End()
+			return
+		}
+		fail(span, err)
+	}()
 	if h.Sender != n.cfg.Domain || h.Intent != body.Intent() {
 		return nil, fmt.Errorf("node: header sender %q / intent %q don't match this node and the body", h.Sender, h.Intent)
 	}
@@ -122,70 +139,73 @@ func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Bod
 		return nil, err
 	}
 	ev := Event{Direction: "out", Intent: h.Intent, Sender: h.Sender, Receiver: h.Receiver, MessageID: h.MessageID, KID: n.cfg.KID, Verified: true}
-	resp, via, err := post(msg)
+	resp, via, err := post(ctx, msg)
 	ev.Via = via
 	if errors.Is(err, rest.ErrNoResponse) && len(expect) == 0 {
 		ev.Outcome, ev.Time = "sent", n.cfg.Now()
-		n.cfg.Observer(ev)
+		n.observe(ctx, ev)
 		return nil, nil
 	}
 	if err != nil {
 		ev.Outcome, ev.Reason, ev.Time = "failed", err.Error(), n.cfg.Now()
-		n.cfg.Observer(ev)
+		n.observe(ctx, ev)
 		return nil, err
 	}
 	ev.Outcome, ev.Time = "sent", n.cfg.Now()
-	n.cfg.Observer(ev)
-	return n.checkResponse(ctx, h, resp, expect, via)
+	n.observe(ctx, ev)
+	rctx, rs := n.start(ctx, "ulp.response")
+	res, err = n.checkResponse(rctx, h, resp, expect, via)
+	rs.End()
+	return res, err
 }
 
 func (n *Node) checkResponse(ctx context.Context, req envelope.Header, resp []byte, expect []string, via string) (*Request, error) {
 	ev := Event{Direction: "in", Via: via, Outcome: "rejected"}
-	fail := func(reason string) (*Request, error) {
+	reject := func(reason string) (*Request, error) {
 		ev.Reason, ev.Time = reason, n.cfg.Now()
-		n.cfg.Observer(ev)
+		n.observe(ctx, ev)
 		return nil, fmt.Errorf("%w: %s", ErrBadResponse, reason)
 	}
 	u, err := envelope.Parse(resp)
 	if err != nil {
-		return fail(err.Error())
+		return reject(err.Error())
 	}
 	h := u.ClaimedHeader()
 	ev.Intent, ev.Sender, ev.Receiver, ev.MessageID, ev.KID = h.Intent, h.Sender, h.Receiver, h.MessageID, u.KID()
 	switch {
 	case h.Sender != req.Receiver:
-		return fail("response is from " + h.Sender + ", not " + req.Receiver)
+		return reject("response is from " + h.Sender + ", not " + req.Receiver)
 	case h.Receiver != n.cfg.Domain:
-		return fail("response is addressed to " + h.Receiver)
+		return reject("response is addressed to " + h.Receiver)
 	case h.InReplyTo == nil || *h.InReplyTo != req.MessageID:
-		return fail("response does not answer this message")
+		return reject("response does not answer this message")
 	case h.CorrelationID != req.CorrelationID:
-		return fail("response is from another conversation")
+		return reject("response is from another conversation")
 	case h.Intent != intents.Error && !slices.Contains(expect, h.Intent):
-		return fail("unexpected response intent " + h.Intent)
+		return reject("unexpected response intent " + h.Intent)
 	}
 	v, err := n.cfg.Keys.Key(ctx, u.Sender(), u.KID())
 	if err != nil {
-		return fail(err.Error())
+		return reject(err.Error())
 	}
 	env, err := u.Verify(v)
 	if err != nil {
-		return fail(err.Error())
+		return reject(err.Error())
 	}
 	ev.Verified = true
 	sent, err := env.Header.SentTime()
 	if err != nil {
-		return fail(err.Error())
+		return reject(err.Error())
 	}
 	if skew := n.cfg.Now().Sub(sent); skew > n.cfg.MaxSkew || skew < -n.cfg.MaxSkew {
-		return fail(fmt.Sprintf("response sentAt is %v from now", skew.Round(time.Second)))
+		return reject(fmt.Sprintf("response sentAt is %v from now", skew.Round(time.Second)))
 	}
 	body, err := intents.Decode(env)
 	if err != nil {
-		return fail(err.Error())
+		return reject(err.Error())
 	}
 	ev.Outcome, ev.Time = "response", n.cfg.Now()
-	n.cfg.Observer(ev)
+	n.observe(ctx, ev)
 	if e, ok := body.(*intents.ErrorBody); ok {
 		return &Request{Envelope: env, Body: body}, &RemoteError{Code: e.Code, Detail: e.Detail, Retryable: e.Retryable}
 	}

@@ -900,3 +900,18 @@ What each milestone also carries:
 | Production key management | Key rotation via multiple `kid`s in the profile; HSM/KMS-backed signing (a `sig.Signer` implementation) |
 | Post-quantum signatures | ML-DSA-65 (FIPS 204) as a second `alg` once Go exposes it publicly; see [A.2](#a2-identity-keys-and-trust-design-decisions) |
 | Persistence | Replace in-memory stores |
+
+### A.16 Telemetry (OpenTelemetry)
+
+Tracking issue #49. Traces first, then metrics; off unless configured, so CI and local runs need nothing.
+
+**Traces in a node** (`internal/node`, through `node.Config.Tracer`; the global provider records nothing until telemetry is set up):
+
+- Each inbound message is one trace, `ulp.ingress` (a server span), with a child per pipeline step in order: `ulp.parse`, `ulp.verify` (with `ulp.key.resolve`, which covers a profile fetch on a cache miss), `ulp.replay` (freshness and replay), `ulp.decode`, `ulp.authorize` (`ulp.decision`: allowed, or denied with its `ulp.code`), `ulp.handle` (the handler's own spans nest under it), and `ulp.reply.seal`. A step that refuses the message ends its span as an error (a panicking handler's span too), and the root carries the refusal code (or the status `malformed`); steps after a refusal never start, so a trace shows where the message stopped. Until `ulp.verified` is true, the root's sender, intent, kid and message ID are the unverified claim.
+- Each outbound exchange (a booking, an inquiry, a push) is `ulp.egress` (a client span) with `ulp.response` under it for the checks on the answer. One started inside a handler nests under that handler's span.
+- **Attributes:** `ulp.direction`, `ulp.intent`, `ulp.sender`, `ulp.receiver`, `ulp.via`, `ulp.message_id`, `ulp.kid`, `ulp.verified`, `ulp.outcome`, `ulp.code`, and `ulp.reason` (the internal reason, bounded to 256 bytes; telemetry goes only to our own backend). A reason for refusing an invalid body may quote the offending field, as the log's does; a partner's refusal (`ulp.error`) is recorded by its code, never its free-text detail. `ulp.message_id` and `ulp.reason` are per message: fine on spans, never metric labels (#47).
+- **Never recorded:** bodies, questions, answers, prompts, keys, tokens.
+- The outbound transport gets the egress span's context, so the HTTP client's span and the propagated parent (#46) are `ulp.egress`.
+- `pkg/` takes no OpenTelemetry dependency: the spans live in `internal/node`, around `pkg/`'s calls.
+
+Next: model and tool spans (GenAI conventions, #45), propagation between nodes in HTTP headers with a partner's context treated as untrusted (#46), metrics (#47), and export configuration with a local viewer for the demo and Cloud Trace when hosted (#48).

@@ -38,6 +38,8 @@ import (
 	"slices"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/discovery"
 	"github.com/go-steer/supercargo/pkg/envelope"
@@ -112,6 +114,9 @@ type Config struct {
 	A2A A2APoster
 	// Observer receives every event. Nil discards them.
 	Observer Observer
+	// Tracer records the pipeline's spans. Nil uses the global
+	// TracerProvider, which records nothing unless telemetry is set up.
+	Tracer trace.Tracer
 	// Now replaces time.Now (tests).
 	Now func() time.Time
 }
@@ -120,6 +125,7 @@ type Config struct {
 type Node struct {
 	cfg     Config
 	profile []byte
+	tracer  trace.Tracer
 }
 
 // New validates cfg and returns a Node.
@@ -161,7 +167,7 @@ func New(cfg Config) (*Node, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	n := &Node{cfg: cfg}
+	n := &Node{cfg: cfg, tracer: defaultTracer(cfg.Tracer)}
 	p, err := n.buildProfile()
 	if err != nil {
 		return nil, err
