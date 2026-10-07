@@ -59,7 +59,12 @@ demo_setup() {
     [[ $ULP_OTEL_ENDPOINT =~ ^[A-Za-z0-9.:/_-]+$ ]] || { echo "demo_setup: ULP_OTEL_ENDPOINT must be host:port or an http URL" >&2; return 1; }
     # Both nodes export to the same viewer, so each continues the other's
     # traces: one trace from Cymbal's ask through Ocean Blue's answer.
-    telemetry="telemetry: { endpoint: \"$ULP_OTEL_ENDPOINT\", insecure: true, trustPeers: [ocean-blue.example, cymbal-shoes.example] }"
+    local metrics=""
+    if [[ -n "${ULP_OTEL_METRICS_ENDPOINT:-}" ]]; then
+      [[ $ULP_OTEL_METRICS_ENDPOINT =~ ^[A-Za-z0-9.:/_-]+$ ]] || { echo "demo_setup: ULP_OTEL_METRICS_ENDPOINT must be host:port or an http URL" >&2; return 1; }
+      metrics=", metricsEndpoint: \"$ULP_OTEL_METRICS_ENDPOINT\", metricInterval: 10s"
+    fi
+    telemetry="telemetry: { endpoint: \"$ULP_OTEL_ENDPOINT\", insecure: true, trustPeers: [ocean-blue.example, cymbal-shoes.example]$metrics }"
   fi
   chmod 700 "$dir"
   [[ -f "$dir/ob.pem" ]] || "$dir/bin/ulpnode" keygen --kid ob-demo-1 --out "$dir/ob.pem" >/dev/null

@@ -30,6 +30,9 @@ import (
 	"slices"
 	"time"
 
+	"go.opentelemetry.io/otel"
+
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
@@ -75,6 +78,9 @@ type App struct {
 	Activity *activity.Bus
 	// Summarizer writes the shipper's alert notifications.
 	Summarizer *shipper.Summarizer
+
+	metrics *telemetry.Metrics
+	gauges  metric.Registration
 
 	// The operator's push path and simulator, and the presenter's control
 	// API (nil unless configured).
@@ -138,6 +144,13 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	// The log is the activity stream's first reader: what the log says and
 	// what a live client sees are the same entries.
 	a.Activity.Sink(activity.SlogSink(logger))
+	// So are the metrics (recorded only when telemetry is set up).
+	metrics, err := telemetry.NewMetrics(otel.Meter("github.com/go-steer/supercargo/internal/app"), cfg.Partners)
+	if err != nil {
+		return nil, err
+	}
+	a.Activity.Sink(metrics.Observe)
+	a.metrics = metrics
 	handlers := map[string]node.Handler{}
 	if cfg.Role == config.RoleOperator {
 		if err := a.operatorRole(handlers); err != nil {
@@ -283,6 +296,9 @@ func (a *App) shutdown() {
 	}
 	// End the activity streams: http.Server.Shutdown waits for every
 	// connection to go idle, and a stream never would.
+	if a.gauges != nil {
+		_ = a.gauges.Unregister()
+	}
 	if a.Summarizer != nil {
 		// Before the bus: what is still queued is summarized from the
 		// template and logged.
@@ -307,6 +323,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 			a.Activity.Publish(activity.Entry{Kind: activity.KindPush,
 				Push: &activity.Push{Booking: ref, ID: id, Problem: "dropped", Error: err.Error()}})
 		},
+		OnRetry: func(string, string) { a.metrics.Retry() },
 	}
 	a.Simulator = &operator.Simulator{Publisher: a.Publisher, HoursPerSecond: cfg.Simulator.HoursPerSecond,
 		OnError: func(ref string, err error) {
@@ -315,6 +332,11 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 		},
 		OnPublish: func(ref string, body intents.Body) { a.record(activity.ActionPublished, ref, body) },
 	}
+	reg, err := telemetry.Gauges(otel.Meter("github.com/go-steer/supercargo/internal/app"), a.Publisher.Pending, a.Simulator.Active)
+	if err != nil {
+		return err
+	}
+	a.gauges = reg
 	deny := map[string]bool{}
 	for _, d := range o.Deny {
 		deny[d] = true

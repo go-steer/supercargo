@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -169,16 +170,19 @@ func TestRetryClassification(t *testing.T) {
 			}
 		})
 	}
-	// A transient failure, then success: delivered, not dropped.
+	// A transient failure, then success: delivered, not dropped, and the
+	// retry reported.
 	f := &fakePusher{script: []error{&rest.TransportError{Err: errors.New("reset")}}}
 	d := &drops{}
 	p := publisher(f, d)
+	var retries atomic.Int32
+	p.OnRetry = func(string, string) { retries.Add(1) }
 	defer p.Close()
 	_ = p.Publish(subscribed(intents.TnTEvent), ev("EV-1"))
 	waitFor(t, func() bool { return len(f.attempts()) == 2 })
 	time.Sleep(10 * time.Millisecond)
-	if len(d.list()) != 0 {
-		t.Errorf("a push delivered on retry was dropped")
+	if len(d.list()) != 0 || retries.Load() != 1 {
+		t.Errorf("a push delivered on retry was dropped, or %d retries reported", retries.Load())
 	}
 	// Each attempt is a new message.
 	f.mu.Lock()
@@ -236,6 +240,9 @@ func TestQueueFullDrops(t *testing.T) {
 	_ = p.Publish(b, ev("EV-1")) // taken by the worker, which blocks
 	<-f.entered
 	_ = p.Publish(b, ev("EV-2")) // fills the queue
+	if n := p.Pending(); n != 1 {
+		t.Errorf("Pending = %d, want 1", n)
+	}
 	if err := p.Publish(b, ev("EV-3")); !errors.Is(err, ErrNotQueued) {
 		t.Errorf("Publish into a full queue = %v, want ErrNotQueued", err)
 	}

@@ -320,7 +320,13 @@ func TestSeverity(t *testing.T) {
 func TestStartRejects(t *testing.T) {
 	s := newSimulated(t)
 	s.sim.MaxTimelines = 1
+	if s.sim.Active() != 0 {
+		t.Error("voyages before any booking")
+	}
 	ref := s.book(t, 1)
+	if s.sim.Active() != 1 {
+		t.Errorf("Active = %d, want 1", s.sim.Active())
+	}
 	b, _ := s.svc.Bookings.Get("ocean-blue.example", ref)
 	if err := s.sim.Start(b); err == nil {
 		t.Error("a second voyage for the same booking started")

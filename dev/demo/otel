@@ -13,18 +13,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# A local trace viewer for the demo (docs/DESIGN.md, A.16): Jaeger, which
-# takes OTLP directly, in a container.
+# A local trace and metrics viewer for the demo (docs/DESIGN.md, A.16):
+# Jaeger and Prometheus, which both take OTLP directly, in containers.
 #
-#   dev/demo/otel up     # start it; then run the demo with
-#                        # ULP_OTEL_ENDPOINT=localhost:4318 and open the UI
-#   dev/demo/otel down   # stop it (traces are kept in memory only)
+#   dev/demo/otel up     # start them; then run the demo with
+#                        # ULP_OTEL_ENDPOINT=localhost:4318 and
+#                        # ULP_OTEL_METRICS_ENDPOINT=http://localhost:9090/api/v1/otlp/v1/metrics
+#   dev/demo/otel down   # stop them (everything is kept in memory only)
 #
-# Environment: OTEL_UI_PORT (16686), OTEL_OTLP_PORT (4318), JAEGER_IMAGE.
+# Environment: OTEL_UI_PORT (16686), OTEL_OTLP_PORT (4318), PROM_PORT
+# (9090), JAEGER_IMAGE, PROM_IMAGE.
 set -euo pipefail
 
 name=supercargo-jaeger
+prom=supercargo-prometheus
 image="${JAEGER_IMAGE:-cr.jaegertracing.io/jaegertracing/jaeger:2.11.0}"
+prom_image="${PROM_IMAGE:-prom/prometheus:v3.7.2}"
+prom_port="${PROM_PORT:-9090}"
 ui="${OTEL_UI_PORT:-16686}"
 otlp="${OTEL_OTLP_PORT:-4318}"
 
@@ -34,12 +39,17 @@ up)
   docker rm -f "$name" >/dev/null 2>&1 || true
   # Bound to localhost only: the viewer has no authentication.
   docker run -d --rm --name "$name" -p "127.0.0.1:$ui:16686" -p "127.0.0.1:$otlp:4318" "$image" >/dev/null
+  docker rm -f "$prom" >/dev/null 2>&1 || true
+  docker run -d --rm --name "$prom" -p "127.0.0.1:$prom_port:9090" "$prom_image" \
+    --config.file=/etc/prometheus/prometheus.yml --web.enable-otlp-receiver >/dev/null
   echo "Jaeger is up: the UI at http://localhost:$ui, OTLP/HTTP at localhost:$otlp."
-  echo "Run the demo with:  ULP_OTEL_ENDPOINT=localhost:$otlp dev/demo/hello-ulp --tmux"
+  echo "Prometheus is up: the UI at http://localhost:$prom_port (try ulp_envelopes_total)."
+  echo "Run the demo with:"
+  echo "  ULP_OTEL_ENDPOINT=localhost:$otlp ULP_OTEL_METRICS_ENDPOINT=http://localhost:$prom_port/api/v1/otlp/v1/metrics dev/demo/hello-ulp --tmux"
   ;;
 down)
-  docker rm -f "$name" >/dev/null 2>&1 || true
-  echo "Jaeger is stopped."
+  docker rm -f "$name" "$prom" >/dev/null 2>&1 || true
+  echo "Jaeger and Prometheus are stopped."
   ;;
 *)
   echo "usage: dev/demo/otel up|down" >&2

@@ -21,7 +21,12 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	noopmetric "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/go-steer/supercargo/pkg/envelope"
+	"github.com/go-steer/supercargo/pkg/transport/rest"
 )
 
 // Tracing (docs/DESIGN.md, A.16): one trace per inbound message, from
@@ -129,6 +134,43 @@ func fail(span trace.Span, err error) {
 		span.SetStatus(codes.Error, bounded(err.Error()))
 	}
 	span.End()
+}
+
+// newDuration is the histogram of the whole pipeline's latency, per
+// message, on meter (nil: the global provider's).
+func newDuration(meter metric.Meter) metric.Float64Histogram {
+	if meter == nil {
+		meter = otel.Meter(tracerName)
+	}
+	h, err := meter.Float64Histogram("ulp.pipeline.duration", metric.WithUnit("s"),
+		metric.WithDescription("Time from an inbound message's arrival to the node's answer, by intent and answer."))
+	if err != nil {
+		h, _ = noopmetric.Meter{}.Float64Histogram("ulp.pipeline.duration")
+	}
+	return h
+}
+
+// recordDuration records a message's pipeline latency. The intent label
+// is the claimed one only if the node serves it ("other" otherwise), and
+// the answer is its HTTP status class: no label a stranger can multiply.
+func (n *Node) recordDuration(ctx context.Context, start time.Time, u *envelope.Unverified, res rest.Result) {
+	intent := "other"
+	if u != nil {
+		if _, ok := n.cfg.Handlers[u.ClaimedHeader().Intent]; ok {
+			intent = u.ClaimedHeader().Intent
+		}
+	}
+	answer := "reply"
+	switch {
+	case res.Status >= 500:
+		answer = "5xx"
+	case res.Status >= 400:
+		answer = "4xx"
+	case res.Response == nil:
+		answer = "no_reply"
+	}
+	n.duration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(attribute.String("ulp.intent", intent),
+		attribute.String("ulp.answer", answer)))
 }
 
 func defaultTracer(t trace.Tracer) trace.Tracer {

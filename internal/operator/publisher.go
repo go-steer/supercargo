@@ -67,6 +67,9 @@ type Publisher struct {
 	// Close. A dropped push stays in the log and its ID stays used: the
 	// subscriber catches up by asking (ulp.tnt.inquiry), not by a republish.
 	OnDrop func(booking, id string, err error)
+	// OnRetry learns about every push about to be tried again, for the
+	// node's metrics. Optional; the same rules as OnDrop.
+	OnRetry func(booking, id string)
 
 	once   sync.Once
 	ctx    context.Context
@@ -250,10 +253,25 @@ func (p *Publisher) deliver(item push) {
 			return
 		case <-time.After(p.Backoff[attempt]):
 		}
+		if p.OnRetry != nil {
+			p.OnRetry(b.Ref, item.id)
+		}
 	}
 	if err != nil {
 		p.drop(b.Ref, item.id, err)
 	}
+}
+
+// Pending is the number of pushes queued and not yet being delivered.
+func (p *Publisher) Pending() int {
+	p.init()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	for _, q := range p.queues {
+		n += len(q)
+	}
+	return n
 }
 
 func (p *Publisher) drop(booking, id string, err error) {

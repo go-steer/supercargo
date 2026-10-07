@@ -91,6 +91,12 @@ type Telemetry struct {
 	// Endpoint is the collector: host:port (e.g. localhost:4318) or, for
 	// http, a URL. Empty leaves it to OTEL_EXPORTER_OTLP_*.
 	Endpoint string `yaml:"endpoint"`
+	// MetricsEndpoint, if set, receives metrics instead of Endpoint (a
+	// Prometheus with its OTLP receiver, say): host:port or, for http, a
+	// URL (no path: /v1/metrics). One insecure setting covers both.
+	MetricsEndpoint string `yaml:"metricsEndpoint"`
+	// MetricInterval is how often metrics are exported (default 60s).
+	MetricInterval time.Duration `yaml:"metricInterval"`
 	// Insecure sends without TLS (a local collector).
 	Insecure bool `yaml:"insecure"`
 	// SampleRatio is the share of traces kept, 0 to 1 (default 1).
@@ -338,16 +344,22 @@ func (c *Config) validate() error {
 		default:
 			return fmt.Errorf("telemetry: protocol %q is not http or grpc", t.Protocol)
 		}
-		if t.Endpoint != "" && !validHostPort(t.Endpoint, false) {
-			u, err := url.Parse(t.Endpoint)
+		for _, e := range []string{t.Endpoint, t.MetricsEndpoint} {
+			if e == "" || validHostPort(e, false) {
+				continue
+			}
+			u, err := url.Parse(e)
 			if err != nil || t.Protocol != "http" || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
 				u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-				return fmt.Errorf("telemetry: endpoint %q is not host:port (or, for http, an http(s) URL without credentials or query)", t.Endpoint)
+				return fmt.Errorf("telemetry: endpoint %q is not host:port (or, for http, an http(s) URL without credentials or query)", e)
 			}
 			// A URL's scheme decides TLS: it must agree with insecure.
 			if (u.Scheme == "http") != t.Insecure {
-				return fmt.Errorf("telemetry: endpoint %q and insecure: %v disagree (http needs insecure: true, https insecure: false)", t.Endpoint, t.Insecure)
+				return fmt.Errorf("telemetry: endpoint %q and insecure: %v disagree (http needs insecure: true, https insecure: false)", e, t.Insecure)
 			}
+		}
+		if t.MetricInterval < 0 {
+			return fmt.Errorf("telemetry: metricInterval %v is negative", t.MetricInterval)
 		}
 		for _, d := range t.TrustPeers {
 			if !envelope.ValidDomain(d) {

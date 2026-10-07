@@ -18,13 +18,18 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
@@ -36,10 +41,10 @@ import (
 type Shutdown func(context.Context) error
 
 // Enabled reports whether c, or the standard environment, asks for
-// export. The standard off switches (OTEL_SDK_DISABLED=true,
-// OTEL_TRACES_EXPORTER=none) win over both.
+// export. The standard off switches win over both: OTEL_SDK_DISABLED=true,
+// or OTEL_TRACES_EXPORTER and OTEL_METRICS_EXPORTER both none.
 func Enabled(c *config.Telemetry, getenv func(string) string) bool {
-	if strings.EqualFold(getenv("OTEL_SDK_DISABLED"), "true") || strings.EqualFold(getenv("OTEL_TRACES_EXPORTER"), "none") {
+	if strings.EqualFold(getenv("OTEL_SDK_DISABLED"), "true") || (none(getenv, "TRACES") && none(getenv, "METRICS")) {
 		return false
 	}
 	if c != nil {
@@ -53,20 +58,16 @@ func Enabled(c *config.Telemetry, getenv func(string) string) bool {
 	return false
 }
 
-// Setup installs the global TracerProvider for a node: OTLP export per c
-// (and the OTEL_* environment), named service. With nothing configured it
-// installs nothing and returns a no-op Shutdown: the node's spans are
-// then never recorded.
+// Setup installs the global TracerProvider and MeterProvider for a node:
+// OTLP export per c (and the OTEL_* environment), named service. With
+// nothing configured it installs nothing and returns a no-op Shutdown:
+// the node's spans and metrics are then never recorded.
 func Setup(ctx context.Context, c *config.Telemetry, service string) (Shutdown, error) {
 	if !Enabled(c, os.Getenv) {
 		return func(context.Context) error { return nil }, nil
 	}
 	if c == nil {
 		c = &config.Telemetry{Protocol: protocolFromEnv()}
-	}
-	exp, err := exporter(ctx, c)
-	if err != nil {
-		return nil, err
 	}
 	if c.ServiceName != "" {
 		service = c.ServiceName
@@ -77,10 +78,96 @@ func Setup(ctx context.Context, c *config.Telemetry, service string) (Shutdown, 
 	if c.SampleRatio != nil {
 		ratio = *c.SampleRatio
 	}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res),
-		sdktrace.WithSampler(sampler(ratio)))
-	otel.SetTracerProvider(tp)
-	return tp.Shutdown, nil
+	var shutdowns []Shutdown
+	if !none(os.Getenv, "TRACES") {
+		exp, err := exporter(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res),
+			sdktrace.WithSampler(sampler(ratio)))
+		otel.SetTracerProvider(tp)
+		shutdowns = append(shutdowns, tp.Shutdown)
+	}
+	if !none(os.Getenv, "METRICS") {
+		mexp, err := metricExporter(ctx, c)
+		if err != nil {
+			_ = all(shutdowns)(ctx)
+			return nil, err
+		}
+		var ropts []sdkmetric.PeriodicReaderOption
+		if c.MetricInterval > 0 {
+			ropts = append(ropts, sdkmetric.WithInterval(c.MetricInterval))
+		}
+		mp := sdkmetric.NewMeterProvider(sdkmetric.WithResource(res), sdkmetric.WithReader(sdkmetric.NewPeriodicReader(mexp, ropts...)))
+		otel.SetMeterProvider(mp)
+		shutdowns = append(shutdowns, mp.Shutdown)
+	}
+	return all(shutdowns), nil
+}
+
+// none reports whether OTEL_<SIGNAL>_EXPORTER is "none".
+func none(getenv func(string) string, signal string) bool {
+	return strings.EqualFold(getenv("OTEL_"+signal+"_EXPORTER"), "none")
+}
+
+// all shuts every provider down at once, each with the whole budget: a
+// trace collector that hangs mustn't cost the last metrics.
+func all(shutdowns []Shutdown) Shutdown {
+	return func(ctx context.Context) error {
+		errs := make([]error, len(shutdowns))
+		var wg sync.WaitGroup
+		for i, s := range shutdowns {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs[i] = s(ctx)
+			}()
+		}
+		wg.Wait()
+		return errors.Join(errs...)
+	}
+}
+
+// metricExporter exports metrics to c.MetricsEndpoint, else to the
+// traces' collector.
+func metricExporter(ctx context.Context, c *config.Telemetry) (sdkmetric.Exporter, error) {
+	endpoint := c.MetricsEndpoint
+	if endpoint == "" {
+		endpoint = c.Endpoint
+	}
+	if c.Protocol == "grpc" {
+		var opts []otlpmetricgrpc.Option
+		if endpoint != "" {
+			opts = append(opts, otlpmetricgrpc.WithEndpoint(endpoint))
+		}
+		if c.Insecure {
+			opts = append(opts, otlpmetricgrpc.WithInsecure())
+		}
+		return otlpmetricgrpc.New(ctx, opts...)
+	}
+	var opts []otlpmetrichttp.Option
+	switch {
+	case strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://"):
+		u, err := url.Parse(endpoint)
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case u.Path == "" || u.Path == "/":
+			u.Path = "/v1/metrics"
+		case c.MetricsEndpoint == "" && strings.HasSuffix(u.Path, "/v1/traces"):
+			// The traces' collector, behind any prefix: its metrics path.
+			u.Path = strings.TrimSuffix(u.Path, "/v1/traces") + "/v1/metrics"
+		}
+		return otlpmetrichttp.New(ctx, otlpmetrichttp.WithEndpointURL(u.String()))
+	case endpoint != "":
+		opts = append(opts, otlpmetrichttp.WithEndpoint(endpoint))
+	}
+	if c.Insecure {
+		opts = append(opts, otlpmetrichttp.WithInsecure())
+	}
+	return otlpmetrichttp.New(ctx, opts...)
 }
 
 // sampler keeps ratio of traces, by trace ID. A local parent's decision
