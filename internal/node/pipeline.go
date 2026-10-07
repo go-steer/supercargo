@@ -43,11 +43,23 @@ import (
 // receiver of their choosing) without holding a key the node trusts. Once
 // verified, refusals are signed ulp.error replies.
 func (n *Node) Process(ctx context.Context, msg []byte) (res rest.Result) {
-	ctx, span := n.start(ctx, "ulp.ingress", trace.WithSpanKind(trace.SpanKindServer))
-	defer span.End()
-	_, ps := n.start(ctx, "ulp.parse")
+	// The trace starts once the claimed sender is known, which decides
+	// whether a partner's trace context may be our parent (ingressTrace);
+	// the parse is recorded from the start.
+	start := time.Now()
 	u, err := envelope.Parse(msg)
-	fail(ps, err)
+	parsed := time.Now()
+	var sender string
+	if err == nil {
+		sender = u.ClaimedHeader().Sender
+	}
+	ctx, span := n.ingressTrace(ctx, sender, start)
+	defer span.End()
+	_, ps := n.start(ctx, "ulp.parse", trace.WithTimestamp(start))
+	if err != nil {
+		ps.SetStatus(codes.Error, bounded(err.Error()))
+	}
+	ps.End(trace.WithTimestamp(parsed))
 	if err != nil {
 		n.observe(ctx, Event{Time: n.cfg.Now(), Direction: "in", Outcome: "malformed", Reason: err.Error()})
 		return rest.Result{Status: http.StatusBadRequest}

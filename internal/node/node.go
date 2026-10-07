@@ -117,6 +117,10 @@ type Config struct {
 	// Tracer records the pipeline's spans. Nil uses the global
 	// TracerProvider, which records nothing unless telemetry is set up.
 	Tracer trace.Tracer
+	// TrustTrace reports whether a sender's trace context (from the HTTP
+	// headers, WithRemoteTrace) may be continued rather than only linked
+	// to. Nil trusts nobody.
+	TrustTrace func(domain string) bool
 	// Now replaces time.Now (tests).
 	Now func() time.Time
 }
