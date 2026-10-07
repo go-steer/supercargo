@@ -51,7 +51,7 @@ func (f *fakeSource) Fetch(ctx context.Context, d string) (*Document, error) {
 	}
 	m := profileMap(f.t, kids...)
 	m["party"].(map[string]any)["domain"] = d
-	for _, k := range []string{"rest", "a2a"} {
+	for _, k := range []string{"rest", "a2a", "mcp"} {
 		m["transports"].(map[string]any)[k] = "https://" + d + "/" + k
 	}
 	return ParseProfile(encode(f.t, m), ParseOptions{Domain: d})

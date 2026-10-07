@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- Discovery extras from the ULP payload specification (#67, tracking #68): profiles may carry `capabilities` (reverse-DNS names with versions, an informative `spec_url` and tags such as `ulp:dcsa:track-and-trace` and `ulp:transport:rest`), `supported_dialects` and `transports.mcp`, each strictly validated. Nodes publish capabilities for the intents they accept and every dialect they decode; the shipper's profile view (and the assistant's `get_operator_profile`) shows them. In `pkg/`: `discovery.Capability`, `Profile.Capabilities`, `Profile.SupportedDialects`, `Transports.MCP`, `Document.Capability`, `Document.SupportsDialect`, `MaxCapabilities`, `MaxTags` and `MaxDialects`, and `intents.DialectFor` and `intents.Dialects`.
+
 - The structured status pull (#65): `ulp.ocean.tnt.request` / `ulp.ocean.tnt.response` (the standard payloads, DCSA Track & Trace status with dialect `DCSA_TNT 2.2.0`). Only the booking's shipper may ask, and no model is involved: the operator reports the DCSA status, vessel, ports, current location, ETA and events, and the shipper marks the events it never received as pushes. `ulpnode status`, `POST /status` on the control API, and the assistant's `get_status` tool. `smoke/push` checks it.
 
 ### Changed

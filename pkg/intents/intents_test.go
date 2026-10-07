@@ -458,3 +458,17 @@ func TestConfirmationAccessors(t *testing.T) {
 		t.Error("accessors without an eBL aren't empty")
 	}
 }
+
+func TestDialects(t *testing.T) {
+	if got := Dialects(); len(got) != 2 || got[0] != "DCSA_OCEAN_CONTAINER" || got[1] != "DCSA_TNT" {
+		t.Errorf("Dialects() = %v", got)
+	}
+	if d, ok := DialectFor(TnTEvent); !ok || d != DialectDCSATnT {
+		t.Errorf("DialectFor(%s) = %+v, %v", TnTEvent, d, ok)
+	}
+	for _, in := range []string{BookingRequest, "ulp.nope"} {
+		if _, ok := DialectFor(in); ok {
+			t.Errorf("DialectFor(%s) found one", in)
+		}
+	}
+}

@@ -22,6 +22,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -50,8 +51,11 @@ func oceanBlueProfile(t *testing.T) *discovery.Document {
 		ProtocolVersion: envelope.Version,
 		Party:           discovery.Party{Domain: "ocean-blue.example", Name: "Ocean Blue", Roles: []string{"operator"}},
 		Services:        []discovery.Service{{Name: "ulp.freight", Intents: []string{"ulp.ocean.booking.request", "ulp.tnt.inquiry"}, Extensions: []string{}}},
-		Transports:      discovery.Transports{REST: "https://ocean-blue.example/ulp", A2A: "https://ocean-blue.example/a2a"},
-		Keys:            []json.RawMessage{j},
+		Capabilities: []discovery.Capability{{Name: "dev.ulp.logistics.tracking", Version: "1", Tags: []string{"ulp:service", "ulp:transport:rest"}},
+			{Name: "dev.ulp.logistics.quote", Version: "1"}},
+		SupportedDialects: []string{"DCSA_TNT"},
+		Transports:        discovery.Transports{REST: "https://ocean-blue.example/ulp", A2A: "https://ocean-blue.example/a2a", MCP: "https://ocean-blue.example/mcp"},
+		Keys:              []json.RawMessage{j},
 	})
 	doc, err := discovery.ParseProfile(b, discovery.ParseOptions{Domain: "ocean-blue.example"})
 	if err != nil {
@@ -131,7 +135,8 @@ func TestControlReads(t *testing.T) {
 	var pr ProfileResponse
 	if code := get(t, h, "/profile/ocean-blue.example", &pr); code != http.StatusOK || pr.Profile == nil ||
 		pr.Profile.Name != "Ocean Blue" || pr.Profile.A2A == "" || len(pr.Profile.Keys) != 1 || pr.Profile.Keys[0] != "ob-1" ||
-		len(pr.Profile.Intents) != 2 {
+		len(pr.Profile.Intents) != 2 || pr.Profile.MCP == "" || !slices.Equal(pr.Profile.Dialects, []string{"DCSA_TNT"}) ||
+		!slices.Equal(pr.Profile.Capabilities, []string{"dev.ulp.logistics.tracking (ulp:service, ulp:transport:rest)", "dev.ulp.logistics.quote"}) {
 		t.Errorf("profile: HTTP %d %+v", code, pr.Profile)
 	}
 	if code := get(t, h, "/profile/Not%20A%20Domain", &pr); code != http.StatusBadRequest {

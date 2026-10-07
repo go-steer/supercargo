@@ -14,7 +14,10 @@ book containers. You prepare; they decide.
   `get_operator_profile`. Our node verifies it.
 - Say in plain words what the carrier supports: `ulp.ocean.booking.request` is
   container booking, `ulp.tnt.event` track & trace events, `ulp.tnt.alert`
-  proactive alerts, `ulp.tnt.inquiry` questions about a booking.
+  proactive alerts, `ulp.tnt.inquiry` questions about a booking,
+  `ulp.ocean.tnt.request` a structured status report. Its capabilities and
+  supported dialects (such as `DCSA_TNT`, DCSA Track & Trace) say the same
+  in standard terms; the intents are what it actually accepts.
 - Name the signing keys it publishes: they are why its messages can be
   verified.
 - If the user gives a company's name but no domain, ask for the domain.

@@ -300,7 +300,7 @@ It is deliberately not an "allow private networks" switch: only the listed domai
 
 ### A.3 Discovery documents
 
-**`GET /.well-known/ulp`** (extends the v0.1 profile; camelCase, matching the code):
+**`GET /.well-known/ulp`** (extends the v0.1 profile; camelCase, matching the code, except the members adopted from the ULP payload specification's discovery document, which keep its snake_case names):
 
 ```json
 {
@@ -311,6 +311,14 @@ It is deliberately not an "allow private networks" switch: only the listed domai
     "intents": ["ulp.ocean.booking.request", "ulp.tnt.event", "ulp.tnt.alert", "ulp.tnt.inquiry"],
     "extensions": []
   }],
+  "capabilities": [
+    { "name": "dev.ulp.logistics.shipment", "version": "0.3-demo",
+      "tags": ["ulp:service", "ulp:dcsa:container-booking", "ulp:transport:rest"] },
+    { "name": "dev.ulp.logistics.tracking", "version": "0.3-demo",
+      "spec_url": "https://dcsa.org/standards/track-and-trace",
+      "tags": ["ulp:service", "ulp:dcsa:track-and-trace", "ulp:transport:rest", "ulp:transport:a2a"] }
+  ],
+  "supported_dialects": ["DCSA_OCEAN_CONTAINER", "DCSA_TNT"],
   "transports": {
     "a2a": "https://ocean-blue.example/a2a",
     "rest": "https://ocean-blue.example/ulp"
@@ -333,6 +341,10 @@ Fetching and validating a profile:
 - **The document.** `protocolVersion` is the node's, `party.domain` is the domain it was fetched from, the roles are known ones, and there is at least one service.
   - **Endpoints.** `transports.rest` is required, because every party receives envelopes over REST. Every endpoint is an `https` URL on the party's own domain (exactly, lowercase), with no port, userinfo, query or fragment. The standard port is the endpoint; in a local deployment the peer map says where that is.
   - **Keys.** 1–16 of them.
+  - **Capabilities** (optional, at most 32): a reverse-DNS `name` (unique), a `version` (1–32 of `[A-Za-z0-9._-]`), an optional informative `spec_url` (https, never fetched) and up to 32 unique `tags` of colon-separated lowercase words. They describe; `services[].intents` remain what a party accepts, and nothing is routed or authorized by a capability. Our nodes list `dev.ulp.logistics.shipment` (booking), `dev.ulp.logistics.tracking` (the status pull and the inquiry) and `dev.ulp.logistics.tracking.subscriber` (receiving events and alerts) for the intents they accept, tagged with their transports.
+  - **`supported_dialects`** (optional, at most 16): header dialect standards (`DCSA_TNT`, `DCSA_OCEAN_CONTAINER`), unique. Our nodes list every dialect they decode. Bodies without a dialect are ULP's own.
+  - **`transports.mcp`** (optional): the MCP endpoint, under the same endpoint rules. Our nodes don't publish one until the MCP binding exists.
+  - A registry (such as an API hub) may help a deployment find partners, but it is not protocol discovery: the profile at the domain is.
 - **Strict parsing, room to grow.** Members this version doesn't define are ignored, so profiles can grow. Duplicate members, and members that differ from a defined one only in case, are rejected.
 
 Shipper and receiver nodes publish the same document (with `roles: ["shipper"]` and only the intents they accept, e.g. `ulp.tnt.event` and `ulp.tnt.alert`), so operators can verify *their* signatures and push to them.
@@ -443,7 +455,7 @@ Handlers act on the verified payload bytes, so there is no canonicalization and 
 | Track & trace event | DCSA T&T event (`event_id`, `event_type`, `event_classifier_code`, `event_date_time`, `event_type_code`, `description`, `un_location_code`, …) | **adopted** as the body of `ulp.tnt.event` with dialect `DCSA_TNT` (#64) |
 | Track & trace status | `ulp.ocean.tnt.request` / `.response`, bodies `{ "tnt_request": … }` / `{ "tnt_response": … }` | **adopted**, under the inquiry's authorization (#65) |
 | Alert, inquiry, error, delegation, subscription | none | **ours**, as ULP extensions, renamed to snake_case for one convention across bodies |
-| Discovery | `capabilities[{name, version, spec_url, tags}]`, `transports.mcp`, no keys | the extras are **adopted additively**; `keys` stay (#67) |
+| Discovery | `capabilities[{name, version, spec_url, tags}]`, `supported_dialects`, `transports.mcp`, no keys | **adopted additively** in pf's names ([A.3](#a3-discovery-documents)); our `keys` and the rest of the profile stay (#67) |
 | A2A and MCP bindings | in-process shapes named after them | **ours**: the real protocols ([A.7](#a7-transport-bindings)) |
 
 Where pf's names differ from DCSA's published schemas (DCSA is camelCase, and splits event codes by event type), we follow pf and note the difference. Each body change is a protocol change: the golden vectors are regenerated in the PR that makes it. The intent table and bodies below are the current wire format. pf's eBL has no carrier booking reference, planned times or subscription, so the confirmation keeps those as ULP members beside the `ebl`.

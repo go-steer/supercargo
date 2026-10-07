@@ -57,11 +57,19 @@ func profileMap(t testing.TB, kids ...string) map[string]any {
 		"party":           map[string]any{"domain": domain, "name": "Ocean Blue", "roles": []any{"operator"}},
 		"services": []any{map[string]any{
 			"name":       "ulp.freight",
-			"intents":    []any{"ulp.booking.request", "ulp.tnt.event", "ulp.tnt.alert", "ulp.tnt.inquiry"},
+			"intents":    []any{"ulp.ocean.booking.request", "ulp.tnt.event", "ulp.tnt.alert", "ulp.tnt.inquiry"},
 			"extensions": []any{},
 		}},
-		"transports": map[string]any{"a2a": "https://ocean-blue.example/a2a", "rest": "https://ocean-blue.example/ulp"},
-		"keys":       keys,
+		"capabilities": []any{
+			map[string]any{"name": "dev.ulp.logistics.shipment", "version": "0.3-demo",
+				"tags": []any{"ulp:service", "ulp:dcsa:container-booking", "ulp:transport:rest"}},
+			map[string]any{"name": "dev.ulp.logistics.tracking", "version": "0.3-demo",
+				"spec_url": "https://dcsa.org/standards/track-and-trace", "tags": []any{"ulp:service", "ulp:transport:a2a"}},
+		},
+		"supported_dialects": []any{"DCSA_OCEAN_CONTAINER", "DCSA_TNT"},
+		"transports": map[string]any{"a2a": "https://ocean-blue.example/a2a", "rest": "https://ocean-blue.example/ulp",
+			"mcp": "https://ocean-blue.example/mcp"},
+		"keys": keys,
 	}
 }
 
@@ -96,6 +104,15 @@ func TestParseProfile(t *testing.T) {
 	if !d.Accepts("ulp.tnt.inquiry") || d.Accepts("ulp.payment") {
 		t.Error("Accepts disagrees with services")
 	}
+	if c, ok := d.Capability("dev.ulp.logistics.tracking"); !ok || c.SpecURL != "https://dcsa.org/standards/track-and-trace" || len(c.Tags) != 2 {
+		t.Errorf("Capability(tracking) = %+v, %v", c, ok)
+	}
+	if _, ok := d.Capability("dev.ulp.logistics.quote"); ok {
+		t.Error("Capability found one the profile doesn't list")
+	}
+	if !d.SupportsDialect("DCSA_TNT") || d.SupportsDialect("IATA") || d.Profile.Transports.MCP != "https://ocean-blue.example/mcp" {
+		t.Error("supported_dialects or transports.mcp misread")
+	}
 
 	// Members a later version adds are ignored; A2A is optional; http is
 	// accepted in insecure mode.
@@ -103,6 +120,9 @@ func TestParseProfile(t *testing.T) {
 	m["supportedSince"] = "2026"
 	m["party"].(map[string]any)["logo"] = "https://ocean-blue.example/logo.png"
 	delete(m["transports"].(map[string]any), "a2a")
+	delete(m["transports"].(map[string]any), "mcp")
+	delete(m, "capabilities")
+	delete(m, "supported_dialects")
 	m["transports"].(map[string]any)["rest"] = "http://ocean-blue.example/ulp"
 	if _, err := ParseProfile(encode(t, m), ParseOptions{Domain: domain, AllowHTTP: true}); err != nil {
 		t.Errorf("ParseProfile(grown, insecure): %v", err)
@@ -113,6 +133,14 @@ func TestParseProfileRejects(t *testing.T) {
 	party := func(m map[string]any) map[string]any { return m["party"].(map[string]any) }
 	transports := func(m map[string]any) map[string]any { return m["transports"].(map[string]any) }
 	service := func(m map[string]any) map[string]any { return m["services"].([]any)[0].(map[string]any) }
+	capability := func(m map[string]any) map[string]any { return m["capabilities"].([]any)[0].(map[string]any) }
+	many := func(n int, f func(i int) any) []any {
+		l := make([]any, n)
+		for i := range l {
+			l[i] = f(i)
+		}
+		return l
+	}
 	for _, tc := range []struct {
 		name string
 		edit func(m map[string]any)
@@ -149,6 +177,44 @@ func TestParseProfileRejects(t *testing.T) {
 		{"empty extension", func(m map[string]any) { service(m)["extensions"] = []any{""} }},
 		{"extension with tag characters", func(m map[string]any) { service(m)["extensions"] = []any{"x\U000E0041"} }},
 		{"a2a on another domain", func(m map[string]any) { transports(m)["a2a"] = "https://mallory.example/a2a" }},
+		{"mcp on another domain", func(m map[string]any) { transports(m)["mcp"] = "https://mallory.example/mcp" }},
+		{"mcp over http", func(m map[string]any) { transports(m)["mcp"] = "http://ocean-blue.example/mcp" }},
+		{"capability without name", func(m map[string]any) { delete(capability(m), "name") }},
+		{"capability name not reverse-DNS", func(m map[string]any) { capability(m)["name"] = "Shipment" }},
+		{"capability name with space", func(m map[string]any) { capability(m)["name"] = "dev.ulp.logistics shipment" }},
+		{"capability name too long", func(m map[string]any) { capability(m)["name"] = "dev." + strings.Repeat("a", 125) }},
+		{"duplicate capability", func(m map[string]any) { m["capabilities"] = []any{capability(m), capability(m)} }},
+		{"capability without version", func(m map[string]any) { delete(capability(m), "version") }},
+		{"capability version with space", func(m map[string]any) { capability(m)["version"] = "v 2" }},
+		{"spec_url over http", func(m map[string]any) { capability(m)["spec_url"] = "http://dcsa.org/x" }},
+		{"spec_url relative", func(m map[string]any) { capability(m)["spec_url"] = "/schemas/shipment.json" }},
+		{"spec_url with userinfo", func(m map[string]any) { capability(m)["spec_url"] = "https://a@dcsa.org/x" }},
+		{"spec_url too long", func(m map[string]any) { capability(m)["spec_url"] = "https://dcsa.org/" + strings.Repeat("p", 250) }},
+		{"tag without colon", func(m map[string]any) { capability(m)["tags"] = []any{"service"} }},
+		{"tag uppercase", func(m map[string]any) { capability(m)["tags"] = []any{"ULP:service"} }},
+		{"tag with bidi override", func(m map[string]any) { capability(m)["tags"] = []any{"ulp:service\u202e"} }},
+		{"tag too long", func(m map[string]any) { capability(m)["tags"] = []any{"ulp:" + strings.Repeat("a", 61)} }},
+		{"duplicate tag", func(m map[string]any) { capability(m)["tags"] = []any{"ulp:service", "ulp:service"} }},
+		{"too many tags", func(m map[string]any) {
+			capability(m)["tags"] = many(MaxTags+1, func(i int) any { return "ulp:t" + strings.Repeat("a", i) })
+		}},
+		{"too many capabilities", func(m map[string]any) {
+			m["capabilities"] = many(MaxCapabilities+1, func(i int) any {
+				return map[string]any{"name": "dev.ulp.c" + strings.Repeat("a", i), "version": "1"}
+			})
+		}},
+		{"capabilities not a list", func(m map[string]any) { m["capabilities"] = "dev.ulp.logistics.shipment" }},
+		{"lowercase dialect", func(m map[string]any) { m["supported_dialects"] = []any{"dcsa"} }},
+		{"dialect as object", func(m map[string]any) {
+			m["supported_dialects"] = []any{map[string]any{"standard": "DCSA_TNT", "version": "2.2.0"}}
+		}},
+		{"duplicate dialect", func(m map[string]any) { m["supported_dialects"] = []any{"DCSA_TNT", "DCSA_TNT"} }},
+		{"too many dialects", func(m map[string]any) {
+			m["supported_dialects"] = many(MaxDialects+1, func(i int) any { return "D" + strings.Repeat("A", i) })
+		}},
+		{"case variant capability member", func(m map[string]any) {
+			capability(m)["Spec_URL"] = "https://dcsa.org/x"
+		}},
 		{"no keys", func(m map[string]any) { m["keys"] = []any{} }},
 		{"too many keys", func(m map[string]any) {
 			var ks []any
