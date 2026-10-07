@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -319,10 +320,38 @@ func TestServeRejects(t *testing.T) {
 }
 
 func TestLogger(t *testing.T) {
-	for _, f := range []string{"text", "json"} {
-		if _, err := logger(f, &bytes.Buffer{}); err != nil {
+	for _, f := range []string{"text", "json", "pretty"} {
+		if _, err := logger(f, "dark", &bytes.Buffer{}); err != nil {
 			t.Errorf("logger(%s): %v", f, err)
 		}
+	}
+	if _, err := logger("pretty", "neon", &bytes.Buffer{}); err == nil {
+		t.Error("--log-theme neon accepted")
+	}
+	if _, err := logger("yaml", "dark", &bytes.Buffer{}); err == nil {
+		t.Error("--log-format yaml accepted")
+	}
+	// Pretty is coloured only on a terminal (TTY_FORCE stands in for one
+	// here), never on a dumb one or with NO_COLOR, and downsampled to what
+	// the terminal has.
+	for name, c := range map[string]struct {
+		env  []string
+		want bool
+	}{
+		"a file or pipe": {[]string{"TERM=xterm-256color"}, false},
+		"a terminal":     {[]string{"TTY_FORCE=1", "TERM=xterm-256color"}, true},
+		"dumb":           {[]string{"TTY_FORCE=1", "TERM=dumb"}, false},
+		"NO_COLOR":       {[]string{"TTY_FORCE=1", "TERM=xterm-256color", "NO_COLOR=1"}, false},
+	} {
+		if _, got := colorWriter(&bytes.Buffer{}, c.env); got != c.want {
+			t.Errorf("%s: colour %v, want %v", name, got, c.want)
+		}
+	}
+	var buf bytes.Buffer
+	w, _ := colorWriter(&buf, []string{"TTY_FORCE=1", "TERM=xterm-256color"})
+	_, _ = io.WriteString(w, "\x1b[38;2;33;123;254mx\x1b[m")
+	if strings.Contains(buf.String(), "38;2;") || !strings.Contains(buf.String(), "38;5;") {
+		t.Errorf("not downsampled to 256 colours: %q", buf.String())
 	}
 }
 

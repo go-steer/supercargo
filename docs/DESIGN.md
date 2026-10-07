@@ -846,6 +846,7 @@ ulp-demo/
 │   ├── assistant/        # the shipper assistant: tool loop, tools, drafts (LLM #1)
 │   ├── chatui/           # ulpchat's full-screen TUI (Bubble Tea v2)
 │   ├── ui/theme/         # colour tokens shared by the TUI, pretty logs and browser UI
+│   ├── prettylog/        # `--log-format pretty`: the node log for people (slog handler)
 │   ├── mcp/              # MCP server binding and client connectors (official MCP Go SDK)
 │   └── store/            # in-memory stores (+ optional JSON snapshot for reset)
 ├── deploy/
