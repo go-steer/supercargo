@@ -44,8 +44,9 @@ demo_ports() {
 demo_setup() {
   local dir=$1 hps=$2 root llm
   root="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
-  # ULP_LLM=anthropic answers inquiries with Claude (the key comes from
-  # ANTHROPIC_API_KEY); the default is the fake model, which needs no key.
+  # ULP_LLM=anthropic answers inquiries and summarizes alerts with Claude
+  # (the key comes from ANTHROPIC_API_KEY); the default is the fake model,
+  # which needs no key.
   case "${ULP_LLM:-fake}" in
     fake) llm="provider: fake   # deterministic answers, no API key" ;;
     anthropic) llm="provider: anthropic   # the key comes from ANTHROPIC_API_KEY" ;;
@@ -103,6 +104,8 @@ control:
   socket: $dir/cy.sock
 business:
   file: $dir/business.yaml   # private: never in an envelope
+llm:
+  $llm
 EOF
 
   # Cymbal's private business context: what the delay will mean to it.

@@ -127,8 +127,8 @@ const (
 	ProviderAnthropic = "anthropic" // Claude; the API key comes from the environment
 )
 
-// LLM configures the model. Without it, an operator answers inquiries
-// from a deterministic template.
+// LLM configures the model. Without it, an operator answers inquiries,
+// and a shipper summarizes alerts, from a deterministic template.
 type LLM struct {
 	Provider  string `yaml:"provider"`
 	Model     string `yaml:"model"`

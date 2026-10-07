@@ -21,44 +21,45 @@ import (
 	"testing"
 
 	"github.com/go-steer/supercargo/internal/config"
+	"github.com/go-steer/supercargo/internal/operator"
 )
 
 func TestNewModel(t *testing.T) {
-	if m, err := newModel(nil); m != nil || err != nil {
+	if m, err := newModel(nil, nil); m != nil || err != nil {
 		t.Errorf("no llm section: %v, %v", m, err)
 	}
-	if m, err := newModel(&config.LLM{Provider: config.ProviderFake}); err != nil || m.Name() != "fake" {
+	if m, err := newModel(&config.LLM{Provider: config.ProviderFake}, operator.FakeInquiryModel()); err != nil || m.Name() != "fake" {
 		t.Errorf("fake: %v, %v", m, err)
 	}
 	// The key comes from the environment, and a node without it doesn't
 	// start.
 	t.Setenv("SUPERCARGO_TEST_KEY", "")
-	if _, err := newModel(&config.LLM{Provider: config.ProviderAnthropic, APIKeyEnv: "SUPERCARGO_TEST_KEY"}); err == nil ||
+	if _, err := newModel(&config.LLM{Provider: config.ProviderAnthropic, APIKeyEnv: "SUPERCARGO_TEST_KEY"}, nil); err == nil ||
 		!strings.Contains(err.Error(), "SUPERCARGO_TEST_KEY") {
 		t.Errorf("no key: %v", err)
 	}
 	t.Setenv("SUPERCARGO_TEST_KEY", "sk-test")
-	m, err := newModel(&config.LLM{Provider: config.ProviderAnthropic, APIKeyEnv: "SUPERCARGO_TEST_KEY", Model: "claude-test"})
+	m, err := newModel(&config.LLM{Provider: config.ProviderAnthropic, APIKeyEnv: "SUPERCARGO_TEST_KEY", Model: "claude-test"}, nil)
 	if err != nil || m.Name() != "anthropic:claude-test" {
 		t.Errorf("anthropic: %v, %v", m, err)
 	}
 }
 
-func TestInquirySkills(t *testing.T) {
-	all, err := inquirySkills(nil)
+func TestAgentSkills(t *testing.T) {
+	all, err := agentSkills("shipment-inquiry", nil)
 	if err != nil || len(all) != 1 || all[0].Name != "shipment-inquiry" || all[0].Source != "builtin" {
 		t.Fatalf("built-in only: %+v, %v", all, err)
 	}
 	dir := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(dir, "delay-phrasing"), 0o755)
 	_ = os.WriteFile(filepath.Join(dir, "delay-phrasing", "SKILL.md"), []byte("---\nname: delay-phrasing\ndescription: d\n---\nBe brief."), 0o644)
-	all, err = inquirySkills(&config.Skills{Dir: dir})
+	all, err = agentSkills("shipment-inquiry", &config.Skills{Dir: dir})
 	if err != nil || len(all) != 2 || all[1].Name != "delay-phrasing" || all[1].Source != "company" {
 		t.Errorf("with company skills: %+v, %v", all, err)
 	}
 	// A broken company skill stops the node.
 	_ = os.WriteFile(filepath.Join(dir, "delay-phrasing", "SKILL.md"), []byte("no frontmatter"), 0o644)
-	if _, err := inquirySkills(&config.Skills{Dir: dir}); err == nil {
+	if _, err := agentSkills("shipment-inquiry", &config.Skills{Dir: dir}); err == nil {
 		t.Error("a broken company skill loaded")
 	}
 	c := cfg(t, config.RoleOperator)

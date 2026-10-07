@@ -53,6 +53,11 @@ grep -q "high delay alert" <<<"$ctl" || smoke_fail "$work" "ulpctl didn't report
 smoke_wait_for "$work" "$work/shipper.log" '"msg":"alert recorded".*"booking":"'"$ref"'".*"severity":"high"' 10
 grep -qE '"intent":"ulp.tnt.alert".*"verified":true.*"outcome":"accepted"' "$work/shipper.log" ||
   smoke_fail "$work" "the shipper logged no verified, accepted alert"
+# Cymbal's summarizer: the new arrival (the 16th) misses its receiving
+# slot (the 15th), and the notification cites the alert.
+smoke_wait_for "$work" "$work/shipper.log" '"msg":"alert summary".*"booking":"'"$ref"'".*"impact":"misses".*"generatedBy":"llm"' 10
+grep -E '"msg":"alert summary"' "$work/shipper.log" | grep -q '"cited":\["AL-' ||
+  smoke_fail "$work" "the alert summary cites no alert"
 
 # A disruption for a booking with no voyage is refused.
 if "$work/bin/ulpctl" disrupt --config "$work/operator.yaml" --booking OB-BKG-9999 --delay 1h --reason "Late." >/dev/null 2>&1; then
@@ -62,4 +67,4 @@ fi
 if grep -q '"msg":"push dropped"' "$work/operator.log"; then smoke_fail "$work" "the operator dropped a push"; fi
 if grep -q '"outcome":"rejected"' "$work/shipper.log"; then smoke_fail "$work" "the shipper rejected a push"; fi
 
-echo "✓ smoke/push: events and a delay alert pushed, signed, verified and recorded"
+echo "✓ smoke/push: events and a delay alert pushed, signed, verified, recorded and summarized"

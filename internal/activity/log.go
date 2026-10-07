@@ -83,6 +83,12 @@ func SlogSink(l *slog.Logger) func(Entry) {
 		case e.Push != nil && e.Push.Problem == "dropped":
 			l.LogAttrs(ctx, slog.LevelWarn, "push dropped", slog.String("booking", e.Push.Booking),
 				slog.String("id", e.Push.ID), slog.String("err", e.Push.Error))
+		case e.Summary != nil:
+			v := e.Summary
+			l.LogAttrs(ctx, slog.LevelWarn, "alert summary", slog.String("booking", v.Booking),
+				slog.String("alertId", v.AlertID), slog.String("impact", v.Impact),
+				slog.String("generatedBy", v.GeneratedBy), slog.String("text", v.Text),
+				slog.Any("cited", v.Cited), slog.Any("unheldCauses", v.UnheldCauses))
 		case e.Push != nil:
 			l.LogAttrs(ctx, slog.LevelWarn, "event not published", slog.String("booking", e.Push.Booking),
 				slog.String("err", e.Push.Error))
