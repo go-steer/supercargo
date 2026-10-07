@@ -28,7 +28,12 @@
 # voyage departs about half a minute after booking and arrives about two
 # and a half minutes later), ULP_LLM (fake: deterministic answers, no key;
 # anthropic: Ocean Blue answers inquiries with Claude, the key from
-# ANTHROPIC_API_KEY in the operator's terminal).
+# ANTHROPIC_API_KEY in the operator's terminal), HELLO_ULP_SESSION (the
+# tmux session name, hello-ulp; give tests their own so they never replace
+# a running demo).
+#
+# In tmux, mouse mode is on for this session: click a pane to switch to it,
+# use the wheel to scroll, drag a border to resize.
 set -euo pipefail
 . "$(dirname "$0")/../smoke/lib.sh"
 
@@ -59,7 +64,7 @@ ask="$q/bin/ulpnode ask --config $q/shipper.yaml --booking OB-BKG-1042 \"What ca
 
 if $tmux; then
   command -v tmux >/dev/null || { echo "hello-ulp: tmux is not installed; run without --tmux" >&2; exit 1; }
-  session=hello-ulp
+  session="${HELLO_ULP_SESSION:-hello-ulp}"
   tmux kill-session -t "$session" 2>/dev/null || true
   # A tmux server already running wouldn't see this shell's environment,
   # so pass on what the operator node needs.
@@ -71,6 +76,7 @@ if $tmux; then
   #   Cymbal Shoes node log  | Presenter (ulpctl)
   you=$(tmux new-session -d -s "$session" -x 200 -y 50 "${env_args[@]}" -P -F '#{pane_id}' bash)
   tmux set-option -t "$session" remain-on-exit on # a node that fails keeps its error on screen
+  tmux set-option -t "$session" mouse on # click to switch panes, wheel to scroll (this session only)
   tmux set-option -t "$session" pane-border-status top
   ob_log=$(tmux split-window -h -t "$you" "${env_args[@]}" -P -F '#{pane_id}' "$operator")
   cy_log=$(tmux split-window -v -t "$you" -P -F '#{pane_id}' "$shipper")

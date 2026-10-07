@@ -163,7 +163,7 @@ someone may want to watch belongs in `dev/demo/` too, on the same helpers.
 and Cymbal Shoes on localhost, and prints the command for each of four
 terminals: the two nodes' logs, booking, and `ulpctl disrupt` (or opens
 them in tmux). Ports and the clock speed come from `OP_PORT`, `SH_PORT` and
-`HOURS_PER_SECOND`. `ULP_LLM=anthropic` has Ocean Blue answer inquiries with
+`HOURS_PER_SECOND`. In tmux, mouse mode is on for the demo session (click a pane to switch, scroll with the wheel, drag borders), and `HELLO_ULP_SESSION` names the session: tests should use their own, plus a separate server (`TMUX_TMPDIR`), so they never replace a running demo. `ULP_LLM=anthropic` has Ocean Blue answer inquiries with
 Claude (the key from `ANTHROPIC_API_KEY` in the operator's terminal); the
 default, the fake model, needs no key.
 
