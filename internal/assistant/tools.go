@@ -351,12 +351,17 @@ func (a *Assistant) draft(c *Conversation, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, refuse("%v", err)
 	}
-	out := DraftResult{DraftID: dr.ID, To: dr.Operator, Request: dr.Request,
+	return dr.Result(), nil
+}
+
+// Result is the draft as draft_booking returns it and the dialog shows it.
+func (d Draft) Result() DraftResult {
+	out := DraftResult{DraftID: d.ID, To: d.Operator, Request: d.Request,
 		Next: "Nothing has been sent. Tell the user the draft is ready for them to review and confirm; only they can send it."}
-	if dr.RequiredBy != "" {
-		out.NotSent = map[string]string{"requiredBy": dr.RequiredBy}
+	if d.RequiredBy != "" {
+		out.NotSent = map[string]string{"requiredBy": d.RequiredBy}
 	}
-	return out, nil
+	return out
 }
 
 // errNotNamed is the counterparty rule: the assistant reaches only

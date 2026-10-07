@@ -110,6 +110,8 @@ func fakeStep(msgs []llm.Message, user string, done []step, now time.Time) llm.G
 		}
 	}
 	switch {
+	case strings.HasPrefix(user, notePrefix):
+		return reportReply(block(user, "result"))
 	case strings.Contains(lower, "book "):
 		if last != nil {
 			return draftReply(last.result.Content)
@@ -311,4 +313,51 @@ func askReply(content string) llm.GenerateResponse {
 		return say("The carrier didn't answer.")
 	}
 	return say("%s answered: %s (sources: %s)", r.Operator, r.Answer.Answer, strings.Join(r.Answer.CitedEventIDs, ", "))
+}
+
+// block is the text between <name> and </name> in s.
+func block(s, name string) string {
+	_, after, ok := strings.Cut(s, "<"+name+">")
+	if !ok {
+		return ""
+	}
+	inside, _, _ := strings.Cut(after, "</"+name+">")
+	return strings.TrimSpace(inside)
+}
+
+// reportReply tells the user what came of a send, as Scene 2 does.
+func reportReply(result string) llm.GenerateResponse {
+	var r struct {
+		Operator     string
+		RequiredBy   string
+		Confirmation *intents.BookingConfirmationBody
+	}
+	if json.Unmarshal([]byte(result), &r) != nil || r.Confirmation == nil {
+		return say("I couldn't read the carrier's answer.")
+	}
+	c := r.Confirmation
+	if c.Status != intents.StatusConfirmed {
+		return say("%s didn't confirm the booking (status: %s).", r.Operator, c.Status)
+	}
+	out := fmt.Sprintf("Booked. Reference %s", c.BookingRef)
+	if c.Vessel != nil {
+		out += fmt.Sprintf(" on vessel %s, voyage %s", c.Vessel.Name, c.Vessel.Voyage)
+	}
+	out += fmt.Sprintf(". Planned departure %s, planned arrival %s", c.PlannedDeparture, c.PlannedArrival)
+	arrival, err1 := time.Parse(time.RFC3339, c.PlannedArrival)
+	deadline, err2 := time.Parse(time.DateOnly, r.RequiredBy)
+	if err1 == nil && err2 == nil {
+		days := int(deadline.Sub(arrival.UTC().Truncate(24*time.Hour)).Hours() / 24)
+		switch {
+		case days == 1:
+			out += fmt.Sprintf(", the day before your deadline of %s", r.RequiredBy)
+		case days > 1:
+			out += fmt.Sprintf(", which is %d days before your deadline of %s", days, r.RequiredBy)
+		case days == 0:
+			out += fmt.Sprintf(", on the day of your deadline (%s)", r.RequiredBy)
+		default:
+			out += fmt.Sprintf(", which is after your deadline of %s", r.RequiredBy)
+		}
+	}
+	return say("%s. I'll tell you about anything that affects it.", out)
 }

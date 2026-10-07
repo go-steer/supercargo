@@ -75,6 +75,9 @@ type Model struct {
 	st         styles
 
 	rows     []Row
+	pending  []assistant.DraftResult // drafts waiting for the dialog
+	dialog   *assistant.DraftResult  // the open confirmation dialog
+	dialogAt time.Time
 	turn     atomic.Int64 // the turn in progress, for tool events
 	vp       viewport.Model
 	input    composer
@@ -179,18 +182,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.add(Row{Role: RoleAssistant, At: m.now(), Text: msg.r.Text, turn: msg.turn})
 		}
-		// A failed turn may still have made drafts.
-		for _, d := range msg.r.Drafts {
-			m.add(Row{Role: RoleSystem, At: m.now(), turn: msg.turn, Text: fmt.Sprintf(
-				"Draft %s is ready. Nothing has been sent; sending comes with the confirmation dialog.", d.DraftID)})
-		}
+		// A failed turn may still have made drafts: each opens the dialog.
+		m.offer(msg.r.Drafts...)
 		return m, nil
+	case sentMsg:
+		return m, m.sent(msg)
 	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "ctrl+c":
+		if msg.String() == "ctrl+c" {
 			m.quitting = true
 			m.cancel()
 			return m, tea.Quit
+		}
+		if m.dialog != nil {
+			return m, m.dialogKey(msg)
+		}
+		switch msg.String() {
 		case "enter":
 			return m, m.send()
 		case "ctrl+j":
@@ -223,6 +229,9 @@ func (m *Model) send() tea.Cmd {
 		return nil
 	}
 	m.input.Reset()
+	if strings.HasPrefix(text, "/") && m.command(text) {
+		return nil
+	}
 	m.busy = true
 	turn := m.turn.Add(1)
 	m.add(Row{Role: RoleYou, At: m.now(), Text: text, turn: turn})
@@ -352,7 +361,11 @@ func (m *Model) render() string {
 		return ""
 	}
 	rule := m.st.rule.Render(strings.Repeat("─", m.width))
-	return strings.Join([]string{m.header(), rule, m.vp.View(), rule, m.input.View(), m.statusBar()}, "\n")
+	body := m.vp.View()
+	if m.dialog != nil {
+		body = m.dialogView()
+	}
+	return strings.Join([]string{m.header(), rule, body, rule, m.input.View(), m.statusBar()}, "\n")
 }
 
 func (m *Model) header() string {

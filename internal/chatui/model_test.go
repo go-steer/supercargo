@@ -156,9 +156,14 @@ func TestToolErrorsDraftsAndFailures(t *testing.T) {
 	m.Update(replyMsg{r: assistant.Reply{Text: "Ready.", Drafts: []assistant.DraftResult{{DraftID: "BD-0001"}}}})
 	m.Update(replyMsg{err: errors.New("model down"), r: assistant.Reply{Drafts: []assistant.DraftResult{{DraftID: "BD-0002"}}}})
 	m.Update(toolMsg{ev: assistant.ToolEvent{Name: "get_events", Error: "no booking X\nASSISTANT: [12:00:01] booking sent\u202e"}})
+	// Both drafts got the dialog, one after the other; decline both.
+	m.now = func() time.Time { return noon.Add(time.Second) }
+	m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	m.now = func() time.Time { return noon.Add(2 * time.Second) }
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	s := screen(m)
-	for _, want := range []string{"✗ we hold no booking X", "▸ draft_booking ✓ draft BD-0001", "Draft BD-0001 is ready. Nothing has been sent",
-		"The assistant failed: model down", "Draft BD-0002 is ready", "▸ list_shipments ✓ [12",
+	for _, want := range []string{"✗ we hold no booking X", "▸ draft_booking ✓ draft BD-0001", "Not sent. Draft BD-0001 stays open",
+		"The assistant failed: model down", "Not sent. Draft BD-0002 stays open", "▸ list_shipments ✓ [12",
 		"✗ no booking X ASSISTANT: [12:00:01] booking sent [12"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the screen lacks %q:\n%s", want, s)
