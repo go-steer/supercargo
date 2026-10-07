@@ -108,7 +108,7 @@ func (m *Model) Generate(ctx context.Context, req llm.GenerateRequest) (llm.Gene
 	if err != nil {
 		return llm.GenerateResponse{}, fmt.Errorf("anthropic: %w", err)
 	}
-	out := llm.GenerateResponse{Model: msg.Model,
+	out := llm.GenerateResponse{Model: msg.Model, StopReason: string(msg.StopReason),
 		Usage: llm.Usage{InputTokens: int(msg.Usage.InputTokens), OutputTokens: int(msg.Usage.OutputTokens)}}
 	if req.JSONSchema != nil && msg.StopReason != "tool_use" && msg.StopReason != "end_turn" {
 		// Cut short (max_tokens, say): the reply may still parse, with an
@@ -119,10 +119,17 @@ func (m *Model) Generate(ctx context.Context, req llm.GenerateRequest) (llm.Gene
 	for _, block := range msg.Content {
 		switch block.Type {
 		case "tool_use":
-			if tu := block.AsToolUse(); req.JSONSchema != nil && tu.Name == respondTool {
-				out.Text = string(tu.Input)
-				return out, nil
+			tu := block.AsToolUse()
+			if req.JSONSchema != nil {
+				if tu.Name == respondTool {
+					// The forced reply ends the turn: no tool calls for the
+					// caller to run.
+					out.Text, out.StopReason = string(tu.Input), llm.StopEnd
+					return out, nil
+				}
+				continue
 			}
+			out.ToolCalls = append(out.ToolCalls, llm.ToolCall{ID: tu.ID, Name: tu.Name, Input: append(json.RawMessage(nil), tu.Input...)})
 		case "text":
 			text.WriteString(block.AsText().Text)
 		}
@@ -143,15 +150,32 @@ func (m *Model) params(req llm.GenerateRequest) (anthropic.MessageNewParams, err
 			p.System[0].CacheControl = anthropic.NewCacheControlEphemeralParam()
 		}
 	}
+	if req.JSONSchema != nil && len(req.Tools) > 0 {
+		return p, errors.New("anthropic: a request has either a JSON schema or tools, not both")
+	}
 	for _, msg := range req.Messages {
+		blocks, err := messageBlocks(msg)
+		if err != nil {
+			return p, err
+		}
 		switch msg.Role {
 		case llm.User:
-			p.Messages = append(p.Messages, anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Text)))
+			p.Messages = append(p.Messages, anthropic.NewUserMessage(blocks...))
 		case llm.Assistant:
-			p.Messages = append(p.Messages, anthropic.NewAssistantMessage(anthropic.NewTextBlock(msg.Text)))
+			p.Messages = append(p.Messages, anthropic.NewAssistantMessage(blocks...))
 		default:
 			return p, fmt.Errorf("anthropic: unknown role %q", msg.Role)
 		}
+	}
+	for _, t := range req.Tools {
+		props, required, extra, err := jsonSchemaToInput(t.Schema)
+		if err != nil {
+			return p, fmt.Errorf("anthropic: tool %s: %w", t.Name, err)
+		}
+		p.Tools = append(p.Tools, anthropic.ToolUnionParam{OfTool: &anthropic.ToolParam{
+			Name: t.Name, Description: anthropic.String(t.Description),
+			InputSchema: anthropic.ToolInputSchemaParam{Properties: props, Required: required, ExtraFields: extra},
+		}})
 	}
 	if req.JSONSchema != nil {
 		props, required, extra, err := jsonSchemaToInput(req.JSONSchema)
@@ -166,6 +190,48 @@ func (m *Model) params(req llm.GenerateRequest) (anthropic.MessageNewParams, err
 		p.ToolChoice = anthropic.ToolChoiceParamOfTool(respondTool)
 	}
 	return p, nil
+}
+
+// messageBlocks converts one message: its text, then (assistant) the tool
+// calls it made, or (user) the results of the previous turn's calls. As in
+// mast, a call without an ID gets one derived from its name and position,
+// and its result must use the same.
+func messageBlocks(msg llm.Message) ([]anthropic.ContentBlockParamUnion, error) {
+	var out []anthropic.ContentBlockParamUnion
+	// A user message's tool results come first: the API requires them
+	// right after the assistant turn that made the calls, before any text.
+	for _, r := range msg.ToolResults {
+		if msg.Role != llm.User {
+			return nil, errors.New("anthropic: only a user message carries tool results")
+		}
+		out = append(out, anthropic.NewToolResultBlock(r.CallID, r.Content, r.IsError))
+	}
+	if msg.Text != "" {
+		out = append(out, anthropic.NewTextBlock(msg.Text))
+	}
+	for i, c := range msg.ToolCalls {
+		if msg.Role != llm.Assistant {
+			return nil, errors.New("anthropic: only an assistant message carries tool calls")
+		}
+		input := c.Input
+		if len(input) == 0 {
+			input = json.RawMessage("{}")
+		}
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(input, &obj) != nil || obj == nil {
+			return nil, fmt.Errorf("anthropic: tool call %s's input is not a JSON object", c.Name)
+		}
+		id := c.ID
+		if id == "" {
+			id = fmt.Sprintf("call_%s_%d", c.Name, i+1)
+		}
+		out = append(out, anthropic.ContentBlockParamUnion{OfToolUse: &anthropic.ToolUseBlockParam{ID: id, Name: c.Name, Input: input}})
+	}
+	if len(out) == 0 {
+		// The API refuses empty text blocks.
+		return nil, errors.New("anthropic: an empty message")
+	}
+	return out, nil
 }
 
 // jsonSchemaToInput projects a JSON Schema object onto the (properties,

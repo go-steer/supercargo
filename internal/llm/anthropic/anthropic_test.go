@@ -80,6 +80,9 @@ func TestGenerateJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out.Text), &reply); err != nil || reply["answer"] != "Tuesday." {
 		t.Errorf("text %q: %v", out.Text, err)
 	}
+	if out.StopReason != llm.StopEnd || len(out.ToolCalls) != 0 {
+		t.Errorf("the forced reply: stop %q, %d tool calls; want end_turn and none", out.StopReason, len(out.ToolCalls))
+	}
 	if out.Usage.InputTokens != 120 || out.Usage.OutputTokens != 30 || out.Model != "claude-test" || m.Name() != "anthropic:claude-test" {
 		t.Errorf("response %+v, name %s", out, m.Name())
 	}

@@ -32,6 +32,9 @@ type Model struct {
 	// Reply produces the text for a request. Nil replies with an empty
 	// string.
 	Reply func(req llm.GenerateRequest) (string, error)
+	// Respond, when set, produces the whole response instead (tool calls,
+	// stop reason); Reply is then unused.
+	Respond func(req llm.GenerateRequest) (llm.GenerateResponse, error)
 
 	mu    sync.Mutex
 	calls []llm.GenerateRequest
@@ -49,18 +52,32 @@ func (m *Model) Generate(ctx context.Context, req llm.GenerateRequest) (llm.Gene
 	if err := ctx.Err(); err != nil {
 		return llm.GenerateResponse{}, err
 	}
-	var text string
-	if m.Reply != nil {
+	var out llm.GenerateResponse
+	switch {
+	case m.Respond != nil:
 		var err error
-		if text, err = m.Reply(req); err != nil {
+		if out, err = m.Respond(req); err != nil {
+			return llm.GenerateResponse{}, err
+		}
+	case m.Reply != nil:
+		var err error
+		if out.Text, err = m.Reply(req); err != nil {
 			return llm.GenerateResponse{}, err
 		}
 	}
+	if out.StopReason == "" {
+		out.StopReason = llm.StopEnd
+		if len(out.ToolCalls) > 0 {
+			out.StopReason = llm.StopTool
+		}
+	}
+	text := out.Text
 	in := len(strings.Fields(req.System))
 	for _, msg := range req.Messages {
 		in += len(strings.Fields(msg.Text))
 	}
-	return llm.GenerateResponse{Text: text, Model: "fake", Usage: llm.Usage{InputTokens: in, OutputTokens: len(strings.Fields(text))}}, nil
+	out.Model, out.Usage = "fake", llm.Usage{InputTokens: in, OutputTokens: len(strings.Fields(text))}
+	return out, nil
 }
 
 // Calls returns the requests made so far.
