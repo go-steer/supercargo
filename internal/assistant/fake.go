@@ -340,8 +340,8 @@ func reportReply(result string) llm.GenerateResponse {
 		return say("%s didn't confirm the booking (status: %s).", r.Operator, c.Status)
 	}
 	out := fmt.Sprintf("Booked. Reference %s", c.BookingRef)
-	if c.Vessel != nil {
-		out += fmt.Sprintf(" on vessel %s, voyage %s", c.Vessel.Name, c.Vessel.Voyage)
+	if name, voyage := c.Vessel(); name != "" {
+		out += fmt.Sprintf(" on vessel %s, voyage %s, transport document %s", name, voyage, c.TransportDocumentReference())
 	}
 	out += fmt.Sprintf(". Planned departure %s, planned arrival %s", c.PlannedDeparture, c.PlannedArrival)
 	arrival, err1 := time.Parse(time.RFC3339, c.PlannedArrival)

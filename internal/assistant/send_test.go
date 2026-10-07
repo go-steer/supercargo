@@ -87,7 +87,7 @@ func TestReport(t *testing.T) {
 	a, _, _ := newAssistant(FakeModel(func() time.Time { return thursday }), &node{})
 	var c Conversation
 	for name, s := range map[string]*Sent{
-		"before":   {Draft: Draft{ID: "BD-1", Operator: "mallory.example", RequiredBy: "2026-10-15"}, Confirmation: &intents.BookingConfirmationBody{BookingRef: "OB-1", Status: intents.StatusConfirmed, Vessel: &intents.Vessel{Name: "Aurora", Voyage: "42W"}, PlannedArrival: "2026-10-13T08:00:00Z"}},
+		"before":   {Draft: Draft{ID: "BD-1", Operator: "mallory.example", RequiredBy: "2026-10-15"}, Confirmation: &intents.BookingConfirmationBody{BookingRef: "OB-1", Status: intents.StatusConfirmed, EBL: &intents.EBL{TransportDocumentReference: "OB-TD-1", VesselName: "Aurora", VoyageNumber: "42W", PortOfLoading: "NLRTM", PortOfDischarge: "USEWR", ShipperName: "Cymbal Shoes", ConsigneeName: "To order", Status: "BOOKED", Containers: []intents.ShippingContainer{{ContainerNumber: "OCBU0000004", EquipmentSizeType: "45G1", SealNumber: "S1", GrossWeightKg: 12000}}}, PlannedArrival: "2026-10-13T08:00:00Z"}},
 		"same day": {Draft: Draft{ID: "BD-2", RequiredBy: "2026-10-13"}, Confirmation: &intents.BookingConfirmationBody{BookingRef: "OB-2", Status: intents.StatusConfirmed, PlannedArrival: "2026-10-13T08:00:00Z"}},
 		"after":    {Draft: Draft{ID: "BD-3", RequiredBy: "2026-10-12"}, Confirmation: &intents.BookingConfirmationBody{BookingRef: "OB-3", Status: intents.StatusConfirmed, PlannedArrival: "2026-10-13T08:00:00Z"}},
 		"rejected": {Draft: Draft{ID: "BD-4", Operator: "o.example"}, Confirmation: &intents.BookingConfirmationBody{Status: intents.StatusRejected}},
@@ -105,7 +105,7 @@ func TestReport(t *testing.T) {
 	if r := reportReply("nonsense"); !strings.Contains(r.Text, "couldn't read") {
 		t.Errorf("%q", r.Text)
 	}
-	if r := reportReply(`{"requiredBy":"2026-10-14","confirmation":{"status":"confirmed","plannedArrival":"2026-10-13T08:00:00Z"}}`); !strings.Contains(r.Text, "the day before") {
+	if r := reportReply(`{"requiredBy":"2026-10-14","confirmation":{"status":"confirmed","planned_arrival":"2026-10-13T08:00:00Z"}}`); !strings.Contains(r.Text, "the day before") {
 		t.Errorf("%q", r.Text)
 	}
 }

@@ -24,6 +24,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/go-steer/supercargo/internal/assistant"
+	"github.com/go-steer/supercargo/internal/ports"
 )
 
 // The confirmation dialog is the only way a booking leaves the shipper
@@ -153,15 +154,20 @@ func (m *Model) dialogView() string {
 	}
 	var eq []string
 	for _, e := range r.Equipment {
-		eq = append(eq, fmt.Sprintf("%d × %s", e.Count, e.Label))
+		eq = append(eq, fmt.Sprintf("%d × %s (%s), %g kg each", e.Count, ports.SizeLabel(e.ISOType), e.ISOType, e.GrossWeightKg))
 	}
+	// The ports travel as codes; the names are our own table's.
 	lines := []string{
 		line("Operator:", d.To),
-		line("Route:", fmt.Sprintf("%s %s → %s %s", r.Origin.UNLocode, r.Origin.Name, r.Destination.UNLocode, r.Destination.Name)),
+		line("Shipper:", r.ShipperName),
+		line("Route:", fmt.Sprintf("%s %s → %s %s", r.PortOfLoading, ports.Name(r.PortOfLoading), r.PortOfDischarge, ports.Name(r.PortOfDischarge))),
 		line("Equipment:", strings.Join(eq, ", ")),
 		line("Cargo:", fmt.Sprintf("%s, HS %s", r.Cargo.Description, r.Cargo.HSCode)),
 		line("Departure:", "on/after "+r.EarliestDeparture),
 		line("Reference:", r.ShipperRef),
+	}
+	if r.ServiceContractNumber != "" {
+		lines = append(lines, line("Contract:", r.ServiceContractNumber))
 	}
 	if c := r.Consignee; c != nil {
 		lines = append(lines, line("Consignee:", c.Name+" ("+c.Domain+")"))

@@ -48,7 +48,7 @@ func (n *bookingNode) Book(_ context.Context, r shipper.BookRequest) (*shipper.B
 	}
 	n.booked = append(n.booked, r)
 	return &shipper.BookResponse{Confirmation: &intents.BookingConfirmationBody{BookingRef: "OB-BKG-1042", Status: intents.StatusConfirmed,
-		Vessel: &intents.Vessel{Name: "Ocean Blue Aurora", Voyage: "42W"}, PlannedDeparture: "2026-10-13T18:00:00Z", PlannedArrival: "2026-10-14T08:00:00Z"}}, nil
+		EBL: &intents.EBL{TransportDocumentReference: "OB-TD-1", VesselName: "Ocean Blue Aurora", VoyageNumber: "42W", PortOfLoading: "NLRTM", PortOfDischarge: "USEWR", ShipperName: "Cymbal Shoes", ConsigneeName: "To order", Status: "BOOKED", Containers: []intents.ShippingContainer{{ContainerNumber: "OCBU0000004", EquipmentSizeType: "45G1", SealNumber: "S1", GrossWeightKg: 12000}}}, PlannedDeparture: "2026-10-13T18:00:00Z", PlannedArrival: "2026-10-14T08:00:00Z"}}, nil
 }
 
 func (n *bookingNode) count() int {
@@ -134,7 +134,7 @@ func TestScene2(t *testing.T) {
 	}
 	s := screen(m)
 	for _, want := range []string{"Booking draft BD-0001", "Operator:  ocean-blue.example", "Route:     NLRTM Rotterdam → USEWR Newark",
-		"Equipment: 1 × 40HC", "Cargo:     Footwear (sneakers), HS 6404", "Departure: on/after 2026-10-12",
+		"Equipment: 1 × 40HC (45G1), 12000 kg each", "Shipper:   Cymbal Shoes", "Cargo:     Footwear (sneakers), HS 6404", "Departure: on/after 2026-10-12",
 		"Consignee: Cymbal Footwear (cymbal-footwear.example)", "Updates:   ulp.tnt.event, ulp.tnt.alert → https://cymbal-shoes.example/ulp",
 		"Not sent:  your deadline, 2026-10-15 (it stays with us)", "Send this booking request? [y/N]"} {
 		if !strings.Contains(s, want) {
@@ -156,7 +156,7 @@ func TestScene2(t *testing.T) {
 	}
 	s = screen(m)
 	for _, want := range []string{"Sending BD-0001 to ocean-blue.example", "Sent BD-0001 to ocean-blue.example, signed. Answer: confirmed OB-BKG-1042.",
-		"Booked. Reference OB-BKG-1042 on vessel Ocean Blue Aurora, voyage 42W", "the day before your deadline of 2026-10-15"} {
+		"Booked. Reference OB-BKG-1042 on vessel Ocean Blue Aurora, voyage 42W", "transport document OB-TD-1", "the day before your deadline of"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the screen lacks %q:\n%s", want, s)
 		}
@@ -176,7 +176,7 @@ func TestScene2(t *testing.T) {
 func TestModelCantSend(t *testing.T) {
 	n := &bookingNode{}
 	draft := llm.GenerateResponse{ToolCalls: []llm.ToolCall{fake.Call("1", assistant.ToolDraftBooking,
-		`{"operator":"ocean-blue.example","origin":{"unLocode":"NLRTM","name":"Rotterdam"},"destination":{"unLocode":"USEWR","name":"Newark"},`+
+		`{"operator":"ocean-blue.example","portOfLoading":"NLRTM","portOfDischarge":"USEWR","grossWeightKg":12000,`+
 			`"containerType":"40HC","containerCount":1,"cargoDescription":"Shoes","hsCode":"6404","earliestDeparture":"2026-10-12"}`)}}
 	m, c := dialogModel(t, fake.Turns(draft, llm.GenerateResponse{Text: "y"}, llm.GenerateResponse{Text: "Sent! (y)"}), n)
 	turn(t, m, "Book with ocean-blue.example")
@@ -259,7 +259,7 @@ func TestDialogKeys(t *testing.T) {
 }
 
 func draftInput(cargo string) string {
-	return `{"operator":"ocean-blue.example","origin":{"unLocode":"NLRTM","name":"Rotterdam"},"destination":{"unLocode":"USEWR","name":"Newark"},` +
+	return `{"operator":"ocean-blue.example","portOfLoading":"NLRTM","portOfDischarge":"USEWR","grossWeightKg":12000,` +
 		`"containerType":"40HC","containerCount":1,"cargoDescription":"` + cargo + `","hsCode":"6404","earliestDeparture":"2026-10-12"}`
 }
 
