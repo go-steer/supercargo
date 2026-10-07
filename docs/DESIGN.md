@@ -914,6 +914,14 @@ Tracking issue #49. Traces first, then metrics; off unless configured, so CI and
 - The outbound transport gets the egress span's context, so the HTTP client's span and the propagated parent (#46) are `ulp.egress`.
 - `pkg/` takes no OpenTelemetry dependency: the spans live in `internal/node`, around `pkg/`'s calls.
 
+**Model and tool spans** (`internal/llm`, after OpenTelemetry's GenAI conventions):
+
+- Every model call is `chat <model>` (a client span) with `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model` and `gen_ai.response.model`, `gen_ai.usage.input_tokens` and `output_tokens`, `gen_ai.response.finish_reasons`, and ours: `ulp.llm.attempt`, `ulp.llm.prompt_hash`, `ulp.llm.skills` (name@hash), and `ulp.llm.outcome` (ok, invalid or error). A reply the caller refused is an error span, so "invalid, retried, accepted" reads at a glance. Why it was refused stays in the node's own log: a validation message can quote the model's output.
+- **The inquiry responder:** its model calls nest under `ulp.handle`; the handle span carries `ulp.generated_by` and `ulp.records_considered`, and a `template fallback` event when the template answered.
+- **The alert summarizer:** `ulp.alert.summarize` (booking, alert ID, impact, `ulp.generated_by`, the count of unheld causes) with a `cause check` event before its model call.
+- **The shipper assistant:** `ulp.assistant.turn`, with each model call and each tool call (`execute_tool <name>`, `gen_ai.tool.name`; a name not among the tools is `unknown`) under it. A refused or failed tool call's status is a fixed category (`refused`, `bad_input`, `unknown_tool`, `failed`), never the error's text, which can quote the model, a partner or a private date. In `ulpchat` these export once it sets up telemetry too (with the TUI, #13).
+- **Content capture is off and stays off:** no prompt, reply, question, answer or tool result is ever an attribute.
+
 **Export** (`internal/telemetry`, set up by `ulpnode serve`): OTLP over HTTP (default) or gRPC to a collector, configured per node:
 
 ```yaml
@@ -929,4 +937,4 @@ With no `telemetry:` section and no `OTEL_EXPORTER_OTLP_ENDPOINT` (or `..._TRACE
 
 **Locally:** `dev/demo/otel up` starts Jaeger in a container (it takes OTLP directly, bound to localhost), and `ULP_OTEL_ENDPOINT=localhost:4318` makes the demo's two nodes export to it: `dev/demo/hello-ulp --tmux`, then the UI at `http://localhost:16686`, services `ocean-blue.example` and `cymbal-shoes.example`. **Hosted** (#38): the nodes export to an OpenTelemetry Collector in the cluster, which sends traces on to Cloud Trace with Workload Identity; that configuration comes with the deployment.
 
-Next: model and tool spans (GenAI conventions, #45), propagation between nodes in HTTP headers with a partner's context treated as untrusted (#46), and metrics (#47).
+Next: propagation between nodes in HTTP headers with a partner's context treated as untrusted (#46), and metrics (#47).

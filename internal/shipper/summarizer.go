@@ -27,6 +27,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/llm"
@@ -168,7 +172,14 @@ func (s *Summarizer) Summarize(ctx context.Context, b store.Booking, alert *inte
 	return s.summarize(ctx, b, alert, true)
 }
 
-func (s *Summarizer) summarize(ctx context.Context, b store.Booking, alert *intents.TnTAlertBody, useModel bool) activity.Summary {
+func (s *Summarizer) summarize(ctx context.Context, b store.Booking, alert *intents.TnTAlertBody, useModel bool) (out activity.Summary) {
+	ctx, span := otel.Tracer("github.com/go-steer/supercargo/internal/shipper").Start(ctx, "ulp.alert.summarize",
+		trace.WithAttributes(attribute.String("ulp.booking", b.Ref), attribute.String("ulp.alert_id", alert.AlertID)))
+	defer func() {
+		span.SetAttributes(attribute.String("ulp.impact", out.Impact), attribute.String("ulp.generated_by", out.GeneratedBy),
+			attribute.Int("ulp.unheld_causes", len(out.UnheldCauses)))
+		span.End()
+	}()
 	view := shipperView(b)
 	records, held := s.records(b, alert)
 	var causes, unheld []string
@@ -185,7 +196,8 @@ func (s *Summarizer) summarize(ctx context.Context, b store.Booking, alert *inte
 	}
 	facts := assess(alert, ship)
 	facts.UnheldCauses = len(unheld)
-	out := activity.Summary{Booking: b.Ref, AlertID: alert.AlertID, Impact: facts.Impact, UnheldCauses: unheld}
+	span.AddEvent("cause check", trace.WithAttributes(attribute.Int("ulp.held", len(causes)), attribute.Int("ulp.unheld", len(unheld))))
+	out = activity.Summary{Booking: b.Ref, AlertID: alert.AlertID, Impact: facts.Impact, UnheldCauses: unheld}
 
 	if useModel && s.Model != nil && ctx.Err() == nil {
 		// The model sees the alert with only the causes this shipper holds.
@@ -441,20 +453,26 @@ func (s *Summarizer) ask(ctx context.Context, ref string, attempt int, req llm.G
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	var skillIDs []string
+	for _, sk := range s.Skills {
+		skillIDs = append(skillIDs, sk.ID())
+	}
+	callCtx, span := llm.StartCall(callCtx, s.Model, req, attempt, skillIDs)
 	start := time.Now()
 	out, err := s.Model.Generate(callCtx, req)
 	call := activity.Model{Booking: ref, Attempt: attempt, Model: s.Model.Name(), PromptHash: llm.PromptHash(req),
 		InputTokens: out.Usage.InputTokens, OutputTokens: out.Usage.OutputTokens,
-		LatencyMS: time.Since(start).Round(time.Millisecond).Milliseconds(), Outcome: "ok"}
-	for _, sk := range s.Skills {
-		call.Skills = append(call.Skills, sk.ID())
-	}
+		LatencyMS: time.Since(start).Round(time.Millisecond).Milliseconds(), Outcome: "ok", Skills: skillIDs}
 	var text string
 	var cited []string
 	if err != nil {
 		call.Outcome, call.Reason = "error", err.Error()
+		span.End(out, call.Outcome)
 	} else if text, cited, err = validateNotification(out.Text, held); err != nil {
 		call.Outcome, call.Reason = "invalid", err.Error()
+		span.End(out, call.Outcome)
+	} else {
+		span.End(out, call.Outcome)
 	}
 	if s.OnModelCall != nil {
 		s.OnModelCall(call)
