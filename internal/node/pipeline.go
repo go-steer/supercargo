@@ -23,6 +23,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/discovery"
 	"github.com/go-steer/supercargo/pkg/envelope"
@@ -40,9 +43,13 @@ import (
 // receiver of their choosing) without holding a key the node trusts. Once
 // verified, refusals are signed ulp.error replies.
 func (n *Node) Process(ctx context.Context, msg []byte) (res rest.Result) {
+	ctx, span := n.start(ctx, "ulp.ingress", trace.WithSpanKind(trace.SpanKindServer))
+	defer span.End()
+	_, ps := n.start(ctx, "ulp.parse")
 	u, err := envelope.Parse(msg)
+	fail(ps, err)
 	if err != nil {
-		n.cfg.Observer(Event{Time: n.cfg.Now(), Direction: "in", Outcome: "malformed", Reason: err.Error()})
+		n.observe(ctx, Event{Time: n.cfg.Now(), Direction: "in", Outcome: "malformed", Reason: err.Error()})
 		return rest.Result{Status: http.StatusBadRequest}
 	}
 	claimed := u.ClaimedHeader()
@@ -55,7 +62,7 @@ func (n *Node) Process(ctx context.Context, msg []byte) (res rest.Result) {
 
 	env, status, rej := n.verify(ctx, u, &ev)
 	if env == nil {
-		n.observeRejection(ev, rej)
+		n.observeRejection(ctx, ev, rej)
 		return rest.Result{Status: status}
 	}
 
@@ -65,43 +72,90 @@ func (n *Node) Process(ctx context.Context, msg []byte) (res rest.Result) {
 	sideEffects := false
 	defer func() {
 		if p := recover(); p != nil {
-			res = n.refuse(&h, ev, &Rejection{Code: intents.CodeInternal, Retryable: !sideEffects,
+			res = n.refuse(ctx, &h, ev, &Rejection{Code: intents.CodeInternal, Retryable: !sideEffects,
 				Reason: "panic: " + bounded(fmt.Sprint(p))})
 		}
 	}()
-	body, rej := n.admit(env)
+	body, rej := n.admit(ctx, env)
 	if rej != nil {
-		return n.refuse(&h, ev, rej)
+		return n.refuse(ctx, &h, ev, rej)
 	}
 	req := &Request{Envelope: env, Body: body}
 	handler := n.cfg.Handlers[h.Intent]
-	if err := handler.Authorize(ctx, req); err != nil {
-		return n.refuse(&h, ev, asRejection(err, intents.CodeForbidden, true))
+	if rej := n.authorize(ctx, handler, req); rej != nil {
+		return n.refuse(ctx, &h, ev, rej)
 	}
 	// A handler may change state before it fails. Its failures are then
 	// not retryable: re-sending could do the work twice.
 	sideEffects = true
-	reply, err := handler.Handle(ctx, req)
+	reply, err := n.handle(ctx, handler, req)
 	if err != nil {
-		return n.refuse(&h, ev, asRejection(err, intents.CodeInternal, false))
+		return n.refuse(ctx, &h, ev, asRejection(err, intents.CodeInternal, false))
 	}
 	ev.Outcome, ev.Time = "accepted", n.cfg.Now()
-	n.cfg.Observer(ev)
+	n.observe(ctx, ev)
 	if reply == nil || reply.Body == nil {
 		return rest.Result{}
 	}
-	out, err := n.sealReply(&h, reply, ev.Via)
+	out, err := n.sealReply(ctx, &h, reply, ev.Via)
 	if err != nil {
 		ev.Outcome, ev.Reason, ev.Time = "failed", "sealing the reply: "+err.Error(), n.cfg.Now()
-		n.cfg.Observer(ev)
+		n.observe(ctx, ev)
 		return rest.Result{Status: http.StatusInternalServerError}
 	}
 	return rest.Result{Response: out}
 }
 
+// authorize runs the handler's authorization in its span, which ends even
+// if the handler panics (as a failure; Process's recover answers).
+func (n *Node) authorize(ctx context.Context, handler Handler, req *Request) (rej *Rejection) {
+	ctx, span := n.start(ctx, "ulp.authorize")
+	panicked := true
+	defer func() {
+		switch {
+		case panicked:
+			span.SetStatus(codes.Error, "panic")
+		case rej != nil:
+			span.SetAttributes(AttrDecision.String("denied"), AttrCode.String(rej.Code))
+			span.SetStatus(codes.Error, rej.Code)
+		default:
+			span.SetAttributes(AttrDecision.String("allowed"))
+		}
+		span.End()
+	}()
+	err := handler.Authorize(ctx, req)
+	panicked = false
+	if err != nil {
+		return asRejection(err, intents.CodeForbidden, true)
+	}
+	return nil
+}
+
+// handle runs the handler in its span, which ends even if it panics.
+func (n *Node) handle(ctx context.Context, handler Handler, req *Request) (reply *Reply, err error) {
+	ctx, span := n.start(ctx, "ulp.handle")
+	panicked := true
+	defer func() {
+		if panicked {
+			span.SetStatus(codes.Error, "panic")
+		}
+		fail(span, err)
+	}()
+	reply, err = handler.Handle(ctx, req)
+	panicked = false
+	return reply, err
+}
+
 // verify runs the steps before and including signature verification. On
 // failure it returns the bare HTTP status to answer with, and why.
-func (n *Node) verify(ctx context.Context, u *envelope.Unverified, ev *Event) (*envelope.Envelope, int, *Rejection) {
+func (n *Node) verify(ctx context.Context, u *envelope.Unverified, ev *Event) (env *envelope.Envelope, status int, rej *Rejection) {
+	ctx, span := n.start(ctx, "ulp.verify")
+	defer func() {
+		if rej != nil {
+			span.SetStatus(codes.Error, rej.Code)
+		}
+		span.End()
+	}()
 	claimed := u.ClaimedHeader()
 	// Addressed here, and an intent served here? Checked on the claimed
 	// header, before any key is fetched; the claim is the signed value once
@@ -112,7 +166,9 @@ func (n *Node) verify(ctx context.Context, u *envelope.Unverified, ev *Event) (*
 	if _, ok := n.cfg.Handlers[claimed.Intent]; !ok {
 		return nil, http.StatusBadRequest, &Rejection{Code: intents.CodeUnsupportedIntent, Reason: "no handler for " + claimed.Intent}
 	}
-	v, err := n.cfg.Keys.Key(ctx, u.Sender(), u.KID())
+	kctx, ks := n.start(ctx, "ulp.key.resolve")
+	v, err := n.cfg.Keys.Key(kctx, u.Sender(), u.KID())
+	fail(ks, err)
 	if err != nil {
 		status := http.StatusForbidden
 		if errors.Is(err, discovery.ErrUnavailable) {
@@ -120,17 +176,25 @@ func (n *Node) verify(ctx context.Context, u *envelope.Unverified, ev *Event) (*
 		}
 		return nil, status, &Rejection{Code: intents.CodeUnknownKey, Reason: err.Error()}
 	}
-	env, err := u.Verify(v)
+	env, err = u.Verify(v)
 	if err != nil {
 		return nil, http.StatusForbidden, &Rejection{Code: intents.CodeBadSignature, Reason: err.Error()}
 	}
 	ev.Verified = true
+	span.SetAttributes(AttrVerified.Bool(true), AttrKID.String(u.KID()))
 	return env, 0, nil
 }
 
 // admit runs the checks on a verified envelope that decide whether it may
 // reach its handler: freshness, replay, and the body.
-func (n *Node) admit(env *envelope.Envelope) (intents.Body, *Rejection) {
+func (n *Node) admit(ctx context.Context, env *envelope.Envelope) (body intents.Body, rej *Rejection) {
+	_, span := n.start(ctx, "ulp.replay")
+	defer func() {
+		if rej != nil {
+			span.SetStatus(codes.Error, rej.Code)
+		}
+		span.End()
+	}()
 	sent, err := env.Header.SentTime()
 	if err != nil {
 		return nil, &Rejection{Code: intents.CodeInvalidBody, Reason: err.Error()}
@@ -144,7 +208,9 @@ func (n *Node) admit(env *envelope.Envelope) (intents.Body, *Rejection) {
 	case err != nil:
 		return nil, &Rejection{Code: intents.CodeInternal, Retryable: true, Reason: err.Error()}
 	}
-	body, err := intents.Decode(env)
+	span.End()
+	_, span = n.start(ctx, "ulp.decode")
+	body, err = intents.Decode(env)
 	if err != nil {
 		code := intents.CodeInvalidBody
 		if errors.Is(err, intents.ErrUnsupportedIntent) {
@@ -155,9 +221,9 @@ func (n *Node) admit(env *envelope.Envelope) (intents.Body, *Rejection) {
 	return body, nil
 }
 
-func (n *Node) observeRejection(ev Event, rej *Rejection) {
+func (n *Node) observeRejection(ctx context.Context, ev Event, rej *Rejection) {
 	ev.Outcome, ev.Code, ev.Reason, ev.Time = "rejected", rej.Code, rej.Reason, n.cfg.Now()
-	n.cfg.Observer(ev)
+	n.observe(ctx, ev)
 }
 
 // asRejection turns a handler's error into a Rejection: a *Rejection as
@@ -172,8 +238,8 @@ func asRejection(err error, code string, retryable bool) *Rejection {
 
 // refuse logs a rejection of a verified envelope and answers it with a
 // signed ulp.error.
-func (n *Node) refuse(h *envelope.Header, ev Event, rej *Rejection) rest.Result {
-	n.observeRejection(ev, rej)
+func (n *Node) refuse(ctx context.Context, h *envelope.Header, ev Event, rej *Rejection) rest.Result {
+	n.observeRejection(ctx, ev, rej)
 	detail := rej.Detail
 	if detail == "" {
 		detail = details[rej.Code]
@@ -186,7 +252,7 @@ func (n *Node) refuse(h *envelope.Header, ev Event, rej *Rejection) rest.Result 
 			body = &intents.ErrorBody{Code: intents.CodeInternal, Detail: details[intents.CodeInternal]}
 		}
 	}
-	out, err := n.sealReply(h, &Reply{Body: body}, ev.Via)
+	out, err := n.sealReply(ctx, h, &Reply{Body: body}, ev.Via)
 	if err != nil {
 		return rest.Result{Status: http.StatusInternalServerError}
 	}
@@ -194,7 +260,9 @@ func (n *Node) refuse(h *envelope.Header, ev Event, rej *Rejection) rest.Result 
 }
 
 // sealReply signs reply as a response to the verified header h.
-func (n *Node) sealReply(h *envelope.Header, reply *Reply, via string) ([]byte, error) {
+func (n *Node) sealReply(ctx context.Context, h *envelope.Header, reply *Reply, via string) (out []byte, err error) {
+	ctx, span := n.start(ctx, "ulp.reply.seal")
+	defer func() { fail(span, err) }()
 	if err := reply.Body.Validate(); err != nil {
 		return nil, fmt.Errorf("node: invalid %s reply body: %w", reply.Body.Intent(), err)
 	}
@@ -220,14 +288,14 @@ func (n *Node) sealReply(h *envelope.Header, reply *Reply, via string) ([]byte, 
 		rh.BookingRef = &ref
 	}
 	env := &envelope.Envelope{Header: rh, Body: b}
-	out, err := envelope.Seal(env, n.cfg.KID, n.cfg.Signer)
+	out, err = envelope.Seal(env, n.cfg.KID, n.cfg.Signer)
 	if err != nil {
 		return nil, err
 	}
 	if len(out) > envelope.MaxSize {
 		return nil, fmt.Errorf("node: reply is %d bytes, over the %d the receiver accepts", len(out), envelope.MaxSize)
 	}
-	n.cfg.Observer(Event{Time: n.cfg.Now(), Direction: "out", Via: via, Intent: rh.Intent, Sender: rh.Sender, Receiver: rh.Receiver,
+	n.observe(ctx, Event{Time: n.cfg.Now(), Direction: "out", Via: via, Intent: rh.Intent, Sender: rh.Sender, Receiver: rh.Receiver,
 		MessageID: rh.MessageID, KID: n.cfg.KID, Outcome: "sent", Verified: true})
 	return out, nil
 }
