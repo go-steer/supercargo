@@ -41,11 +41,14 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel"
+
 	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/app"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/internal/shipper"
+	"github.com/go-steer/supercargo/internal/telemetry"
 	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/sig"
 )
@@ -113,6 +116,11 @@ func serve(args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	stopTelemetry, err := startTelemetry(cfg, log)
+	if err != nil {
+		return err
+	}
+	defer stopTelemetry()
 	a, err := app.New(cfg, log)
 	if err != nil {
 		return err
@@ -120,6 +128,29 @@ func serve(args []string, stderr io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return a.Serve(ctx)
+}
+
+// startTelemetry sets up trace export, if configured, and returns what
+// flushes it at exit (for up to 5s, so a dead collector can't hold up the
+// exit).
+func startTelemetry(cfg *config.Config, log *slog.Logger) (func(), error) {
+	shutdown, err := telemetry.Setup(context.Background(), cfg.Telemetry, cfg.Domain)
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: %w", err)
+	}
+	if telemetry.Enabled(cfg.Telemetry, os.Getenv) {
+		log.Info("telemetry: exporting traces over OTLP")
+		// Export errors (a collector that's down) go to the node's log,
+		// not the standard logger.
+		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { log.Warn("telemetry", "err", err) }))
+	}
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdown(ctx); err != nil {
+			log.Warn("telemetry export at shutdown", "err", err)
+		}
+	}, nil
 }
 
 func keygen(args []string, stdout io.Writer) error {

@@ -16,13 +16,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"go.opentelemetry.io/otel"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
@@ -277,7 +282,12 @@ func mustRead(t *testing.T, p string) string {
 
 func TestServeRejects(t *testing.T) {
 	cfg := shipperConfig(t)
+	// A config that loads but whose key is gone: the node can't start
+	// (after telemetry is set up, and torn down again).
+	keyless := shipperConfig(t)
+	_ = os.Remove(filepath.Join(filepath.Dir(keyless), "key.pem"))
 	for name, args := range map[string][]string{
+		"key gone":       {"serve", "--config", keyless},
 		"no config":      {"serve"},
 		"bad log format": {"serve", "--config", cfg, "--log-format", "xml"},
 		"missing config": {"serve", "--config", filepath.Join(t.TempDir(), "none.yaml")},
@@ -341,4 +351,41 @@ func TestAskRejects(t *testing.T) {
 	if _, err := runCmd(t, "", "ask", "--config", cfg, "--booking", "B", "Where?"); err == nil || !strings.Contains(err.Error(), "no booking B") {
 		t.Errorf("unknown booking: %v", err)
 	}
+}
+
+func TestStartTelemetry(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	stop, err := startTelemetry(&config.Config{Domain: "cymbal-shoes.example"}, log)
+	if err != nil || strings.Contains(buf.String(), "telemetry") {
+		t.Fatalf("off: %v %s", err, buf.String())
+	}
+	stop()
+	// A collector that's down: setup succeeds, the flush at exit warns.
+	t.Cleanup(func() {
+		otel.SetTracerProvider(tracenoop.NewTracerProvider())
+		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(error) {}))
+	})
+	stop, err = startTelemetry(&config.Config{Domain: "cymbal-shoes.example",
+		Telemetry: &config.Telemetry{Protocol: "http", Endpoint: "127.0.0.1:1", Insecure: true}}, log)
+	if err != nil || !strings.Contains(buf.String(), "exporting traces") {
+		t.Fatalf("on: %v %s", err, buf.String())
+	}
+	_, span := otel.Tracer("test").Start(context.Background(), "x")
+	span.End()
+	stop()
+	if !strings.Contains(buf.String(), "level=WARN msg=telemetry") {
+		t.Errorf("no warning for a dead collector: %s", buf.String())
+	}
+}
+
+// TestMain keeps a developer's own OTEL_* settings out of the tests: no
+// test exports anywhere.
+func TestMain(m *testing.M) {
+	for _, k := range []string{"OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"} {
+		_ = os.Unsetenv(k)
+	}
+	os.Exit(m.Run())
 }

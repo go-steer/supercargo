@@ -52,6 +52,13 @@ demo_setup() {
     anthropic) llm="provider: anthropic   # the key comes from ANTHROPIC_API_KEY" ;;
     *) echo "demo_setup: ULP_LLM must be fake or anthropic" >&2; return 1 ;;
   esac
+  # ULP_OTEL_ENDPOINT=localhost:4318 exports both nodes' traces there
+  # (dev/demo/otel up starts a local viewer).
+  local telemetry=""
+  if [[ -n "${ULP_OTEL_ENDPOINT:-}" ]]; then
+    [[ $ULP_OTEL_ENDPOINT =~ ^[A-Za-z0-9.:/_-]+$ ]] || { echo "demo_setup: ULP_OTEL_ENDPOINT must be host:port or an http URL" >&2; return 1; }
+    telemetry="telemetry: { endpoint: \"$ULP_OTEL_ENDPOINT\", insecure: true }"
+  fi
   chmod 700 "$dir"
   [[ -f "$dir/ob.pem" ]] || "$dir/bin/ulpnode" keygen --kid ob-demo-1 --out "$dir/ob.pem" >/dev/null
   [[ -f "$dir/cy.pem" ]] || "$dir/bin/ulpnode" keygen --kid cy-demo-1 --out "$dir/cy.pem" >/dev/null
@@ -86,6 +93,7 @@ skills:
   dir: "$root/dev/demo/skills/ocean-blue"   # Ocean Blue's own agent skills
 control:
   socket: $dir/ob.sock
+$telemetry
 EOF
 
   cat >"$dir/shipper.yaml" <<EOF
@@ -106,6 +114,7 @@ business:
   file: $dir/business.yaml   # private: never in an envelope
 llm:
   $llm
+$telemetry
 EOF
 
   # Cymbal's private business context: what the delay will mean to it.

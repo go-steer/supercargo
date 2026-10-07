@@ -914,4 +914,19 @@ Tracking issue #49. Traces first, then metrics; off unless configured, so CI and
 - The outbound transport gets the egress span's context, so the HTTP client's span and the propagated parent (#46) are `ulp.egress`.
 - `pkg/` takes no OpenTelemetry dependency: the spans live in `internal/node`, around `pkg/`'s calls.
 
-Next: model and tool spans (GenAI conventions, #45), propagation between nodes in HTTP headers with a partner's context treated as untrusted (#46), metrics (#47), and export configuration with a local viewer for the demo and Cloud Trace when hosted (#48).
+**Export** (`internal/telemetry`, set up by `ulpnode serve`): OTLP over HTTP (default) or gRPC to a collector, configured per node:
+
+```yaml
+telemetry:
+  protocol: http              # or grpc
+  endpoint: localhost:4318    # host:port, or (http) a URL (no path: /v1/traces); empty: OTEL_EXPORTER_OTLP_* decide
+  insecure: true              # no TLS (a local collector); a URL's scheme must agree
+  sampleRatio: 1              # 0 to 1, parent-based
+  serviceName: ocean-blue     # default: the node's domain
+```
+
+With no `telemetry:` section and no `OTEL_EXPORTER_OTLP_ENDPOINT` (or `..._TRACES_ENDPOINT`), nothing is set up and nothing is recorded; `OTEL_SDK_DISABLED=true` or `OTEL_TRACES_EXPORTER=none` turns it off regardless. The exporter's own `OTEL_EXPORTER_OTLP_*` variables (headers, timeouts, certificates, and on the variables-only path the endpoint and protocol) apply as the SDK defines them; the service name and sampler come from the config, not `OTEL_SERVICE_NAME` or `OTEL_TRACES_SAMPLER`. Buffered spans are flushed at shutdown, for up to 5 s; export errors go to the node's log. The sampler is parent-based, but no propagator is installed yet, so a message can't carry a parent in; #46 must keep a partner from deciding our sampling (a new root with a link, or a remote-parent sampler that ignores their flag).
+
+**Locally:** `dev/demo/otel up` starts Jaeger in a container (it takes OTLP directly, bound to localhost), and `ULP_OTEL_ENDPOINT=localhost:4318` makes the demo's two nodes export to it: `dev/demo/hello-ulp --tmux`, then the UI at `http://localhost:16686`, services `ocean-blue.example` and `cymbal-shoes.example`. **Hosted** (#38): the nodes export to an OpenTelemetry Collector in the cluster, which sends traces on to Cloud Trace with Workload Identity; that configuration comes with the deployment.
+
+Next: model and tool spans (GenAI conventions, #45), propagation between nodes in HTTP headers with a partner's context treated as untrusted (#46), and metrics (#47).

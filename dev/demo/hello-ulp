@@ -29,7 +29,8 @@
 # and a half minutes later), ULP_LLM (fake: deterministic answers, no key;
 # anthropic: Ocean Blue answers inquiries and Cymbal summarizes alerts with
 # Claude, the key from ANTHROPIC_API_KEY in both nodes' terminals),
-# HELLO_ULP_SESSION (the
+# ULP_OTEL_ENDPOINT (export both nodes' traces to this OTLP/HTTP collector,
+# e.g. localhost:4318 after dev/demo/otel up), HELLO_ULP_SESSION (the
 # tmux session name, hello-ulp; give tests their own so they never replace
 # a running demo).
 #
