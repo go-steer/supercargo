@@ -179,6 +179,18 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
 .toolcall .okk { color: var(--green); }
 .composer { border-top: 1px solid var(--border); padding: 8px 12px; color: var(--text-dim); }
 
+/* ── tooltips ───────────────────────────────────────────────────
+   [data-tip] explains a filter, badge or tag on hover and keyboard focus. */
+[data-tip] { position: relative; }
+[data-tip]:hover::after, [data-tip]:focus-visible::after {
+  content: attr(data-tip); position: absolute; z-index: 10; top: calc(100% + 6px); right: 0;
+  width: max-content; max-width: 300px; white-space: normal; text-align: left;
+  padding: 6px 9px; border-radius: 4px; font-size: 11px; line-height: 1.45; letter-spacing: 0; text-transform: none; font-weight: 400;
+  background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border-soft);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 30%); pointer-events: none;
+}
+.entry-head [data-tip]:hover::after { left: 0; right: auto; }
+
 /* ── login ──────────────────────────────────────────────────────── */
 .login { position: fixed; inset: 0; display: none; place-items: center; background: color-mix(in srgb, var(--bg) 92%, transparent); z-index: 5; }
 .login.show { display: grid; }
@@ -226,7 +238,7 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
       <span class="panel-title">Messages</span>
       <span class="dim" style="font-size:11px">this node's side only</span>
       <span class="filters" id="msg-filters">
-        <button class="on" data-f="all">all</button><button data-f="refused">refused</button>
+        <button class="on" data-f="all" data-tip="Every message this node sent or received, for your roles: verified or not.">all</button><button data-f="refused" data-tip="Only the messages this node refused: a bad signature, a replay, a request it may not answer, or something that isn't a message at all.">refused</button>
       </span>
     </div>
     <div class="panel-body" id="messages"></div>
@@ -235,7 +247,7 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
     <div class="panel-bar">
       <span class="panel-title">Activity</span>
       <span class="filters" id="act-filters">
-        <button class="on" data-f="all">all</button><button data-f="envelope">envelope</button><button data-f="record">record</button><button data-f="model">model</button>
+        <button class="on" data-f="all" data-tip="Everything this node did, for your roles.">all</button><button data-f="envelope" data-tip="A message in or out, and what the node decided about it: verified, refused, sent. The message itself, every byte, is in the Messages panel.">envelope</button><button data-f="record" data-tip="A track & trace event or alert: recorded (received for one of your shipments) or published (sent to a customer).">record</button><button data-f="model" data-tip="A call to an AI model: which model and skills, tokens, latency, and whether its answer passed validation (if not, a template answered instead).">model</button>
       </span>
     </div>
     <div class="panel-body" id="activity"></div>
@@ -362,6 +374,20 @@ const activity = {
   ],
 };
 
+// What each kind and side means, for the badges' tooltips.
+const KIND_TIPS = {
+  envelope: 'A message in or out, and what the node decided about it. The message itself is in the Messages panel.',
+  record: 'A track & trace event or alert: recorded (received for your shipment) or published (sent to a customer).',
+  model: 'A call to an AI model: model, skills, tokens, latency, and whether its answer passed validation.',
+  summary: 'What an alert means for you, written by the assistant (or the template, if the model\'s answer failed validation).',
+  voyage: 'A simulated voyage starting (the demo\'s shipment simulator).',
+  push: 'A push to a customer the node gave up on, or couldn\'t publish.',
+};
+const SIDE_TIPS = {
+  customer: 'Your shipper or receiver role: shipments other carriers carry for you.',
+  operator: 'Your carrier role: bookings you confirmed, events you published.',
+};
+
 // ── rendering ────────────────────────────────────────────────────────
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const family = (intent) => intent.startsWith('ulp.ocean.booking') ? 'booking' : intent === 'ulp.tnt.alert' ? 'alert'
@@ -480,8 +506,10 @@ function renderActivity() {
     const e = el('div', 'entry'), head = el('div', 'entry-head');
     const ts = el('span', 'ts', time.slice(0, 8)); ts.appendChild(el('i', null, time.slice(8)));
     const badge = el('span', 'kind' + (kind === 'model' ? ' model' : ''));
+    badge.dataset.tip = KIND_TIPS[kind];
     badge.appendChild(el('span', null, kind.toUpperCase()));
-    head.append(ts, badge, el('span', 'side', side));
+    const tag = el('span', 'side', side); tag.dataset.tip = SIDE_TIPS[side];
+    head.append(ts, badge, tag);
     e.append(head, jsonBlock(data, 1)); // nested objects start folded, like an editor's fold-to-level-1
     box.appendChild(e);
   }
