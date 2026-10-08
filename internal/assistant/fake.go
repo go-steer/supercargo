@@ -75,12 +75,14 @@ func turnSoFar(msgs []llm.Message) (string, []step) {
 }
 
 var (
-	domainPattern  = regexp.MustCompile(`\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\b`)
-	refPattern     = regexp.MustCompile(`\b[A-Z]{2,}-[A-Z]{2,}-[0-9]+\b`)
-	poPattern      = regexp.MustCompile(`\b[A-Z]{2,}-PO-[0-9]+\b`)
-	consignee      = regexp.MustCompile(`(?i)consignee is ([^,.(]+?)\s*(?:in [A-Za-z ]+?)?\s*\(([a-z0-9.-]+)\)`)
-	dayPattern     = regexp.MustCompile(`(?i)before (?:[a-z]+ )?the ([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)`)
-	askPattern     = regexp.MustCompile(`(?i)\b(?:ask|why)\b`)
+	domainPattern = regexp.MustCompile(`\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\b`)
+	refPattern    = regexp.MustCompile(`\b[A-Z]{2,}-[A-Z]{2,}-[0-9]+\b`)
+	poPattern     = regexp.MustCompile(`\b[A-Z]{2,}-PO-[0-9]+\b`)
+	consignee     = regexp.MustCompile(`(?i)consignee is ([^,.(]+?)\s*(?:in [A-Za-z ]+?)?\s*\(([a-z0-9.-]+)\)`)
+	dayPattern    = regexp.MustCompile(`(?i)before (?:[a-z]+ )?the ([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)`)
+	// askPattern: a question for the carrier ("why", "what caused the
+	// delay", "how firm is the ETA").
+	askPattern     = regexp.MustCompile(`(?i)\b(?:ask|why|caused?|delay(?:s|ed)?|late|eta|firm)\b`)
 	isoDatePattern = regexp.MustCompile(`\b20[0-9]{2}-[01][0-9]-[0-3][0-9]\b`)
 	countPattern   = regexp.MustCompile(`(?i)\b([0-9]{1,3}|one|two|three|four|five)\s*(?:x\s*)?(?:20|40|45)`)
 )
@@ -151,7 +153,7 @@ func fakeStep(msgs []llm.Message, user string, done []step, now time.Time) llm.G
 		}
 		return call(id, ToolGetProfile, map[string]string{"domain": domainPattern.FindString(lower)})
 	}
-	return say("I can look up a carrier (give me its domain), prepare a booking for you to confirm, and follow our shipments.")
+	return say("I can look up a carrier (give me its domain), prepare a booking for you to confirm, follow our shipments (\"where is OB-BKG-1042?\"), and ask a carrier about one (\"why is OB-BKG-1042 delayed?\").")
 }
 
 // draftFrom reads a booking request out of the user's words, the way the

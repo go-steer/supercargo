@@ -114,7 +114,8 @@ Hello ULP is set up in $dir. Open four terminals:
   3. Cymbal Shoes' assistant, the chat TUI (Ctrl-C quits):
        $chat
 
-     Ask it about the carrier, then book (the fake model knows these):
+     Ask it about the carrier, then book: one message each (the fake
+     model knows these; a real model takes any wording):
        We have a new carrier, ocean-blue.example. What can they do?
        Book one 40ft high-cube of sneakers for CY-PO-55120, Rotterdam to
        Newark, departing 2026-10-06, with ocean-blue.example. Consignee is

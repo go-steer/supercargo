@@ -180,6 +180,13 @@ func TestTrackingAndAsk(t *testing.T) {
 		!n.called("ask ocean-blue.example OB-BKG-1042 What is causing the delay on OB-BKG-1042, and how firm is the new ETA?") {
 		t.Errorf("ask: %q, %v, calls %v", r.Text, err, n.calls)
 	}
+	// The demo's own wording, and the way people put it, reach the carrier.
+	for _, q := range []string{"What caused the delay, and how firm is the new ETA?", "What caused the delay for booking OB-BKG-1042 and how firm is the ETA?"} {
+		n.calls = nil
+		if r, err := a.Turn(context.Background(), &Conversation{}, q); err != nil || !strings.Contains(r.Text, "An engine repair at Halifax") {
+			t.Errorf("%s: %q, %v", q, r.Text, err)
+		}
+	}
 	// With nothing booked, the fake says so.
 	a, _, _ = newAssistant(FakeModel(time.Now), &node{})
 	for _, q := range []string{"Where is my shipment?", "Ask why it's late"} {
