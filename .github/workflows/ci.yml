@@ -39,6 +39,9 @@ jobs:
       # Skipping it by label here keeps the step list itself in
       # dev/tools/ci, so the local sweep can't drift from this one.
       SUPERCARGO_CI_SKIP: apidiff
+      # ubuntu-latest ships Google Chrome: the browser smoke test
+      # (dev/smoke/browser) must run here, not skip.
+      SUPERCARGO_BROWSER_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

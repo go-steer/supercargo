@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Smoke: the demo in the browser (MVP1, #81). Both companies' nodes serve
+# their UIs; headless Chrome signs in to each, books through Cymbal's
+# assistant and its confirmation dialog, disrupts the voyage from Ocean
+# Blue's carrier view, and sees the delay reach Cymbal's UI live.
+#
+# Chrome: $SUPERCARGO_CHROME, or google-chrome / chromium on the PATH.
+# With none, the test is skipped, unless SUPERCARGO_BROWSER_REQUIRED=1
+# (CI sets it), when it fails.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+chrome="${SUPERCARGO_CHROME:-}"
+if [[ -z "$chrome" ]]; then
+  for c in google-chrome google-chrome-stable chromium chromium-browser; do
+    if command -v "$c" >/dev/null; then chrome="$(command -v "$c")"; break; fi
+  done
+fi
+if [[ -z "$chrome" ]]; then
+  if [[ "${SUPERCARGO_BROWSER_REQUIRED:-}" == 1 ]]; then
+    echo "smoke/browser: no Chrome found, and SUPERCARGO_BROWSER_REQUIRED=1" >&2
+    exit 1
+  fi
+  echo "– smoke/browser: skipped (no Chrome; set SUPERCARGO_CHROME to run it)"
+  exit 0
+fi
+
+work="$(mktemp -d)"
+trap 'smoke_stop; rm -rf "$work"' EXIT
+
+demo_build "$work"
+(cd "$(dirname "$0")/browserdrive" && go build -o "$work/bin/browserdrive" .)
+demo_ports
+# 4 simulated hours per second: departure about 9s after booking, arrival
+# about 40s after, so the disruption lands mid-voyage with a wide margin.
+demo_setup "$work" 4
+smoke_start "$work"
+
+if ! "$work/bin/browserdrive" -chrome "$chrome" \
+  -shipper "http://cymbal-shoes.localhost:$SH_PORT/ui/" \
+  -operator "http://ocean-blue.localhost:$OP_PORT/ui/" 2>&1 | tee "$work/browser.log"; then
+  smoke_fail "$work" "the browser run failed"
+fi
+grep -q "the delay arrives live" "$work/browser.log" || smoke_fail "$work" "the browser run stopped early"
+echo "✓ smoke/browser: booked through the assistant and its dialog, disrupted from the carrier view, the delay arrived live"
