@@ -52,7 +52,7 @@ OP_PORT="${OP_PORT:-8441}"
 SH_PORT="${SH_PORT:-8442}"
 hps="${HOURS_PER_SECOND:-1}"
 
-echo "Building ulpnode and ulpctl..."
+echo "Building ulpnode, ulpctl and ulpchat..."
 demo_build "$dir"
 demo_setup "$dir" "$hps"
 
@@ -60,6 +60,7 @@ demo_setup "$dir" "$hps"
 q="$(printf %q "$dir")"
 operator="$q/bin/ulpnode serve --config $q/operator.yaml --log-format pretty"
 shipper="$q/bin/ulpnode serve --config $q/shipper.yaml --log-format pretty"
+chat="$q/bin/ulpchat --config $q/shipper.yaml"
 book="$q/bin/ulpnode book --config $q/shipper.yaml --operator ocean-blue.example --request $q/booking.json"
 disrupt="$q/bin/ulpctl disrupt --config $q/operator.yaml --booking OB-BKG-1042 --delay 72h --reason \"Engine repair, unscheduled call at Halifax.\""
 ask="$q/bin/ulpnode ask --config $q/shipper.yaml --booking OB-BKG-1042 \"What caused the delay, and how firm is the new ETA?\""
@@ -88,12 +89,14 @@ if $tmux; then
   tmux select-pane -t "$cy_log" -T "Cymbal Shoes node (shipper)"
   tmux select-pane -t "$presenter" -T "Presenter (ulpctl)"
   sleep 1 # let the nodes start before the commands are typed
-  tmux send-keys -t "$you" "$book"
+  tmux send-keys -t "$you" "$chat" Enter
   tmux send-keys -t "$presenter" "$disrupt"
   tmux select-pane -t "$you"
-  echo "In tmux: press Enter in the top-left pane to book (answer y), and in the"
-  echo "bottom-right pane once Cymbal's log (bottom left) shows the departure, to disrupt."
-  echo "Then ask Ocean Blue why, in the top-left pane: $ask"
+  echo "In tmux: the top-left pane is Cymbal's assistant (ulpchat). Ask it what"
+  echo "ocean-blue.example can do, then to book (see the printout without --tmux for"
+  echo "the sentences); answer y in the dialog. Once Cymbal's log (bottom left) shows"
+  echo "the departure, press Enter in the bottom-right pane to disrupt, then ask the"
+  echo "assistant: Ask ocean-blue.example why OB-BKG-1042 is delayed."
   [[ -n "${HELLO_ULP_NO_ATTACH:-}" ]] && exit 0 # tests
   exec tmux attach -t "$session"
 fi
@@ -108,7 +111,18 @@ Hello ULP is set up in $dir. Open four terminals:
   2. Cymbal Shoes' node (the shipper):
        $shipper
 
-  3. Book, as Cymbal Shoes (it asks before sending; answer y):
+  3. Cymbal Shoes' assistant, the chat TUI (Ctrl-C quits):
+       $chat
+
+     Ask it about the carrier, then book (the fake model knows these):
+       We have a new carrier, ocean-blue.example. What can they do?
+       Book one 40ft high-cube of sneakers, Rotterdam to Newark, departing
+       next week, with ocean-blue.example. Consignee is Cymbal Footwear in
+       Newark (cymbal-footwear.example). It has to arrive before Thursday
+       the 15th.
+     A dialog shows exactly what will be sent; answer y.
+
+     Without the TUI, book from the command line instead (answer y):
        $book
 
      Ocean Blue confirms OB-BKG-1042 and starts the voyage at $hps simulated
@@ -125,7 +139,9 @@ Hello ULP is set up in $dir. Open four terminals:
      since the vessel now arrives after Cymbal's receiving slot on the 15th
      (from its private business file, never sent).
 
-  5. Ask Ocean Blue why, as Cymbal Shoes:
+  5. Ask Ocean Blue why, in the TUI:
+       Ask ocean-blue.example why OB-BKG-1042 is delayed.
+     or from the command line:
        $ask
 
      Ocean Blue's log shows the inquiry verified and allowed, and answered
