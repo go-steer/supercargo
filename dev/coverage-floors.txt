@@ -63,7 +63,7 @@ github.com/go-steer/supercargo/internal/business        97.0  # 98.8
 github.com/go-steer/supercargo/internal/llm            100.0
 github.com/go-steer/supercargo/internal/llm/fake       100.0
 github.com/go-steer/supercargo/internal/llm/anthropic   98.5  # 100.0
-github.com/go-steer/supercargo/internal/llm/gemini      96.0  # 97.2
+github.com/go-steer/supercargo/internal/llm/gemini      97.5  # 99.1
 github.com/go-steer/supercargo/internal/skills          96.0  # 97.0
 github.com/go-steer/supercargo/internal/telemetry       94.0  # 95.3
 github.com/go-steer/supercargo/internal/assistant       94.5  # 95.7

@@ -28,9 +28,10 @@ import (
 
 // TestRealModels calls real models: opt-in, never part of dev/tools/ci
 // (AGENTS.md). With SUPERCARGO_REAL_LLM=1 and the providers' usual
-// environment (a Vertex project and location, Application Default
-// Credentials, or an API key), each configured provider answers plainly,
-// calls a tool, and replies with a JSON object.
+// environment (a Vertex project and location, and Application Default
+// Credentials), Gemini and Claude on Vertex AI each answer plainly, call a
+// tool, and reply with a JSON object. SUPERCARGO_REAL_GEMINI_API=1 adds
+// Gemini by API key (GEMINI_API_KEY).
 //
 //	SUPERCARGO_REAL_LLM=1 go test -run TestRealModels -v ./internal/app/
 //
@@ -48,7 +49,7 @@ func TestRealModels(t *testing.T) {
 		"gemini on vertex": {Provider: config.ProviderGemini, Backend: config.BackendVertex, Model: gm},
 		"claude on vertex": {Provider: config.ProviderAnthropic, Backend: config.BackendVertex, Model: os.Getenv("SUPERCARGO_REAL_CLAUDE_MODEL")},
 	}
-	if os.Getenv("GEMINI_API_KEY") != "" {
+	if os.Getenv("SUPERCARGO_REAL_GEMINI_API") == "1" {
 		cases["gemini by api key"] = config.LLM{Provider: config.ProviderGemini, Model: gm}
 	}
 	for name, c := range cases {

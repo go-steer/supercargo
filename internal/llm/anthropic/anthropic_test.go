@@ -29,6 +29,8 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
+	"github.com/anthropics/anthropic-sdk-go/option"
+
 	"github.com/go-steer/supercargo/internal/llm"
 )
 
@@ -176,7 +178,11 @@ func TestJSONReplyAsText(t *testing.T) {
 	for text, ok := range map[string]bool{
 		`{"answer":"x"}`:                   true,
 		"```json\n{\"answer\":\"x\"}\n```": true,
+		"```JSON\n{\"answer\":\"x\"}\n```": true,
 		"the answer is x":                  false,
+		"null":                             false,
+		"[1]":                              false,
+		"```json\n{\"answer\":\"x\"}\n``` and more": false,
 	} {
 		api := &fakeAPI{}
 		b, _ := json.Marshal(text)
@@ -215,10 +221,22 @@ func TestVertex(t *testing.T) {
 		t.Errorf("request %s, auth %q, key %q", got.URL.Path, got.Header.Get("Authorization"), got.Header.Get("X-Api-Key"))
 	}
 	for name, v := range map[string]*Vertex{"no project": {Region: "r", Credentials: creds}, "no region": {Project: "p", Credentials: creds},
-		"no credentials": {Project: "p", Region: "r"}} {
+		"no credentials": {Project: "p", Region: "r"},
+		// The region is the endpoint's host: anything else could send
+		// the token to another one.
+		"a region that's a host":  {Project: "p", Region: "evil.example/#", Credentials: creds},
+		"a project that's a path": {Project: "p/../x", Region: "us-east5", Credentials: creds}} {
 		if _, err := New(Options{Vertex: v}); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	// The SDK panics where it can't make its client; New returns an error.
+	defer func(f func(context.Context, string, string, *google.Credentials) option.RequestOption) {
+		withCredentials = f
+	}(withCredentials)
+	withCredentials = func(context.Context, string, string, *google.Credentials) option.RequestOption { panic("no client") }
+	if _, err := New(Options{Vertex: &Vertex{Project: "p", Region: "us-east5", Credentials: creds}}); err == nil || !strings.Contains(err.Error(), "no client") {
+		t.Errorf("the SDK's panic: %v", err)
 	}
 }
 

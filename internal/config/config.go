@@ -596,8 +596,12 @@ func (l *LLM) validate() error {
 			return fmt.Errorf("llm: %s %q is not an environment variable name", name, v)
 		}
 	}
-	if l.Model != "" && !modelName.MatchString(l.Model) {
+	// The model ID ends up in the request's path.
+	if l.Model != "" && (!modelName.MatchString(l.Model) || strings.Contains(l.Model, "..")) {
 		return fmt.Errorf("llm: model %q is not a model ID", l.Model)
+	}
+	if l.Provider == ProviderGemini && l.Model == "" {
+		return errors.New("llm: gemini needs a model")
 	}
 	return nil
 }

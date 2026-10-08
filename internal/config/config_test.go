@@ -328,6 +328,9 @@ func TestLLMBackends(t *testing.T) {
 	}
 	for _, in := range []string{
 		"{provider: openai}",
+		"{provider: gemini}",
+		"{provider: gemini, backend: vertex}",
+		"{provider: anthropic, model: ../../other}",
 		"{provider: gemini, backend: azure}",
 		"{provider: gemini, backend: vertex, apiKeyEnv: GEMINI_API_KEY}",
 		"{provider: anthropic, projectEnv: P}",

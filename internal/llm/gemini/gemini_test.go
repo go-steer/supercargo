@@ -190,13 +190,95 @@ func TestRequestErrors(t *testing.T) {
 	}
 }
 
+// hostRecorder answers every request itself (no network) and records the
+// URL and headers it was sent with.
+type hostRecorder struct {
+	mu   sync.Mutex
+	reqs []*http.Request
+}
+
+func (h *hostRecorder) RoundTrip(r *http.Request) (*http.Response, error) {
+	h.mu.Lock()
+	h.reqs = append(h.reqs, r)
+	h.mu.Unlock()
+	body := `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+		Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+}
+
+// TestEndpointNotFromEnvironment: the SDK's base URL variables (and its
+// backend and key variables) can't send the key or the token elsewhere:
+// the endpoint is always Google's.
+func TestEndpointNotFromEnvironment(t *testing.T) {
+	t.Setenv("GOOGLE_GEMINI_BASE_URL", "https://canary.example/")
+	t.Setenv("GOOGLE_VERTEX_BASE_URL", "https://canary.example/")
+	t.Setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+	t.Setenv("GOOGLE_API_KEY", "env-key")
+	t.Setenv("GEMINI_API_KEY", "env-key")
+	for name, c := range map[string]struct {
+		opts Options
+		host string
+	}{
+		"api key":           {Options{APIKey: "k"}, "generativelanguage.googleapis.com"},
+		"vertex, region":    {Options{Vertex: &Vertex{Project: "p", Location: "us-east5"}}, "us-east5-aiplatform.googleapis.com"},
+		"vertex, global":    {Options{Vertex: &Vertex{Project: "p", Location: "global"}}, "aiplatform.googleapis.com"},
+		"vertex, multi-reg": {Options{Vertex: &Vertex{Project: "p", Location: "eu"}}, "aiplatform.eu.rep.googleapis.com"},
+	} {
+		rec := &hostRecorder{}
+		c.opts.Model, c.opts.HTTPClient = "g", &http.Client{Transport: rec}
+		m, err := New(context.Background(), c.opts)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if _, err := m.Generate(context.Background(), llm.GenerateRequest{Messages: []llm.Message{{Role: llm.User, Text: "?"}}}); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		r := rec.reqs[0]
+		if r.URL.Host != c.host {
+			t.Errorf("%s: sent to %s", name, r.URL.Host)
+		}
+		if key := r.Header.Get("X-Goog-Api-Key"); (c.opts.Vertex != nil && key != "") || (c.opts.Vertex == nil && key != "k") {
+			t.Errorf("%s: key header %q", name, key)
+		}
+		if c.opts.Vertex != nil && !strings.Contains(r.URL.Path, "/projects/p/locations/"+c.opts.Vertex.Location+"/publishers/google/models/g:generateContent") {
+			t.Errorf("%s: path %s", name, r.URL.Path)
+		}
+	}
+}
+
+// TestJSONDropsToolCalls: a JSON request offers no tools, so a function
+// call in the reply is never handed to the caller to run.
+func TestJSONDropsToolCalls(t *testing.T) {
+	f := &fakeAPI{replies: []string{
+		`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"send_booking","args":{}}}]},"finishReason":"STOP"}]}`,
+		`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"send_booking","args":{}}},{"text":"{\"a\":1}"}]},"finishReason":"STOP"}]}`,
+		`{"candidates":[{"content":{"role":"model","parts":[{"text":"x"}]},"finishReason":"MALFORMED_FUNCTION_CALL"}]}`,
+		`{"candidates":[{"content":{"role":"model","parts":[{"text":"x"}]},"finishReason":"RECITATION"}]}`,
+	}}
+	m := newModel(t, f)
+	req := llm.GenerateRequest{JSONSchema: json.RawMessage(`{"type":"object"}`), Messages: []llm.Message{{Role: llm.User, Text: "?"}}}
+	if r, err := m.Generate(context.Background(), req); err == nil || len(r.ToolCalls) != 0 {
+		t.Errorf("a call only: %+v, %v", r, err)
+	}
+	if r, err := m.Generate(context.Background(), req); err != nil || len(r.ToolCalls) != 0 || r.Text != `{"a":1}` || r.StopReason != llm.StopEnd {
+		t.Errorf("a call and text: %+v, %v", r, err)
+	}
+	for _, reason := range []string{"MALFORMED_FUNCTION_CALL", "RECITATION"} {
+		if _, err := m.Generate(context.Background(), req); err == nil || !strings.Contains(err.Error(), reason) {
+			t.Errorf("%s: %v", reason, err)
+		}
+	}
+}
+
 func TestNew(t *testing.T) {
 	for name, opts := range map[string]Options{
-		"no model":                {APIKey: "k"},
-		"neither key nor Vertex":  {Model: "m"},
-		"both":                    {Model: "m", APIKey: "k", Vertex: &Vertex{Project: "p", Location: "l"}},
-		"Vertex with no project":  {Model: "m", Vertex: &Vertex{Location: "l"}},
-		"Vertex with no location": {Model: "m", Vertex: &Vertex{Project: "p"}},
+		"no model":                 {APIKey: "k"},
+		"neither key nor Vertex":   {Model: "m"},
+		"both":                     {Model: "m", APIKey: "k", Vertex: &Vertex{Project: "p", Location: "l"}},
+		"Vertex with no project":   {Model: "m", Vertex: &Vertex{Location: "l"}},
+		"Vertex with no location":  {Model: "m", Vertex: &Vertex{Project: "p"}},
+		"a location that's a host": {Model: "m", Vertex: &Vertex{Project: "p", Location: "evil.example/#"}},
+		"a project that's a path":  {Model: "m", Vertex: &Vertex{Project: "p/../x", Location: "us-east5"}},
 	} {
 		if _, err := New(context.Background(), opts); err == nil {
 			t.Errorf("%s: accepted", name)

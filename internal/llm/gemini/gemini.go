@@ -63,8 +63,13 @@ type Model struct {
 	name   string
 }
 
-// New makes a Model. Everything comes from opts, never the environment:
-// the SDK would otherwise pick up GOOGLE_API_KEY and friends on its own.
+// The Gemini API's endpoint.
+const geminiEndpoint = "https://generativelanguage.googleapis.com/"
+
+// New makes a Model. The backend, key, project and location come from
+// opts, never the environment, and the endpoint is always set: left empty,
+// the SDK takes one from GOOGLE_GEMINI_BASE_URL or GOOGLE_VERTEX_BASE_URL
+// and would send the key or the OAuth token there.
 func New(ctx context.Context, opts Options) (*Model, error) {
 	if opts.Model == "" {
 		return nil, errors.New("gemini: no model")
@@ -78,13 +83,19 @@ func New(ctx context.Context, opts Options) (*Model, error) {
 	case v != nil && opts.APIKey != "":
 		return nil, errors.New("gemini: an API key or Vertex AI, not both")
 	case v != nil:
-		if v.Project == "" || v.Location == "" {
-			return nil, errors.New("gemini: Vertex AI needs a project and a location")
+		if err := llm.CheckVertex(v.Project, v.Location); err != nil {
+			return nil, fmt.Errorf("gemini: %w", err)
 		}
 		cfg.Backend, cfg.Project, cfg.Location, cfg.Credentials = genai.BackendVertexAI, v.Project, v.Location, v.Credentials
+		if cfg.HTTPOptions.BaseURL == "" {
+			cfg.HTTPOptions.BaseURL = llm.VertexEndpoint(v.Location)
+		}
 		name = "vertex:gemini:" + opts.Model
 	case opts.APIKey != "":
 		cfg.Backend, cfg.APIKey = genai.BackendGeminiAPI, opts.APIKey
+		if cfg.HTTPOptions.BaseURL == "" {
+			cfg.HTTPOptions.BaseURL = geminiEndpoint
+		}
 	default:
 		return nil, errors.New("gemini: no API key and no Vertex AI project")
 	}
@@ -135,6 +146,9 @@ func (m *Model) Generate(ctx context.Context, req llm.GenerateRequest) (llm.Gene
 	var text strings.Builder
 	for i, p := range c.Content.Parts {
 		switch {
+		case p.FunctionCall != nil && req.JSONSchema != nil:
+			// A JSON request offers no tools: a call is dropped, never
+			// handed to the caller to run.
 		case p.FunctionCall != nil:
 			args, err := json.Marshal(p.FunctionCall.Args)
 			if err != nil || len(p.FunctionCall.Args) == 0 {
@@ -152,6 +166,9 @@ func (m *Model) Generate(ctx context.Context, req llm.GenerateRequest) (llm.Gene
 		}
 	}
 	out.Text = text.String()
+	if req.JSONSchema != nil && out.Text == "" {
+		return out, errors.New("gemini: no reply: a JSON request got no text")
+	}
 	if len(out.ToolCalls) > 0 {
 		out.StopReason = llm.StopTool
 	}

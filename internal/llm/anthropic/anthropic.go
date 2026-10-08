@@ -34,6 +34,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/vertex"
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
 	"github.com/go-steer/supercargo/internal/llm"
@@ -74,16 +75,36 @@ type Vertex struct {
 // VertexScope is the OAuth scope Vertex AI needs.
 const VertexScope = "https://www.googleapis.com/auth/cloud-platform"
 
+// TokenTimeout bounds each OAuth token fetch on Vertex AI.
+const TokenTimeout = 30 * time.Second
+
 // DefaultCredentials finds Google's Application Default Credentials: a
 // gcloud login, a service account key file, or (on Cloud Run) the
 // service's own identity. They refresh tokens for as long as the model
-// lives, so they are bound to no request's context.
+// lives, so they are bound to no request's context; the refresh can't take
+// a request's context either (oauth2's transport gives it none), so its
+// HTTP client has a timeout of its own.
 func DefaultCredentials() (*google.Credentials, error) {
-	c, err := google.FindDefaultCredentials(context.Background(), VertexScope)
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{Timeout: TokenTimeout})
+	c, err := google.FindDefaultCredentials(ctx, VertexScope)
 	if err != nil {
 		return nil, fmt.Errorf("vertex: no Application Default Credentials (gcloud auth application-default login, or a service account): %w", err)
 	}
 	return c, nil
+}
+
+// withCredentials is the SDK's Vertex option (a test replaces it).
+var withCredentials = vertex.WithCredentials
+
+// vertexOption is the Vertex option, or an error where the SDK panics (it
+// can't make its HTTP client): a node fails to start instead of crashing.
+func vertexOption(v *Vertex) (o option.RequestOption, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("anthropic: vertex: %v", r)
+		}
+	}()
+	return withCredentials(context.Background(), v.Region, v.Project, v.Credentials), nil
 }
 
 // Model is a Claude model behind the llm.Model interface.
@@ -100,8 +121,14 @@ func New(opts Options) (*Model, error) {
 	if opts.Vertex == nil && opts.APIKey == "" {
 		return nil, errors.New("anthropic: no API key")
 	}
-	if v := opts.Vertex; v != nil && (v.Project == "" || v.Region == "" || v.Credentials == nil) {
-		return nil, errors.New("anthropic: Vertex AI needs a project, a region and credentials")
+	if v := opts.Vertex; v != nil {
+		if v.Credentials == nil {
+			return nil, errors.New("anthropic: Vertex AI needs credentials")
+		}
+		// The region becomes the endpoint's host.
+		if err := llm.CheckVertex(v.Project, v.Region); err != nil {
+			return nil, fmt.Errorf("anthropic: %w", err)
+		}
 	}
 	if opts.Model == "" {
 		opts.Model = DefaultModel
@@ -122,7 +149,11 @@ func New(opts Options) (*Model, error) {
 	if v := opts.Vertex; v != nil {
 		// The HTTP client goes first: Vertex wraps it with OAuth. Its
 		// option also turns off the SDK's environment defaults.
-		reqOpts = append(reqOpts, vertex.WithCredentials(context.Background(), v.Region, v.Project, v.Credentials))
+		vo, err := vertexOption(v)
+		if err != nil {
+			return nil, err
+		}
+		reqOpts = append(reqOpts, vo)
 		name = "vertex:anthropic:" + opts.Model
 	} else {
 		reqOpts = append(reqOpts, option.WithAPIKey(opts.APIKey))
@@ -178,13 +209,12 @@ func (m *Model) Generate(ctx context.Context, req llm.GenerateRequest) (llm.Gene
 		// No respond call: a reply given as a JSON object in text is taken
 		// (some models on Vertex AI can't be forced to call a tool); the
 		// caller validates either way.
-		t := strings.TrimSpace(out.Text)
-		t = strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(t, "```json"), "```"), "```")
+		t := llm.StripCodeFence(out.Text)
 		var obj map[string]json.RawMessage
-		if json.Unmarshal([]byte(strings.TrimSpace(t)), &obj) != nil {
+		if json.Unmarshal([]byte(t), &obj) != nil || obj == nil {
 			return out, errors.New("anthropic: no reply: the model neither called respond nor answered with a JSON object")
 		}
-		out.Text, out.StopReason = strings.TrimSpace(t), llm.StopEnd
+		out.Text, out.StopReason = t, llm.StopEnd
 	}
 	return out, nil
 }
