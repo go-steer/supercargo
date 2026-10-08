@@ -56,8 +56,12 @@ func TestParse(t *testing.T) {
 	if len(secrets) != 4 || strings.Contains(strings.Join(secrets, "|"), "2026") {
 		t.Errorf("secrets %q", secrets)
 	}
-	if (*Context)(nil).Secrets() != nil {
+	if (*Context)(nil).Secrets() != nil || (*Context)(nil).Private() != nil {
 		t.Error("a nil context has secrets")
+	}
+	// Private: the secrets and the dates.
+	if p := c.Private(); len(p) != 6 || p[4] != "2026-10-15" || p[5] != "2026-10-15" {
+		t.Errorf("private %q", p)
 	}
 	if c, err := Parse(nil); err != nil || len(c.Shipments) != 0 {
 		t.Errorf("an empty file: %+v, %v", c, err)

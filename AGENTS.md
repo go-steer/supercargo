@@ -160,6 +160,11 @@ are in:
 - The node API (#15): `internal/activity` (the activity stream, which the
   log renders from), the control API's reads, and `ulpnode watch`.
 
+- Milestone 5 so far: the alert summarizer (`internal/shipper`), the
+  assistant's tool loop (`internal/assistant`), and `ulpchat`
+  (`cmd/ulpchat`, `internal/chatui`) with the shared colour tokens in
+  `internal/ui/theme`.
+
 - The payload alignment (#68, DESIGN §A.5): the message bodies are the
   standard ULP payload schemas (pf's, snake_case, with header `dialect`)
   inside our unchanged signed envelope, and profiles carry pf's

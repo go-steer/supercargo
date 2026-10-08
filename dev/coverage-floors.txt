@@ -66,6 +66,8 @@ github.com/go-steer/supercargo/internal/llm/anthropic   97.0  # 98.5
 github.com/go-steer/supercargo/internal/skills          96.0  # 97.0
 github.com/go-steer/supercargo/internal/telemetry       94.0  # 95.3
 github.com/go-steer/supercargo/internal/assistant       94.5  # 95.7
+github.com/go-steer/supercargo/internal/ui/theme       100.0
+github.com/go-steer/supercargo/internal/chatui          97.0  # 98.2
 github.com/go-steer/supercargo/pkg/transport/rest       90.0  # 91.8
 github.com/go-steer/supercargo/pkg/transport/a2a        95.0  # 96.2
 
@@ -79,3 +81,4 @@ github.com/go-steer/supercargo/internal/control         89.0  # 90.2: a director
 github.com/go-steer/supercargo/internal/app             89.0  # 90.3
 github.com/go-steer/supercargo/cmd/ulpnode              90.0  # 91.3
 github.com/go-steer/supercargo/cmd/ulpctl               91.0  # 92.7
+github.com/go-steer/supercargo/cmd/ulpchat               86.0  # 87.3: main runs a real terminal

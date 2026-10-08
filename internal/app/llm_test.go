@@ -25,21 +25,21 @@ import (
 )
 
 func TestNewModel(t *testing.T) {
-	if m, err := newModel(nil, nil); m != nil || err != nil {
+	if m, err := NewModel(nil, nil); m != nil || err != nil {
 		t.Errorf("no llm section: %v, %v", m, err)
 	}
-	if m, err := newModel(&config.LLM{Provider: config.ProviderFake}, operator.FakeInquiryModel()); err != nil || m.Name() != "fake" {
+	if m, err := NewModel(&config.LLM{Provider: config.ProviderFake}, operator.FakeInquiryModel()); err != nil || m.Name() != "fake" {
 		t.Errorf("fake: %v, %v", m, err)
 	}
 	// The key comes from the environment, and a node without it doesn't
 	// start.
 	t.Setenv("SUPERCARGO_TEST_KEY", "")
-	if _, err := newModel(&config.LLM{Provider: config.ProviderAnthropic, APIKeyEnv: "SUPERCARGO_TEST_KEY"}, nil); err == nil ||
+	if _, err := NewModel(&config.LLM{Provider: config.ProviderAnthropic, APIKeyEnv: "SUPERCARGO_TEST_KEY"}, nil); err == nil ||
 		!strings.Contains(err.Error(), "SUPERCARGO_TEST_KEY") {
 		t.Errorf("no key: %v", err)
 	}
 	t.Setenv("SUPERCARGO_TEST_KEY", "sk-test")
-	m, err := newModel(&config.LLM{Provider: config.ProviderAnthropic, APIKeyEnv: "SUPERCARGO_TEST_KEY", Model: "claude-test"}, nil)
+	m, err := NewModel(&config.LLM{Provider: config.ProviderAnthropic, APIKeyEnv: "SUPERCARGO_TEST_KEY", Model: "claude-test"}, nil)
 	if err != nil || m.Name() != "anthropic:claude-test" {
 		t.Errorf("anthropic: %v, %v", m, err)
 	}

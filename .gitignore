@@ -9,6 +9,8 @@ CLAUDE.md
 bin/
 # `go build ./cmd/ulpnode` from the repo root drops the binary here.
 /ulpnode
+/ulpchat
+/ulpctl
 dist/
 *.test
 *.out
