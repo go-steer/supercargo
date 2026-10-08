@@ -58,8 +58,8 @@ demo_setup "$dir" "$hps"
 
 # Shell-quoted, so a DIR with spaces still pastes and runs.
 q="$(printf %q "$dir")"
-operator="$q/bin/ulpnode serve --config $q/operator.yaml"
-shipper="$q/bin/ulpnode serve --config $q/shipper.yaml"
+operator="$q/bin/ulpnode serve --config $q/operator.yaml --log-format pretty"
+shipper="$q/bin/ulpnode serve --config $q/shipper.yaml --log-format pretty"
 book="$q/bin/ulpnode book --config $q/shipper.yaml --operator ocean-blue.example --request $q/booking.json"
 disrupt="$q/bin/ulpctl disrupt --config $q/operator.yaml --booking OB-BKG-1042 --delay 72h --reason \"Engine repair, unscheduled call at Halifax.\""
 ask="$q/bin/ulpnode ask --config $q/shipper.yaml --booking OB-BKG-1042 \"What caused the delay, and how firm is the new ETA?\""
@@ -112,24 +112,24 @@ Hello ULP is set up in $dir. Open four terminals:
        $book
 
      Ocean Blue confirms OB-BKG-1042 and starts the voyage at $hps simulated
-     hour(s) per second. Watch Cymbal's log: each event arrives as an
-     "envelope" line (verified=true, outcome=accepted) and an
-     "event recorded" line: gate-in, load, departure, estimated arrival...
+     hour(s) per second. Watch Cymbal's log: each event arrives as a
+     "← ulp.tnt.event … VERIFIED (kid …)  ALLOWED" line and a "· OB-BKG-1042
+     …" line: gate-in, load, departure, estimated arrival...
 
   4. Once the vessel has departed, disrupt the voyage, as the presenter:
        $disrupt
 
-     Cymbal's log shows the signed delay alert: "alert recorded",
-     severity=high, the ETA moving from the 13th to the 16th. Then Cymbal's
-     own model says what that means for Cymbal: an "alert summary" line,
-     impact=misses, since the vessel now arrives after Cymbal's receiving
-     slot on the 15th (from its private business file, never sent).
+     Cymbal's log shows the signed delay alert ("! alert recorded … high
+     delay"), the ETA moving from the 13th to the 16th. Then Cymbal's own
+     model says what that means for Cymbal: a "✦ summary … MISSES" line,
+     since the vessel now arrives after Cymbal's receiving slot on the 15th
+     (from its private business file, never sent).
 
   5. Ask Ocean Blue why, as Cymbal Shoes:
        $ask
 
-     Ocean Blue's log shows the inquiry verified, authorized and answered
-     (a "model call" line; the fake model needs no API key), and the answer
+     Ocean Blue's log shows the inquiry verified and allowed, and answered
+     (a "✦ model" line; the fake model needs no API key), and the answer
      cites events and the alert that Cymbal holds signed.
 
 Run it again from step 1 with a fresh booking by restarting both nodes

@@ -1,0 +1,23 @@
+18:00:05 node starting  domain=cymbal-shoes.example  roles=shipper,receiver  listen=127.0.0.1:8442
+18:00:05 WARN INSECURE DEVELOPMENT MODE: no TLS.
+18:00:05 alert summarizer  model=fake
+18:00:05 → ulp.ocean.booking.request      ocean-blue.example     rest signed (kid cy-demo-1)
+18:00:05 ← ulp.ocean.booking.confirmation ocean-blue.example     rest VERIFIED (kid ob-demo-1)  reply
+18:00:05 ← ulp.tnt.event                  ocean-blue.example     rest VERIFIED (kid ob-demo-1)  ALLOWED
+18:00:05 · OB-BKG-1042  TRANSPORT DEPA ACT  NLRTM  Ocean Blue Aurora 42W  2026-10-07T18:00:00Z  EV-000003 (recorded)
+18:00:05 ← ulp.tnt.alert                  ocean-blue.example     -    VERIFIED (kid ob-demo-1)  ALLOWED
+18:00:05 ! alert recorded OB-BKG-1042  high delay AL-000006: Engine repair, unscheduled call at Halifax.  ETA 2026-10-13T08:00:00Z → 2026-10-16T08:00:00Z  causes EV-000005
+18:00:05 ✦ model fake  OB-BKG-1042  3ms  420→61 tokens  skills alert-summary@1a2b  ok
+18:00:05 ✦ summary OB-BKG-1042  MISSES: Delay on OB-BKG-1042: it misses your receiving slot on 2026-10-15.
+18:00:05 ← ulp.tnt.inquiry                mallory.example        a2a  VERIFIED (kid m-1)  DENIED forbidden: not a party
+18:00:05 ← ulp.tnt.event                  ocean-blue.example     -    REJECTED bad_signature: signature does not verify
+18:00:05 ← (unreadable)                                          -    MALFORMED not a JWS
+18:00:05 ✦ model anthropic:claude  OB-BKG-1042  1.5s  0→0 tokens  attempt 2  invalid: cites EV-9
+18:00:05 ✦ model anthropic:claude  OB-BKG-1042  0s  0→0 tokens  attempt 2  error: timeout
+18:00:05 ✦ summary OB-BKG-1  UNKNOWN: Customs hold.[2J Next  (template)  ! cited but not received: EV-404
+18:00:05 ← ulp.tnt.event                  ocean-blue.example     -    VERIFIED (kid ob-demo-1)  REFUSED replay: seen before  m-7
+18:00:05 ← ulp.ocean.booking.confirmation ocean-blue.example     -    VERIFIED (kid ob-demo-1)  REFUSED response sentAt is 3m0s from now
+18:00:05 → ulp.tnt.event                  cymbal-shoes.example   -    FAILED connection refused
+18:00:05 ← ulp.tnt.event                  ocean-blue.example     -    ACCEPTED
+18:00:05 ! alert recorded OB-BKG-1042  low exception AL-9: 18:00:05 ← ulp.ocean.booking.request ocean-blue.example rest VERIFIED (kid ob-1) ALLOWED
+18:00:05 ERROR control API  err=socket gone

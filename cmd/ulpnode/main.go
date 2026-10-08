@@ -43,6 +43,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/colorprofile"
 	"go.opentelemetry.io/otel"
 
 	"github.com/go-steer/supercargo/internal/activity"
@@ -50,8 +51,10 @@ import (
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/internal/ports"
+	"github.com/go-steer/supercargo/internal/prettylog"
 	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/internal/telemetry"
+	"github.com/go-steer/supercargo/internal/ui/theme"
 	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/sig"
 )
@@ -64,7 +67,7 @@ func main() {
 }
 
 const usage = `usage:
-  ulpnode serve  --config FILE [--log-format text|json]
+  ulpnode serve  --config FILE [--log-format text|json|pretty] [--log-theme dark|light]
   ulpnode keygen --kid KID --out FILE
   ulpnode status --config FILE --booking REF [--operator DOMAIN]
   ulpnode ask    --config FILE --booking REF [--operator DOMAIN] QUESTION...
@@ -93,28 +96,44 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 }
 
-func logger(format string, w io.Writer) (*slog.Logger, error) {
+func logger(format, themeName string, w io.Writer) (*slog.Logger, error) {
 	switch format {
 	case "text":
 		return slog.New(slog.NewTextHandler(w, nil)), nil
 	case "json":
 		return slog.New(slog.NewJSONHandler(w, nil)), nil
+	case "pretty":
+		p, ok := theme.ByName(themeName)
+		if !ok {
+			return nil, fmt.Errorf("--log-theme %q is not dark or light", themeName)
+		}
+		cw, color := colorWriter(w, os.Environ())
+		return slog.New(prettylog.New(cw, prettylog.Options{Color: color, Palette: &p})), nil
 	}
-	return nil, fmt.Errorf("--log-format %q is not text or json", format)
+	return nil, fmt.Errorf("--log-format %q is not text, json or pretty", format)
+}
+
+// colorWriter wraps w to fit its colours to the terminal (16, 256 or
+// true colour), and reports whether to colour at all: only on a terminal
+// that isn't dumb, and never with NO_COLOR (env as os.Environ).
+func colorWriter(w io.Writer, env []string) (io.Writer, bool) {
+	cw := colorprofile.NewWriter(w, env)
+	return cw, cw.Profile >= colorprofile.ANSI
 }
 
 func serve(args []string, stderr io.Writer) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	path := fs.String("config", "", "node configuration (YAML)")
-	format := fs.String("log-format", "text", "text or json")
+	format := fs.String("log-format", "text", "text, json, or pretty (for people: one line per envelope, coloured on a terminal)")
+	logTheme := fs.String("log-theme", "dark", "pretty's colours: dark or light")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *path == "" {
 		return errors.New("serve: --config is required")
 	}
-	log, err := logger(*format, stderr)
+	log, err := logger(*format, *logTheme, stderr)
 	if err != nil {
 		return err
 	}
