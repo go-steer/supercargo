@@ -394,6 +394,9 @@ function momentText(m) {
 }
 
 function renderStrip(box, j) {
+  if (!j || !Array.isArray(j.legs) || !j.legs.length) return;
+  j.calls ||= [];
+  j.position ||= {};
   const track = el('div', 'track');
   const reached = new Set(j.calls.filter((c) => c.kinds.some((k) => k !== 'unscheduled')).map((c) => c.port.unLocode));
   const unscheduled = new Set(j.calls.filter((c) => c.kinds.includes('unscheduled')).map((c) => c.port.unLocode));

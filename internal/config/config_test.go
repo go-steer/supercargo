@@ -278,9 +278,9 @@ func TestWeb(t *testing.T) {
 	if c.Web == nil || len(c.Web.Personas) != 1 || c.Web.Personas[0].Roles[0] != RoleOperator {
 		t.Errorf("web %+v", c.Web)
 	}
-	ok := strings.Replace(web, "  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://8441-ws.example\", \"http://127.0.0.1:8441\"]\n"+
+	ok := strings.Replace(web, "  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://8441-ws.example\", \"http://127.0.0.1:8441\", \"http://[::1]:8441\"]\n"+
 		"  presenter: { panels: [{ name: Cymbal, url: \"http://127.0.0.1:8442/ui/\" }, { name: Ocean, url: \"https://8441-ws.example/ui/\" }] }\n", 1)
-	if c, err := Parse([]byte(local + ok)); err != nil || len(c.Web.Presenter.Panels) != 2 || len(c.Web.FrameAncestors) != 2 {
+	if c, err := Parse([]byte(local + ok)); err != nil || len(c.Web.Presenter.Panels) != 2 || len(c.Web.FrameAncestors) != 3 {
 		t.Errorf("a presenter: %v", err)
 	}
 	if _, err := Parse([]byte(strings.Replace(local, "127.0.0.1:8443", "localhost:8443", 1) + web)); err != nil {
@@ -293,24 +293,34 @@ func TestWeb(t *testing.T) {
 		}
 	}
 	for name, edit := range map[string][2]string{
-		"no auth":                  {"auth: demo\n", ""},
-		"hosted auth, not yet":     {"auth: demo", "auth: iap"},
-		"no personas":              {"  personas:\n    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }\n", "  personas: []\n"},
-		"a bad id":                 {"id: sam", "id: Sam!"},
-		"a role the node lacks":    {"roles: [operator]", "roles: [shipper]"},
-		"no role":                  {"roles: [operator]", "roles: []"},
-		"an empty name":            {"name: Sam", `name: ""`},
-		"a control char in title":  {"title: Ops desk", `title: "Ops\u0007desk"`},
-		"an uppercase host":        {"  auth: demo\n", "  auth: demo\n  hosts: [Bad.Example]\n"},
-		"a host with a port":       {"  auth: demo\n", "  auth: demo\n  hosts: [\"8441-ws.example:443\"]\n"},
-		"an ancestor with a path":  {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://p.example/ui\"]\n"},
-		"an ancestor with a quote": {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://p.example'\"]\n"},
-		"an ancestor wildcard":     {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://*\"]\n"},
-		"an ftp ancestor":          {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"ftp://p.example\"]\n"},
-		"a panel not at /ui/":      {"  auth: demo\n", "  auth: demo\n  presenter: { panels: [{ name: P, url: \"https://p.example/admin/\" }] }\n"},
-		"a panel with a query":     {"  auth: demo\n", "  auth: demo\n  presenter: { panels: [{ name: P, url: \"https://p.example/ui/?x=1\" }] }\n"},
-		"a panel with no name":     {"  auth: demo\n", "  auth: demo\n  presenter: { panels: [{ name: \"\", url: \"https://p.example/ui/\" }] }\n"},
-		"a presenter of no panels": {"  auth: demo\n", "  auth: demo\n  presenter: { panels: [] }\n"},
+		"no auth":                              {"auth: demo\n", ""},
+		"hosted auth, not yet":                 {"auth: demo", "auth: iap"},
+		"no personas":                          {"  personas:\n    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }\n", "  personas: []\n"},
+		"a bad id":                             {"id: sam", "id: Sam!"},
+		"a role the node lacks":                {"roles: [operator]", "roles: [shipper]"},
+		"no role":                              {"roles: [operator]", "roles: []"},
+		"an empty name":                        {"name: Sam", `name: ""`},
+		"a control char in title":              {"title: Ops desk", `title: "Ops\u0007desk"`},
+		"an uppercase host":                    {"  auth: demo\n", "  auth: demo\n  hosts: [Bad.Example]\n"},
+		"a host with a port":                   {"  auth: demo\n", "  auth: demo\n  hosts: [\"8441-ws.example:443\"]\n"},
+		"an ancestor with a path":              {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://p.example/ui\"]\n"},
+		"an ancestor with a quote":             {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://p.example'\"]\n"},
+		"an ancestor wildcard":                 {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://*\"]\n"},
+		"an ftp ancestor":                      {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"ftp://p.example\"]\n"},
+		"an ancestor ending in ?":              {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://p.example?\"]\n"},
+		"an ancestor ending in #":              {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://p.example#\"]\n"},
+		"an ancestor with an empty port":       {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://p.example:\"]\n"},
+		"an ancestor port out of range":        {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://p.example:99999\"]\n"},
+		"an ancestor port with a leading zero": {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://p.example:0080\"]\n"},
+		"an unspecified ancestor":              {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"http://0.0.0.0:8441\"]\n"},
+		"an ancestor with a space":             {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://p.example x\"]\n"},
+		"an ancestor with a semicolon":         {"  auth: demo\n", "  auth: demo\n  frameAncestors: [\"https://p.example;x\"]\n"},
+		"a panel with userinfo":                {"  auth: demo\n", "  auth: demo\n  presenter: { panels: [{ name: P, url: \"https://u@p.example/ui/\" }] }\n"},
+		"a panel ending in ?":                  {"  auth: demo\n", "  auth: demo\n  presenter: { panels: [{ name: P, url: \"https://p.example/ui/?\" }] }\n"},
+		"a panel not at /ui/":                  {"  auth: demo\n", "  auth: demo\n  presenter: { panels: [{ name: P, url: \"https://p.example/admin/\" }] }\n"},
+		"a panel with a query":                 {"  auth: demo\n", "  auth: demo\n  presenter: { panels: [{ name: P, url: \"https://p.example/ui/?x=1\" }] }\n"},
+		"a panel with no name":                 {"  auth: demo\n", "  auth: demo\n  presenter: { panels: [{ name: \"\", url: \"https://p.example/ui/\" }] }\n"},
+		"a presenter of no panels":             {"  auth: demo\n", "  auth: demo\n  presenter: { panels: [] }\n"},
 		"a duplicate id": {"    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }\n",
 			"    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }\n    - { id: sam, name: Sammy, roles: [operator] }\n"},
 	} {

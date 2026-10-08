@@ -555,7 +555,8 @@ func (c *Config) validateWeb() error {
 		for _, panel := range p.Panels {
 			u, err := url.Parse(panel.URL)
 			if panel.Name == "" || utf8.RuneCountInString(panel.Name) > 64 || strings.ContainsFunc(panel.Name, unsafeRune) ||
-				err != nil || !validOrigin(u.Scheme+"://"+u.Host) || u.Path != "/ui/" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+				err != nil || !validOrigin(u.Scheme+"://"+u.Host) || u.Path != "/ui/" || u.RawQuery != "" || u.Fragment != "" || u.User != nil ||
+				u.ForceQuery || panel.URL != u.Scheme+"://"+u.Host+"/ui/" {
 				return fmt.Errorf("web: presenter panel %q needs a short name and a URL like https://host/ui/", panel.URL)
 			}
 		}
@@ -650,12 +651,19 @@ var personaID = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 // an optional port, nothing else (it goes into a Content Security Policy).
 func validOrigin(s string) bool {
 	u, err := url.Parse(s)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" || u.RawQuery != "" ||
-		u.Fragment != "" || u.User != nil || u.Opaque != "" {
+	// Exactly scheme://host[:port]: no trailing "?" or "#", no path.
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || s != u.Scheme+"://"+u.Host || u.ForceQuery {
 		return false
 	}
+	if p := u.Port(); p != "" || strings.HasSuffix(u.Host, ":") {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 || p != strconv.Itoa(n) {
+			return false
+		}
+	}
 	host := u.Hostname()
-	return (envelope.ValidDomain(host) || host == "localhost" || net.ParseIP(host) != nil) && !strings.ContainsAny(s, " ;,'\"")
+	ip := net.ParseIP(host)
+	return (envelope.ValidDomain(host) || host == "localhost" || (ip != nil && !ip.IsUnspecified())) && !strings.ContainsAny(s, " ;,'\"")
 }
 
 // loopback reports whether listen's host is this machine only.

@@ -389,8 +389,10 @@ func TestPresenter(t *testing.T) {
 		Panels:         []Panel{{Name: "Cymbal Shoes", URL: "https://8442-ws.example/ui/"}, {Name: "Ocean Blue", URL: "https://8441-ws.example/ui/"}}})
 	rec := do(h, http.MethodGet, "/ui/presenter", "", nil)
 	csp := rec.Header().Get("Content-Security-Policy")
+	// The presenter page itself may be framed by nothing but itself.
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "presenter.js") ||
-		!strings.Contains(csp, "frame-src https://8442-ws.example https://8441-ws.example;") || strings.Contains(csp, "frame-src *") {
+		!strings.Contains(csp, "frame-src https://8442-ws.example https://8441-ws.example;") || strings.Contains(csp, "frame-src *") ||
+		!strings.Contains(csp, "frame-ancestors 'self';") {
 		t.Errorf("presenter: HTTP %d, CSP %s", rec.Code, csp)
 	}
 	var pr PresenterResponse
