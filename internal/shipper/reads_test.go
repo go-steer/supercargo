@@ -136,6 +136,14 @@ func TestControlReads(t *testing.T) {
 	if code := get(t, h, "/shipments/other.example/OB-BKG-1/events", &rr); code != http.StatusNotFound || rr.Error == "" {
 		t.Errorf("another operator's ref: HTTP %d %+v", code, rr)
 	}
+	var jr JourneyResponse
+	if code := get(t, h, "/shipments/ocean-blue.example/OB-BKG-1/journey", &jr); code != http.StatusOK || jr.Journey == nil ||
+		jr.Journey.Booking != "OB-BKG-1" || len(jr.Journey.Calls) == 0 {
+		t.Errorf("journey: HTTP %d %+v", code, jr)
+	}
+	if code := get(t, h, "/shipments/other.example/OB-BKG-1/journey", &jr); code != http.StatusNotFound || jr.Error == "" {
+		t.Errorf("another operator's journey: HTTP %d %+v", code, jr)
+	}
 	var pr ProfileResponse
 	if code := get(t, h, "/profile/ocean-blue.example", &pr); code != http.StatusOK || pr.Profile == nil ||
 		pr.Profile.Name != "Ocean Blue" || pr.Profile.A2A == "" || len(pr.Profile.Keys) != 1 || pr.Profile.Keys[0] != "ob-1" ||

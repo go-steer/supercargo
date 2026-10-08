@@ -157,6 +157,8 @@ func Handler(cfg Config) http.Handler {
 	mux.HandleFunc("GET /ui/api/shipments/{operator}/{ref}/events", s.authed(s.forward("/shipments/{operator}/{ref}/events", shipper)))
 	mux.HandleFunc("GET /ui/api/bookings", s.authed(s.forward("/bookings", []string{RoleOperator})))
 	mux.HandleFunc("GET /ui/api/bookings/{ref}/events", s.authed(s.forward("/bookings/{ref}/events", []string{RoleOperator})))
+	mux.HandleFunc("GET /ui/api/shipments/{operator}/{ref}/journey", s.authed(s.forward("/shipments/{operator}/{ref}/journey", shipper)))
+	mux.HandleFunc("GET /ui/api/bookings/{ref}/journey", s.authed(s.forward("/bookings/{ref}/journey", []string{RoleOperator})))
 	// The assistant is the shipper role's (a receiver's comes later, #75).
 	asShipper := []string{RoleShipper}
 	mux.HandleFunc("GET /ui/api/assistant", s.authed(s.role(asShipper, s.assistantState)))

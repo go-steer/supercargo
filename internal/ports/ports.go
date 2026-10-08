@@ -27,6 +27,21 @@ var names = map[string]string{
 	"CAHAL": "Halifax", "ESVLC": "Valencia", "FRLEH": "Le Havre", "JPTYO": "Tokyo", "KRPUS": "Busan",
 }
 
+// coords are where the ports are, approximately (latitude, longitude in
+// degrees): for drawing a journey (docs/UI route map), never for
+// navigation. Like the names, they are this node's own, never a partner's.
+var coords = map[string][2]float64{
+	"NLRTM": {51.95, 4.05}, "USEWR": {40.68, -74.15}, "USNYC": {40.70, -74.01}, "DEHAM": {53.54, 9.97}, "BEANR": {51.26, 4.40},
+	"CNSHA": {31.36, 121.60}, "SGSIN": {1.26, 103.84}, "GBFXT": {51.96, 1.33}, "USLAX": {33.74, -118.26}, "USLGB": {33.75, -118.21},
+	"CAHAL": {44.64, -63.57}, "ESVLC": {39.44, -0.32}, "FRLEH": {49.48, 0.11}, "JPTYO": {35.62, 139.78}, "KRPUS": {35.10, 129.04},
+}
+
+// Coords is where the port is (latitude, longitude), if this node knows.
+func Coords(code string) (lat, lng float64, ok bool) {
+	c, ok := coords[code]
+	return c[0], c[1], ok
+}
+
 // Name is the port's name, or its code if it has no known name.
 func Name(code string) string {
 	if n, ok := names[code]; ok {

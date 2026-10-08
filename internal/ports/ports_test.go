@@ -51,3 +51,17 @@ func TestSizes(t *testing.T) {
 		}
 	}
 }
+
+func TestCoords(t *testing.T) {
+	if lat, lng, ok := Coords("NLRTM"); !ok || lat < 51 || lat > 52.5 || lng < 3.5 || lng > 4.6 {
+		t.Errorf("Rotterdam at %v, %v (%v)", lat, lng, ok)
+	}
+	if _, _, ok := Coords("XXXXX"); ok {
+		t.Error("an unknown port has coordinates")
+	}
+	for code := range names {
+		if _, _, ok := Coords(code); !ok {
+			t.Errorf("%s has a name and no coordinates", code)
+		}
+	}
+}

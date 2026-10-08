@@ -48,19 +48,30 @@ Journey
     arrival           planned | estimated | actual  (time, and the event ID behind it)
     status            planned | in progress | done | delayed
   calls[]:            every port with an event: UN/LOCODE, event IDs, kind (load, depart, arrive, unscheduled)
-  position:           { at: UN/LOCODE | between: [from, to], fraction, estimated: bool, since: event ID }
+  position:           { at: UN/LOCODE | between: [from, to], estimated: bool, since: event ID }
   alerts[]:           alert IDs with their leg, severity and new ETA
 ```
 
 - **Legs** come from the booking (port of loading → port of discharge) and
-  from calls the events report. An unscheduled call (the demo's Halifax)
-  splits a leg in two.
-- **Status** comes from the events: done once an actual arrival is held,
-  in progress after an actual departure, delayed when an alert moves the
-  arrival past the plan.
-- **Position** is the last actual event's port, or "between" two calls,
-  where the fraction is the elapsed share of the planned (or estimated)
-  sailing time, marked estimated.
+  from ports off the plan where an *actual* event is held (the demo's
+  Halifax): such an unscheduled call splits a leg in two. A plan or an
+  estimate elsewhere doesn't redraw the route, and at most 16 such ports
+  are drawn (the journey says when it left some out): the events are an
+  operator's, and a hostile one could report thousands of places.
+- **Status** comes from the events: done once anything actually happened
+  at the leg's far end (an arrival, a load, a discharge), in progress after
+  an actual departure, delayed when the latest arrival estimate is past the
+  booked arrival (a delay alert's new ETA arrives as such an estimate).
+- **Position** follows the legs, so the two never disagree: at sea on the
+  first leg not done if it actually departed, else at that leg's port of
+  departure; at the end once every leg is done.
+- **Alert causes** are listed only if the node holds those events, as
+  everywhere else alerts are shown.
+- **At sea** is "between" two calls after an actual departure, marked
+  estimated. No fraction of the way is
+  given: the shipper can't know how far along a vessel is at sea (in the
+  demo, the voyage even runs on the operator's simulated clock), so the
+  views draw "at sea" without pretending to know where.
 - Every field carries the event or alert IDs it came from, so the UI can
   link each mark to its message.
 
