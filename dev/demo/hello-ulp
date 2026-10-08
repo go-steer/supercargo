@@ -116,10 +116,13 @@ Hello ULP is set up in $dir. Open four terminals:
 
      Ask it about the carrier, then book (the fake model knows these):
        We have a new carrier, ocean-blue.example. What can they do?
-       Book one 40ft high-cube of sneakers, Rotterdam to Newark, departing
-       next week, with ocean-blue.example. Consignee is Cymbal Footwear in
-       Newark (cymbal-footwear.example). It has to arrive before Thursday
-       the 15th.
+       Book one 40ft high-cube of sneakers for CY-PO-55120, Rotterdam to
+       Newark, departing 2026-10-06, with ocean-blue.example. Consignee is
+       Cymbal Footwear in Newark (cymbal-footwear.example). It has to arrive
+       before Thursday the 15th.
+     (The demo's dates are fixed, and CY-PO-55120 is the purchase order in
+     Cymbal's private business file, so the delay summary below finds the
+     receiving slot.)
      A dialog shows exactly what will be sent; answer y.
 
      Without the TUI, book from the command line instead (answer y):
