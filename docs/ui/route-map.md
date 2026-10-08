@@ -81,7 +81,8 @@ OB-BKG-1042   NLRTM ●━━━━━━━━━━━━━━━◐┄┄┄
 
 ```
 ┌ Route · OB-BKG-1042 ─────────────────────────────────── observed ● estimated ◌ ┐
-│        ╭──────────────────── ocean ────────────────────╮                       │
+│ [Full route] ◀ ▶ [① NLRTM → CAHAL · ocean] [② CAHAL → USEWR · ocean]  [Fit][World]│
+│        ╭──────────── ocean · DCSA Track & Trace ───────╮                       │
 │  NLRTM ●━━━━━━━━━━━━━━━━━━━━━━━◐ ┄┄┄┄┄ ◇ CAHAL ┄┄┄┄┄┄┄┄┄○ USEWR               │
 │  Rotterdam   departed 7th 18:00 (EV-3)  unscheduled call   ETA 16th (EV-5) ⚠  │
 │                                         (AL-6, high)                           │
@@ -95,7 +96,9 @@ OB-BKG-1042   NLRTM ●━━━━━━━━━━━━━━━◐┄┄┄
 - **Legs:** great-circle arcs coloured by mode (the category tokens: ocean
   cyan, road orange later); done legs solid, upcoming dashed, a delayed leg
   in yellow with its alert's pin.
-- **Calls:** a pin per port with events; the unscheduled call as a diamond.
+- **Calls:** a numbered pin per port with events; the unscheduled call as a diamond.
+- **Leg labels name the standard** behind the leg: the dialect of the signed messages that reported it ("DCSA Track & Trace" for ocean; DSDC with the truck leg, #80), so a multimodal journey shows its standards on the map.
+- **Hop chips** across the top: the full route, then one chip per leg, with previous/next; selecting one frames it. **Fit route** and **World** reset the frame; zoom and pan with the wheel and drag.
 - **The container:** a dot at its position, pulsing when an event moved it
   in the last minute; a hollow dashed dot when estimated.
 - **Live:** the map redraws when the activity stream brings a record for
@@ -105,8 +108,21 @@ OB-BKG-1042   NLRTM ●━━━━━━━━━━━━━━━◐┄┄┄
 - **Interaction:** step from call to call, hover for times and sources,
   click to open the message; keyboard accessible.
 - **Hosted option:** with `web.map: google` and a Maps JavaScript API key
-  from Secret Manager, the basemap is Google's; the CSP then allows Google's
-  script and tile hosts, and nothing else changes.
+  from Secret Manager, the basemap is Google's, with Map, Terrain and
+  Satellite views; the CSP then allows Google's script and tile hosts, and
+  nothing else changes. (Third-party tile servers, as pf's demo uses, are
+  not an option: their terms and attribution vary, and every tile is a
+  fetch the CSP would have to allow.)
+
+## Compared with pf's demo map
+
+pf's Control Tower map (October 2026) draws a global journey arc and
+per-hop arcs coloured by mode, with hop chips, standard labels per hop and
+imagery tiles. Its routes and coordinates are hardcoded and the map does
+not move with tracking events; its control tower sees every party's
+messages. Ours keeps the good presentation ideas (hop chips, standards on
+legs, fit/world) and differs where it matters: the journey is the node's
+evidence, live, and each party sees only its own.
 
 ## Out of scope here
 
