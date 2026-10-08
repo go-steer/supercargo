@@ -16,6 +16,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -103,6 +104,20 @@ type Event struct {
 	Reason   string // why, for this node's log; never sent
 	// Via is the binding a request came or went over: "rest" or "a2a".
 	Via string
+
+	// The message itself, for the node's message log (never the slog log):
+	// Wire is its exact bytes as sent or received (nil if there were
+	// none); Header is its header, the signed one once Verified and as
+	// claimed before that (nil if it didn't parse); Body is its body, the
+	// verified bytes inbound or what this node sent (nil otherwise).
+	Wire   []byte
+	Header *envelope.Header
+	Body   json.RawMessage
+	// Opener is the intent that opened this message's conversation (the
+	// request a reply answers), and OpenedHere whether this node sent it:
+	// together they say which of a node's roles the message belongs to.
+	Opener     string
+	OpenedHere bool
 }
 
 // Observer receives events. It must not block.

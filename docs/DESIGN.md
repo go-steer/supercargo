@@ -915,7 +915,8 @@ Both CLIs reach their node through its **control socket**: HTTP over a Unix sock
 
 | Role | Endpoint | What |
 |---|---|---|
-| both | `GET /events` | The **activity stream** as Server-Sent Events: replays the kept entries after `?since=N` (or `Last-Event-ID`), then streams new ones. |
+| both | `GET /events` | The **activity stream** as Server-Sent Events: replays the kept entries after `?since=N` (or `Last-Event-ID`), then streams new ones. `?side=operator` or `?side=customer` (repeatable) keeps those sides' entries and the whole node's. |
+| both | `GET /messages`, `GET /messages/{seq}` | The **message log**: the envelopes this node sent and received, exactly as on the wire. `?side=` as for `/events`, `?since=N`, `?conversation=` (a correlationId), `?limit=` (at most 500, the default). A message of a side not asked for is not found. |
 | shipper | `GET /shipments` | Its bookings at a glance: status from the latest actual event, ETA (the actual arrival, else the latest estimate, else the plan), counts. |
 | shipper | `GET /shipments/{operator}/{ref}/events` | A booking's summary and its records as verified: body, sender, message ID. |
 | shipper | `GET /profile/{domain}` | A partner's profile at a glance, fetched through the node's key cache (the guarded client and strict parser). |
@@ -929,6 +930,15 @@ Both CLIs reach their node through its **control socket**: HTTP over a Unix sock
 - **`model`:** a model call: model, attempt, prompt hash, skills, tokens, latency, validation outcome.
 - **`voyage`:** a simulated voyage starting.
 - **`push`:** a push dropped or unpublished.
+
+**Sides.** Every entry, and every logged message, carries the side it belongs to: `operator`, or `customer` for the shipper and receiver roles ([A.6](#a6-authorization-rules)). A message's side follows the intent that opened its conversation and who sent it: the requests the customer side sends (a booking, an inquiry, a status request) and their replies, or the operator's pushes. A message no role can claim (one that didn't parse, or a request for a role the node doesn't have) has no side: it belongs to the whole node and is in every side's view. The UIs show one tab per role; once personas exist (#30), the node serves only the sides the signed-in persona may act in.
+
+**The message log** is what the payload view shows (#30): the last 1,000 messages (and at most 16 MiB of them), each with its exact bytes (`wire`, the JWS as text), its header, its body, its side, the outcome and code, and the node's reason. A node only ever holds what it sent and what was delivered to it: the shipper's copy of a confirmation is byte for byte what the operator sent. (A message misdirected to it, addressed to another party, is kept as delivered: wire text and claimed header.)
+- **Verified messages** carry their signed header and the verified body, whatever their outcome: one refused *after* its signature verified (a replay, a stale or invalid body, an unauthorized request) is still the sender's signed statement, and shows as verified with its refusal code.
+- **Messages refused before verification** (a bad signature, an unknown key, a wrong receiver) and malformed ones carry only their header as claimed (none if it didn't parse) and the wire text, cut to 4 KiB: a reader shows them as text, never as anything the sender proved.
+- **Unverified messages have a fifth of the log** (by count and by bytes). Anyone can post them, so a flood of junk replaces older junk and never the record of what partners actually sent.
+- **Each message is logged once.** A later outcome for it (a reply that couldn't be sealed) is an activity entry, not a second copy.
+- **The bytes never reach the activity stream** or the log it feeds: a log line says what happened, the message log shows what was sent.
 
 The node keeps the last 1,000 entries. A subscriber that falls behind is cut off rather than slowing the node; it reconnects from its last sequence number, with a `gap` event if entries it missed are gone. The JSON log is rendered from the same entries, so the log and every live view agree. `ulpnode watch --config …` follows a node's stream from a terminal.
 

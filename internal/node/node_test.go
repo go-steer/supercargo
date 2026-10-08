@@ -310,12 +310,28 @@ func TestOutboundGuardOnReplies(t *testing.T) {
 		}
 		return nil
 	}
+	var events []node.Event
+	c.Observer = func(e node.Event) { events = append(events, e) }
 	n, _ := node.New(c)
 	hdr := envelope.NewHeader(intents.BookingRequest, shipperDomain, operatorDomain, time.Now())
 	b, _ := json.Marshal(bookingRequest())
 	msg, _ := envelope.Seal(&envelope.Envelope{Header: hdr, Body: b}, "cy-2026-1", cy.signer)
 	if res := n.Process(context.Background(), msg); res.Response != nil || res.Status != http.StatusInternalServerError {
 		t.Errorf("a guarded reply: %d with %d bytes, want a bare 500", res.Status, len(res.Response))
+	}
+	// Accepted, then failed: two events, but the message's bytes travel
+	// with the first only, so the message log holds it once.
+	var withWire, failed int
+	for _, e := range events {
+		if e.Wire != nil {
+			withWire++
+		}
+		if e.Outcome == "failed" {
+			failed++
+		}
+	}
+	if withWire != 1 || failed != 1 {
+		t.Errorf("%d events carry the message, %d failed; want 1, 1", withWire, failed)
 	}
 }
 
@@ -598,5 +614,45 @@ func TestNoMessagesToSelf(t *testing.T) {
 	}
 	if posted {
 		t.Error("a message to self was posted")
+	}
+}
+
+// TestRejectedResponseEvent: a response that fails its checks reaches the
+// observer with its exact bytes and the header it claims, unverified and
+// with no body, in the conversation this node opened.
+func TestRejectedResponseEvent(t *testing.T) {
+	op, mallory := newParty(t, "ob-2026-1"), newParty(t, "m-1")
+	var resp []byte
+	c := baseConfig(t, op, staticKeys{}, handlerFunc{})
+	c.Domain, c.Roles = shipperDomain, []string{"shipper"}
+	var events []node.Event
+	c.Observer = func(e node.Event) { events = append(events, e) }
+	c.Poster = posterFunc(func(context.Context, string, []byte) ([]byte, error) { return resp, nil })
+	c.Handlers = nil
+	n, err := node.New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := envelope.NewHeader(intents.BookingRequest, shipperDomain, operatorDomain, time.Now())
+	// From someone other than the receiver: refused before any key lookup.
+	rh := h.Reply(intents.BookingConfirmation, time.Now())
+	rh.Sender = "mallory.example"
+	resp = seal(t, mallory.signer, "m-1", rh, map[string]any{"booking_reference": "X"})
+	if _, err := n.Exchange(context.Background(), h, bookingRequest(), intents.BookingConfirmation); !errors.Is(err, node.ErrBadResponse) {
+		t.Fatalf("Exchange: %v", err)
+	}
+	var in *node.Event
+	for i := range events {
+		if events[i].Direction == "in" {
+			in = &events[i]
+		}
+	}
+	if in == nil || in.Verified || in.Body != nil || string(in.Wire) != string(resp) || in.Header == nil ||
+		in.Header.Sender != "mallory.example" || in.Opener != intents.BookingRequest || !in.OpenedHere {
+		t.Errorf("rejected response event: %+v", in)
+	}
+	// The request went out with its bytes, signed by this node.
+	if out := events[0]; out.Direction != "out" || out.Wire == nil || out.Body == nil || !out.OpenedHere || out.Opener != intents.BookingRequest {
+		t.Errorf("request event: %+v", out)
 	}
 }

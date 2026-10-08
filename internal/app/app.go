@@ -71,9 +71,13 @@ type App struct {
 	// (docs/DESIGN.md, A.6).
 	Customer *Records
 	// Keys is the key cache (partners pinned).
-	Keys   *discovery.Cache
-	Server *http.Server
-	Logger *slog.Logger
+	Keys *discovery.Cache
+	// Messages is the message log: the envelopes this node sent and
+	// received, exactly as on the wire, each with its side. Served on the
+	// control API at /messages.
+	Messages *store.Messages
+	Server   *http.Server
+	Logger   *slog.Logger
 	// Business is the shipper's private business context (nil if none).
 	Business *business.Context
 	// Activity is the node's activity stream: the log's source, served live
@@ -142,7 +146,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		return nil, err
 	}
 
-	a := &App{Config: cfg, Keys: cache, Logger: logger, Activity: activity.NewBus(0)}
+	a := &App{Config: cfg, Keys: cache, Logger: logger, Activity: activity.NewBus(0), Messages: store.NewMessages(0, 0)}
 	if cfg.Has(config.RoleOperator) {
 		a.Carrier = newRecords()
 	}
@@ -229,6 +233,8 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		// roles both claim.
 		mux := http.NewServeMux()
 		mux.Handle("GET /events", activity.Handler(a.Activity))
+		mux.Handle("GET /messages", a.messagesHandler())
+		mux.Handle("GET /messages/{seq}", a.messageHandler())
 		var roles []func(*http.ServeMux)
 		if a.Carrier != nil {
 			roles = append(roles, func(m *http.ServeMux) { operator.RegisterControl(m, a.Simulator, a.Carrier.Bookings, a.Carrier.Events) })
@@ -399,14 +405,14 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	o := cfg.Operator
 	a.Publisher = &operator.Publisher{Domain: cfg.Domain, Log: a.Carrier.Events, Now: time.Now,
 		OnDrop: func(ref, id string, err error) {
-			a.Activity.Publish(activity.Entry{Kind: activity.KindPush,
+			a.Activity.Publish(activity.Entry{Side: activity.SideOperator, Kind: activity.KindPush,
 				Push: &activity.Push{Booking: ref, ID: id, Problem: "dropped", Error: err.Error()}})
 		},
 		OnRetry: func(string, string) { a.metrics.Retry() },
 	}
 	a.Simulator = &operator.Simulator{Publisher: a.Publisher, HoursPerSecond: cfg.Simulator.HoursPerSecond,
 		OnError: func(ref string, err error) {
-			a.Activity.Publish(activity.Entry{Kind: activity.KindPush,
+			a.Activity.Publish(activity.Entry{Side: activity.SideOperator, Kind: activity.KindPush,
 				Push: &activity.Push{Booking: ref, Problem: "unpublished", Error: err.Error()}})
 		},
 		OnPublish: func(ref string, body intents.Body) { a.record(activity.ActionPublished, ref, body) },
@@ -434,7 +440,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	handlers[intents.OceanTnTRequest] = &operator.StatusService{Bookings: a.Carrier.Bookings, Log: a.Carrier.Events}
 	handlers[intents.TnTInquiry] = &operator.InquiryService{Bookings: a.Carrier.Bookings, Log: a.Carrier.Events, Model: model, Name: cfg.Name, Skills: agentSkills,
 		OnModelCall: func(c operator.ModelCall) {
-			a.Activity.Publish(activity.Entry{Kind: activity.KindModel, Model: &activity.Model{
+			a.Activity.Publish(activity.Entry{Side: activity.SideOperator, Kind: activity.KindModel, Model: &activity.Model{
 				Booking: c.Booking, Attempt: c.Attempt, Model: c.Model, PromptHash: c.PromptHash, Skills: c.Skills,
 				InputTokens: c.Usage.InputTokens, OutputTokens: c.Usage.OutputTokens,
 				LatencyMS: c.Latency.Round(time.Millisecond).Milliseconds(), Outcome: c.Outcome, Reason: c.Reason}})
@@ -449,7 +455,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 			if err := a.Simulator.Start(b); err != nil {
 				v = &activity.Voyage{Booking: b.Ref, Error: err.Error()}
 			}
-			a.Activity.Publish(activity.Entry{Kind: activity.KindVoyage, Voyage: v})
+			a.Activity.Publish(activity.Entry{Side: activity.SideOperator, Kind: activity.KindVoyage, Voyage: v})
 		},
 	}
 	return nil
@@ -472,10 +478,10 @@ func (a *App) shipperRole(handlers map[string]node.Handler) error {
 	}
 	a.Summarizer = &shipper.Summarizer{Log: a.Customer.Events, Business: a.Business, Model: model, Skills: agentSkills, Name: cfg.Name,
 		OnSummary: func(s activity.Summary) {
-			a.Activity.Publish(activity.Entry{Kind: activity.KindSummary, Summary: &s})
+			a.Activity.Publish(activity.Entry{Side: activity.SideCustomer, Kind: activity.KindSummary, Summary: &s})
 		},
 		OnModelCall: func(m activity.Model) {
-			a.Activity.Publish(activity.Entry{Kind: activity.KindModel, Model: &m})
+			a.Activity.Publish(activity.Entry{Side: activity.SideCustomer, Kind: activity.KindModel, Model: &m})
 		},
 	}
 	inbound := &shipper.Inbound{Bookings: a.Customer.Bookings, Log: a.Customer.Events, Now: time.Now,
@@ -511,15 +517,54 @@ func (a *App) record(action, ref string, body intents.Body) {
 	default:
 		return
 	}
-	a.Activity.Publish(activity.Entry{Kind: activity.KindRecord, Record: r})
+	side := activity.SideCustomer // recorded: received for a customer-side booking
+	if action == activity.ActionPublished {
+		side = activity.SideOperator
+	}
+	a.Activity.Publish(activity.Entry{Side: side, Kind: activity.KindRecord, Record: r})
 }
 
-// observe publishes the node's decision about an envelope.
+// observe publishes the node's decision about an envelope, and keeps the
+// envelope itself in the message log. The bytes go to the log only, never
+// to the activity stream (or the slog log it feeds).
 func (a *App) observe(e node.Event) {
-	a.Activity.Publish(activity.Entry{Time: e.Time, Kind: activity.KindEnvelope, Envelope: &activity.Envelope{
+	side := a.sideOf(e.Opener, e.OpenedHere)
+	a.Activity.Publish(activity.Entry{Time: e.Time, Side: side, Kind: activity.KindEnvelope, Envelope: &activity.Envelope{
 		Direction: e.Direction, Intent: e.Intent, Sender: e.Sender, Receiver: e.Receiver, Via: e.Via,
 		MessageID: e.MessageID, KID: e.KID, Verified: e.Verified, Outcome: e.Outcome, Code: e.Code, Reason: e.Reason}})
+	if e.Wire == nil {
+		return
+	}
+	m := store.Message{Time: e.Time, Side: side, Direction: e.Direction, Via: e.Via, Intent: e.Intent, Sender: e.Sender,
+		Receiver: e.Receiver, MessageID: e.MessageID, KID: e.KID, Verified: e.Verified, Outcome: e.Outcome, Code: e.Code,
+		Reason: e.Reason, Header: e.Header, Body: e.Body, Wire: string(e.Wire)}
+	if e.Header != nil {
+		m.Conversation = e.Header.CorrelationID
+	}
+	a.Messages.Add(m)
 }
+
+// sideOf says which of the node's roles a message belongs to, from the
+// intent that opened its conversation and who sent that: requests the
+// customer side sends (a booking, an inquiry, a status request) and the
+// pushes the operator side sends. A side the node doesn't have (a booking
+// request to a shipper-only node) belongs to the whole node: "".
+func (a *App) sideOf(opener string, openedHere bool) string {
+	var side string
+	switch {
+	case customerSends[opener] && openedHere, operatorPushes[opener] && !openedHere:
+		side = activity.SideCustomer
+	case customerSends[opener], operatorPushes[opener]:
+		side = activity.SideOperator
+	}
+	if side == activity.SideCustomer && a.Customer == nil || side == activity.SideOperator && a.Carrier == nil {
+		return ""
+	}
+	return side
+}
+
+// operatorPushes are the intents the operator role pushes.
+var operatorPushes = map[string]bool{intents.TnTEvent: true, intents.TnTAlert: true}
 
 func loadPool(path string) (*x509.CertPool, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: the operator's configured CA file
