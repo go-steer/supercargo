@@ -33,6 +33,9 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/vertex"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 
 	"github.com/go-steer/supercargo/internal/llm"
 )
@@ -43,7 +46,7 @@ const DefaultModel = "claude-sonnet-5-5"
 // DefaultMaxTokens caps output when the request doesn't.
 const DefaultMaxTokens = 4096
 
-// respondTool is the tool a JSON-output request forces: its input schema
+// respondTool is the tool a JSON-output request asks for: its input schema
 // is the requested schema, so the reply is the tool call's input.
 const respondTool = "respond"
 
@@ -53,10 +56,55 @@ type Options struct {
 	Model  string
 	// CacheSystem marks the system prompt for prompt caching.
 	CacheSystem bool
+	// Vertex, if set, reaches Claude through Google Cloud's Vertex AI with
+	// these credentials (Application Default Credentials, normally): no
+	// API key.
+	Vertex *Vertex
 	// BaseURL and HTTPClient replace the API endpoint and transport
 	// (tests).
 	BaseURL    string
 	HTTPClient *http.Client
+}
+
+// Vertex is where on Vertex AI to reach Claude, and with what credentials.
+type Vertex struct {
+	Project, Region string
+	Credentials     *google.Credentials
+}
+
+// VertexScope is the OAuth scope Vertex AI needs.
+const VertexScope = "https://www.googleapis.com/auth/cloud-platform"
+
+// TokenTimeout bounds each OAuth token fetch on Vertex AI.
+const TokenTimeout = 30 * time.Second
+
+// DefaultCredentials finds Google's Application Default Credentials: a
+// gcloud login, a service account key file, or (on Cloud Run) the
+// service's own identity. They refresh tokens for as long as the model
+// lives, so they are bound to no request's context; the refresh can't take
+// a request's context either (oauth2's transport gives it none), so its
+// HTTP client has a timeout of its own.
+func DefaultCredentials() (*google.Credentials, error) {
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{Timeout: TokenTimeout})
+	c, err := google.FindDefaultCredentials(ctx, VertexScope)
+	if err != nil {
+		return nil, fmt.Errorf("vertex: no Application Default Credentials (gcloud auth application-default login, or a service account): %w", err)
+	}
+	return c, nil
+}
+
+// withCredentials is the SDK's Vertex option (a test replaces it).
+var withCredentials = vertex.WithCredentials
+
+// vertexOption is the Vertex option, or an error where the SDK panics (it
+// can't make its HTTP client): a node fails to start instead of crashing.
+func vertexOption(v *Vertex) (o option.RequestOption, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("anthropic: vertex: %v", r)
+		}
+	}()
+	return withCredentials(context.Background(), v.Region, v.Project, v.Credentials), nil
 }
 
 // Model is a Claude model behind the llm.Model interface.
@@ -64,13 +112,23 @@ type Model struct {
 	client      anthropic.Client
 	model       string
 	cacheSystem bool
+	name        string
 }
 
 // New returns a Model. The API key is required: a node configured for a
 // real model must not start without one.
 func New(opts Options) (*Model, error) {
-	if opts.APIKey == "" {
+	if opts.Vertex == nil && opts.APIKey == "" {
 		return nil, errors.New("anthropic: no API key")
+	}
+	if v := opts.Vertex; v != nil {
+		if v.Credentials == nil {
+			return nil, errors.New("anthropic: Vertex AI needs credentials")
+		}
+		// The region becomes the endpoint's host.
+		if err := llm.CheckVertex(v.Project, v.Region); err != nil {
+			return nil, fmt.Errorf("anthropic: %w", err)
+		}
 	}
 	if opts.Model == "" {
 		opts.Model = DefaultModel
@@ -86,16 +144,28 @@ func New(opts Options) (*Model, error) {
 	// headers from the environment, and could send the key to another
 	// host. The key goes to Anthropic's production API, or to BaseURL
 	// when a test sets one, and nowhere else.
-	reqOpts := []option.RequestOption{option.WithoutEnvironmentDefaults(), option.WithHTTPClient(hc),
-		option.WithAPIKey(opts.APIKey), option.WithMaxRetries(1)}
+	reqOpts := []option.RequestOption{option.WithoutEnvironmentDefaults(), option.WithHTTPClient(hc), option.WithMaxRetries(1)}
+	name := "anthropic:" + opts.Model
+	if v := opts.Vertex; v != nil {
+		// The HTTP client goes first: Vertex wraps it with OAuth. Its
+		// option also turns off the SDK's environment defaults.
+		vo, err := vertexOption(v)
+		if err != nil {
+			return nil, err
+		}
+		reqOpts = append(reqOpts, vo)
+		name = "vertex:anthropic:" + opts.Model
+	} else {
+		reqOpts = append(reqOpts, option.WithAPIKey(opts.APIKey))
+	}
 	if opts.BaseURL != "" {
 		reqOpts = append(reqOpts, option.WithBaseURL(opts.BaseURL))
 	}
-	return &Model{client: anthropic.NewClient(reqOpts...), model: opts.Model, cacheSystem: opts.CacheSystem}, nil
+	return &Model{client: anthropic.NewClient(reqOpts...), model: opts.Model, cacheSystem: opts.CacheSystem, name: name}, nil
 }
 
 // Name implements llm.Model.
-func (m *Model) Name() string { return "anthropic:" + m.model }
+func (m *Model) Name() string { return m.name }
 
 // Generate implements llm.Model. A request with a JSONSchema forces the
 // respond tool, whose input is the reply; the caller still validates it.
@@ -122,8 +192,8 @@ func (m *Model) Generate(ctx context.Context, req llm.GenerateRequest) (llm.Gene
 			tu := block.AsToolUse()
 			if req.JSONSchema != nil {
 				if tu.Name == respondTool {
-					// The forced reply ends the turn: no tool calls for the
-					// caller to run.
+					// The reply ends the turn: no tool calls for the caller
+					// to run.
 					out.Text, out.StopReason = string(tu.Input), llm.StopEnd
 					return out, nil
 				}
@@ -135,6 +205,17 @@ func (m *Model) Generate(ctx context.Context, req llm.GenerateRequest) (llm.Gene
 		}
 	}
 	out.Text = text.String()
+	if req.JSONSchema != nil {
+		// No respond call: a reply given as a JSON object in text is taken
+		// (some models on Vertex AI can't be forced to call a tool); the
+		// caller validates either way.
+		t := llm.StripCodeFence(out.Text)
+		var obj map[string]json.RawMessage
+		if json.Unmarshal([]byte(t), &obj) != nil || obj == nil {
+			return out, errors.New("anthropic: no reply: the model neither called respond nor answered with a JSON object")
+		}
+		out.Text, out.StopReason = t, llm.StopEnd
+	}
 	return out, nil
 }
 
@@ -187,7 +268,10 @@ func (m *Model) params(req llm.GenerateRequest) (anthropic.MessageNewParams, err
 			Description: anthropic.String("Give your reply. Call this exactly once, with the whole reply as its input."),
 			InputSchema: anthropic.ToolInputSchemaParam{Properties: props, Required: required, ExtraFields: extra},
 		}}}
-		p.ToolChoice = anthropic.ToolChoiceParamOfTool(respondTool)
+		// Asked, not forced: forcing a tool (tool_choice) isn't supported
+		// by every model on Vertex AI. A text reply is still accepted.
+		p.System = append(p.System, anthropic.TextBlockParam{Text: "Give your reply by calling the " + respondTool +
+			" tool exactly once, with the whole reply as its input. Do not answer in text."})
 	}
 	return p, nil
 }

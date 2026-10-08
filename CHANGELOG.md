@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- Gemini, and Vertex AI for both providers: `internal/llm/gemini` (on `google.golang.org/genai`; Gemini 3's thought signatures round-trip with tool calls), and `llm.backend: vertex` for Gemini and Claude, authenticated by Application Default Credentials (no key; project and region from the usual environment variables, names configurable). `ULP_LLM` in the demo and smoke scripts takes `gemini`, `vertex-gemini` and `vertex-claude`, with `ULP_LLM_MODEL`. The Anthropic adapter asks for its `respond` tool instead of forcing it (Claude on Vertex AI refuses a forced tool) and takes a JSON object in text. An opt-in real-model test, `TestRealModels`, covers all three paths.
+
 - The journey model, MVP1 step 5's foundation (#81, #83): each booking's journey, built from the records the node holds (legs with planned, estimated or actual times and their source events; ports with events, an unscheduled call splitting a leg; the position, at a port or at sea as an estimate; the alerts), served at `GET /shipments/{operator}/{ref}/journey` (shipper) and `GET /bookings/{ref}/journey` (operator), and through the browser UI's side-filtered API. The ports table gains approximate coordinates, for the route map (MVP2).
 
 - A browser smoke test, step 4 of MVP1 (#81): `dev/smoke/browser` runs the demo in headless Chrome against two real nodes (book through the assistant and its dialog, disrupt from the carrier view, the delay arrives live). The driver (`chromedp`) is its own module under `dev/smoke/browserdrive`, so the SDK's `go.mod` doesn't carry it. CI requires the test; locally it skips without Chrome (`SUPERCARGO_CHROME` points at one).

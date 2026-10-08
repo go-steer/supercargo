@@ -192,16 +192,33 @@ var (
 // LLM providers.
 const (
 	ProviderFake      = "fake"      // deterministic, no API key: tests and rehearsal
-	ProviderAnthropic = "anthropic" // Claude; the API key comes from the environment
+	ProviderAnthropic = "anthropic" // Claude: an API key, or Vertex AI
+	ProviderGemini    = "gemini"    // Gemini: an API key, or Vertex AI
 )
 
 // LLM configures the model. Without it, an operator answers inquiries,
 // and a shipper summarizes alerts, from a deterministic template.
+//
+// Credentials never go in the file. With backend "api" (the default) the
+// key comes from the environment variable APIKeyEnv names. With backend
+// "vertex" the model is reached through Google Cloud's Vertex AI with
+// Application Default Credentials (a gcloud login, or a Cloud Run
+// service's own identity): no key at all, only the project and location,
+// from the environment variables ProjectEnv and LocationEnv name.
 type LLM struct {
-	Provider  string `yaml:"provider"`
-	Model     string `yaml:"model"`
-	APIKeyEnv string `yaml:"apiKeyEnv"`
+	Provider    string `yaml:"provider"` // fake, anthropic or gemini
+	Backend     string `yaml:"backend"`  // api (default) or vertex
+	Model       string `yaml:"model"`
+	APIKeyEnv   string `yaml:"apiKeyEnv"`
+	ProjectEnv  string `yaml:"projectEnv"`
+	LocationEnv string `yaml:"locationEnv"`
 }
+
+// Model backends.
+const (
+	BackendAPI    = "api"
+	BackendVertex = "vertex"
+)
 
 // Business points at a shipper's private business context file
 // (internal/business): delivery deadlines and receiving slots its own model
@@ -387,22 +404,8 @@ func (c *Config) validate() error {
 		}
 	}
 	if c.LLM != nil {
-		switch c.LLM.Provider {
-		case ProviderFake:
-		case ProviderAnthropic:
-			if c.LLM.APIKeyEnv == "" {
-				c.LLM.APIKeyEnv = "ANTHROPIC_API_KEY"
-			}
-			// The key itself never goes in the file: only the name of the
-			// environment variable holding it.
-			if !envName.MatchString(c.LLM.APIKeyEnv) {
-				return fmt.Errorf("llm: apiKeyEnv %q is not an environment variable name", c.LLM.APIKeyEnv)
-			}
-			if c.LLM.Model != "" && !modelName.MatchString(c.LLM.Model) {
-				return fmt.Errorf("llm: model %q is not a model ID", c.LLM.Model)
-			}
-		default:
-			return fmt.Errorf("llm: provider %q is not %s or %s", c.LLM.Provider, ProviderFake, ProviderAnthropic)
+		if err := c.LLM.validate(); err != nil {
+			return err
 		}
 	}
 	if t := c.Telemetry; t != nil {
@@ -540,6 +543,65 @@ func (c *Config) validateWeb() error {
 				return fmt.Errorf("web: persona %s acts as %q, which this node isn't", p.ID, r)
 			}
 		}
+	}
+	return nil
+}
+
+// llmEnvDefaults are the environment variables each provider reads by
+// default: the names Claude Code and Google's Gen AI SDK use, so the
+// usual setup scripts work as they are.
+var llmEnvDefaults = map[string][3]string{ // provider: API key, Vertex project, Vertex location
+	ProviderAnthropic: {"ANTHROPIC_API_KEY", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION"},
+	ProviderGemini:    {"GEMINI_API_KEY", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"},
+}
+
+// ValidateForTest fills in l's defaults and checks it, as loading does.
+func (l *LLM) ValidateForTest() error { return l.validate() }
+
+func (l *LLM) validate() error {
+	switch l.Provider {
+	case ProviderFake:
+		return nil // it needs nothing, and ignores the rest
+	case ProviderAnthropic, ProviderGemini:
+	default:
+		return fmt.Errorf("llm: provider %q is not %s, %s or %s", l.Provider, ProviderFake, ProviderAnthropic, ProviderGemini)
+	}
+	d := llmEnvDefaults[l.Provider]
+	switch l.Backend {
+	case "", BackendAPI:
+		l.Backend = BackendAPI
+		if l.ProjectEnv != "" || l.LocationEnv != "" {
+			return errors.New("llm: projectEnv and locationEnv are for backend: vertex")
+		}
+		if l.APIKeyEnv == "" {
+			l.APIKeyEnv = d[0]
+		}
+	case BackendVertex:
+		if l.APIKeyEnv != "" {
+			return errors.New("llm: backend vertex takes no API key: it uses Application Default Credentials")
+		}
+		if l.ProjectEnv == "" {
+			l.ProjectEnv = d[1]
+		}
+		if l.LocationEnv == "" {
+			l.LocationEnv = d[2]
+		}
+	default:
+		return fmt.Errorf("llm: backend %q is not %s or %s", l.Backend, BackendAPI, BackendVertex)
+	}
+	// The key itself never goes in the file: only the names of the
+	// environment variables.
+	for name, v := range map[string]string{"apiKeyEnv": l.APIKeyEnv, "projectEnv": l.ProjectEnv, "locationEnv": l.LocationEnv} {
+		if v != "" && !envName.MatchString(v) {
+			return fmt.Errorf("llm: %s %q is not an environment variable name", name, v)
+		}
+	}
+	// The model ID ends up in the request's path.
+	if l.Model != "" && (!modelName.MatchString(l.Model) || strings.Contains(l.Model, "..")) {
+		return fmt.Errorf("llm: model %q is not a model ID", l.Model)
+	}
+	if l.Provider == ProviderGemini && l.Model == "" {
+		return errors.New("llm: gemini needs a model")
 	}
 	return nil
 }

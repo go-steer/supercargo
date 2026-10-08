@@ -41,6 +41,10 @@ type ToolCall struct {
 	ID    string
 	Name  string
 	Input json.RawMessage
+	// Signature is opaque data the provider attached to the call, which it
+	// requires back, unchanged, when the call is replayed in a later turn
+	// (Gemini's thought signature). Nil for providers without one.
+	Signature []byte
 }
 
 // ToolResult is what the caller tells the model a call returned.

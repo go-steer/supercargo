@@ -43,6 +43,56 @@ func TestNewModel(t *testing.T) {
 	if err != nil || m.Name() != "anthropic:claude-test" {
 		t.Errorf("anthropic: %v, %v", m, err)
 	}
+	gem := &config.LLM{Provider: config.ProviderGemini, APIKeyEnv: "SUPERCARGO_TEST_KEY"}
+	if _, err := NewModel(gem, nil); err == nil {
+		t.Error("gemini with no model started")
+	}
+	gem.Model = "gemini-test"
+	if m, err := NewModel(gem, nil); err != nil || m.Name() != "gemini:gemini-test" {
+		t.Errorf("gemini: %v, %v", m, err)
+	}
+}
+
+// TestNewModelVertex: on Vertex AI the project and location come from the
+// environment and the credentials from Application Default Credentials (a
+// file here, never the metadata server), with no key anywhere.
+func TestNewModelVertex(t *testing.T) {
+	dir := t.TempDir()
+	adc := filepath.Join(dir, "adc.json")
+	if err := os.WriteFile(adc, []byte(`{"type":"authorized_user","client_id":"c","client_secret":"s","refresh_token":"r"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", dir)
+	t.Setenv("CLOUDSDK_CONFIG", dir)
+	t.Setenv("GCE_METADATA_HOST", "127.0.0.1:1")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", adc)
+	t.Setenv("SUPERCARGO_TEST_PROJECT", "")
+	t.Setenv("SUPERCARGO_TEST_LOCATION", "")
+	vertex := func(provider, model string) *config.LLM {
+		return &config.LLM{Provider: provider, Backend: config.BackendVertex, Model: model,
+			ProjectEnv: "SUPERCARGO_TEST_PROJECT", LocationEnv: "SUPERCARGO_TEST_LOCATION"}
+	}
+	if _, err := NewModel(vertex(config.ProviderGemini, "g"), nil); err == nil || !strings.Contains(err.Error(), "SUPERCARGO_TEST_PROJECT") {
+		t.Errorf("no project: %v", err)
+	}
+	t.Setenv("SUPERCARGO_TEST_PROJECT", "proj")
+	if _, err := NewModel(vertex(config.ProviderGemini, "g"), nil); err == nil || !strings.Contains(err.Error(), "SUPERCARGO_TEST_LOCATION") {
+		t.Errorf("no location: %v", err)
+	}
+	t.Setenv("SUPERCARGO_TEST_LOCATION", "us-central1")
+	if _, err := NewModel(vertex(config.ProviderGemini, ""), nil); err == nil {
+		t.Error("gemini with no model started")
+	}
+	if m, err := NewModel(vertex(config.ProviderGemini, "g"), nil); err != nil || m.Name() != "vertex:gemini:g" {
+		t.Errorf("gemini: %v, %v", m, err)
+	}
+	if m, err := NewModel(vertex(config.ProviderAnthropic, "c"), nil); err != nil || m.Name() != "vertex:anthropic:c" {
+		t.Errorf("claude: %v, %v", m, err)
+	}
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(dir, "missing.json"))
+	if _, err := NewModel(vertex(config.ProviderAnthropic, "c"), nil); err == nil {
+		t.Error("claude with no credentials started")
+	}
 }
 
 func TestAgentSkills(t *testing.T) {

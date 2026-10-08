@@ -20,9 +20,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+
+	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"github.com/go-steer/supercargo/internal/llm"
 )
@@ -106,8 +113,10 @@ func TestGenerateJSON(t *testing.T) {
 		input["required"].([]any)[0] != "answer" || input["properties"].(map[string]any)["answer"] == nil {
 		t.Errorf("tool %v", tool)
 	}
-	if choice := body["tool_choice"].(map[string]any); choice["type"] != "tool" || choice["name"] != respondTool {
-		t.Errorf("tool_choice %v", choice)
+	// Asked for in the system prompt, not forced: Vertex AI refuses a
+	// forced tool_choice for some models.
+	if body["tool_choice"] != nil || !strings.Contains(body["system"].([]any)[1].(map[string]any)["text"].(string), respondTool) {
+		t.Errorf("tool_choice %v, system %v", body["tool_choice"], body["system"])
 	}
 }
 
@@ -159,5 +168,109 @@ func TestJSONSchemaToInput(t *testing.T) {
 	props, required, extra, err := jsonSchemaToInput(json.RawMessage(`{"type":"object","$defs":{"x":{}},"required":["a",1]}`))
 	if err != nil || len(props) != 0 || len(required) != 1 || extra["$defs"] == nil || extra["type"] != nil {
 		t.Errorf("props %v required %v extra %v: %v", props, required, extra, err)
+	}
+}
+
+// TestJSONReplyAsText: a model that answers a JSON request in text (not
+// through respond) is taken if the text is a JSON object, fenced or not;
+// anything else is no reply.
+func TestJSONReplyAsText(t *testing.T) {
+	for text, ok := range map[string]bool{
+		`{"answer":"x"}`:                   true,
+		"```json\n{\"answer\":\"x\"}\n```": true,
+		"```JSON\n{\"answer\":\"x\"}\n```": true,
+		"the answer is x":                  false,
+		"null":                             false,
+		"[1]":                              false,
+		"```json\n{\"answer\":\"x\"}\n``` and more": false,
+	} {
+		api := &fakeAPI{}
+		b, _ := json.Marshal(text)
+		srv := api.server(t, http.StatusOK, `{"id":"m","type":"message","role":"assistant","model":"c","stop_reason":"end_turn",
+"content":[{"type":"text","text":`+string(b)+`}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+		m, _ := New(Options{APIKey: "k", BaseURL: srv.URL})
+		out, err := m.Generate(context.Background(), llm.GenerateRequest{JSONSchema: json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string"}}}`),
+			Messages: []llm.Message{{Role: llm.User, Text: "?"}}})
+		if ok != (err == nil) || (ok && out.Text != `{"answer":"x"}`) {
+			t.Errorf("%q: %q, %v", text, out.Text, err)
+		}
+	}
+}
+
+// TestVertex: on Vertex AI the request goes to the project's Claude with a
+// bearer token from the credentials, and no API key.
+func TestVertex(t *testing.T) {
+	var got *http.Request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"m","type":"message","role":"assistant","model":"claude-v","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer srv.Close()
+	creds := &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "tok"})}
+	m, err := New(Options{Model: "claude-v", BaseURL: srv.URL, Vertex: &Vertex{Project: "proj", Region: "us-east5", Credentials: creds}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := m.Generate(context.Background(), llm.GenerateRequest{Messages: []llm.Message{{Role: llm.User, Text: "?"}}})
+	if err != nil || out.Text != "ok" || m.Name() != "vertex:anthropic:claude-v" {
+		t.Fatalf("Generate = %+v, %v", out, err)
+	}
+	if got.Header.Get("Authorization") != "Bearer tok" || got.Header.Get("X-Api-Key") != "" ||
+		!strings.Contains(got.URL.Path, "/projects/proj/locations/us-east5/publishers/anthropic/models/claude-v:rawPredict") {
+		t.Errorf("request %s, auth %q, key %q", got.URL.Path, got.Header.Get("Authorization"), got.Header.Get("X-Api-Key"))
+	}
+	for name, v := range map[string]*Vertex{"no project": {Region: "r", Credentials: creds}, "no region": {Project: "p", Credentials: creds},
+		"no credentials": {Project: "p", Region: "r"},
+		// The region is the endpoint's host: anything else could send
+		// the token to another one.
+		"a region that's a host":  {Project: "p", Region: "evil.example/#", Credentials: creds},
+		"a project that's a path": {Project: "p/../x", Region: "us-east5", Credentials: creds}} {
+		if _, err := New(Options{Vertex: v}); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// The SDK panics where it can't make its client; New returns an error.
+	defer func(f func(context.Context, string, string, *google.Credentials) option.RequestOption) {
+		withCredentials = f
+	}(withCredentials)
+	withCredentials = func(context.Context, string, string, *google.Credentials) option.RequestOption { panic("no client") }
+	if _, err := New(Options{Vertex: &Vertex{Project: "p", Region: "us-east5", Credentials: creds}}); err == nil || !strings.Contains(err.Error(), "no client") {
+		t.Errorf("the SDK's panic: %v", err)
+	}
+}
+
+// TestJSONIgnoresOtherTools: a JSON request offers no tools but respond, so
+// a call to anything else is dropped, never handed to the caller to run.
+func TestJSONIgnoresOtherTools(t *testing.T) {
+	api := &fakeAPI{}
+	srv := api.server(t, http.StatusOK, `{"id":"m","type":"message","role":"assistant","model":"c","stop_reason":"tool_use",
+"content":[{"type":"tool_use","id":"t1","name":"send_booking","input":{}}],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	m, _ := New(Options{APIKey: "k", BaseURL: srv.URL})
+	out, err := m.Generate(context.Background(), llm.GenerateRequest{JSONSchema: json.RawMessage(`{"type":"object"}`),
+		Messages: []llm.Message{{Role: llm.User, Text: "?"}}})
+	if err == nil || len(out.ToolCalls) != 0 {
+		t.Errorf("a foreign tool call on a JSON request: %+v, %v", out, err)
+	}
+}
+
+// TestDefaultCredentials: Application Default Credentials come from the
+// usual places, and their absence is an error that says what to do.
+func TestDefaultCredentials(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("CLOUDSDK_CONFIG", dir)
+	t.Setenv("GCE_METADATA_HOST", "127.0.0.1:1")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(dir, "missing.json"))
+	if _, err := DefaultCredentials(); err == nil || !strings.Contains(err.Error(), "Application Default Credentials") {
+		t.Errorf("no credentials: %v", err)
+	}
+	f := filepath.Join(dir, "adc.json")
+	if err := os.WriteFile(f, []byte(`{"type":"authorized_user","client_id":"c","client_secret":"s","refresh_token":"r"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", f)
+	if c, err := DefaultCredentials(); err != nil || c.TokenSource == nil {
+		t.Errorf("a credentials file: %v", err)
 	}
 }

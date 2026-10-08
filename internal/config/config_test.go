@@ -308,6 +308,40 @@ func TestWeb(t *testing.T) {
 	}
 }
 
+// TestLLMBackends: each provider by API key or on Vertex AI, with the
+// usual environment variable names by default, and never a key in the
+// file.
+func TestLLMBackends(t *testing.T) {
+	for in, want := range map[string]LLM{
+		"{provider: anthropic}":                  {Provider: "anthropic", Backend: "api", APIKeyEnv: "ANTHROPIC_API_KEY"},
+		"{provider: gemini, model: g}":           {Provider: "gemini", Backend: "api", Model: "g", APIKeyEnv: "GEMINI_API_KEY"},
+		"{provider: anthropic, backend: vertex}": {Provider: "anthropic", Backend: "vertex", ProjectEnv: "ANTHROPIC_VERTEX_PROJECT_ID", LocationEnv: "CLOUD_ML_REGION"},
+		"{provider: gemini, backend: vertex, model: gemini-3.8-flash}": {Provider: "gemini", Backend: "vertex", Model: "gemini-3.8-flash",
+			ProjectEnv: "GOOGLE_CLOUD_PROJECT", LocationEnv: "GOOGLE_CLOUD_LOCATION"},
+		"{provider: gemini, backend: vertex, model: g, projectEnv: P, locationEnv: L}": {Provider: "gemini", Backend: "vertex", Model: "g",
+			ProjectEnv: "P", LocationEnv: "L"},
+	} {
+		c, err := Parse([]byte(strings.Replace(operatorYAML, "llm: { provider: fake, model: m, apiKeyEnv: LLM_API_KEY }", "llm: "+in, 1)))
+		if err != nil || *c.LLM != want {
+			t.Errorf("%s: %+v, %v", in, c.LLM, err)
+		}
+	}
+	for _, in := range []string{
+		"{provider: openai}",
+		"{provider: gemini}",
+		"{provider: gemini, backend: vertex}",
+		"{provider: anthropic, model: ../../other}",
+		"{provider: gemini, backend: azure}",
+		"{provider: gemini, backend: vertex, apiKeyEnv: GEMINI_API_KEY}",
+		"{provider: anthropic, projectEnv: P}",
+		"{provider: gemini, backend: vertex, projectEnv: \"my project\"}",
+	} {
+		if _, err := Parse([]byte(strings.Replace(operatorYAML, "llm: { provider: fake, model: m, apiKeyEnv: LLM_API_KEY }", "llm: "+in, 1))); err == nil {
+			t.Errorf("%s: accepted", in)
+		}
+	}
+}
+
 func TestLoad(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "node.yaml")
