@@ -180,6 +180,13 @@ func TestTrackingAndAsk(t *testing.T) {
 		!n.called("ask ocean-blue.example OB-BKG-1042 What is causing the delay on OB-BKG-1042, and how firm is the new ETA?") {
 		t.Errorf("ask: %q, %v, calls %v", r.Text, err, n.calls)
 	}
+	// The demo's own wording, and the way people put it, reach the carrier.
+	for _, q := range []string{"What caused the delay, and how firm is the new ETA?", "What caused the delay for booking OB-BKG-1042 and how firm is the ETA?"} {
+		n.calls = nil
+		if r, err := a.Turn(context.Background(), &Conversation{}, q); err != nil || !strings.Contains(r.Text, "An engine repair at Halifax") {
+			t.Errorf("%s: %q, %v", q, r.Text, err)
+		}
+	}
 	// With nothing booked, the fake says so.
 	a, _, _ = newAssistant(FakeModel(time.Now), &node{})
 	for _, q := range []string{"Where is my shipment?", "Ask why it's late"} {
@@ -273,16 +280,22 @@ func draftJSON(override string) string {
 func TestDraftDetails(t *testing.T) {
 	// A shipper reference, a named consignee, and no subscription endpoint.
 	m := fake.Turns(llm.GenerateResponse{ToolCalls: []llm.ToolCall{fake.Call("1", ToolDraftBooking,
-		draftJSON(`"shipperRef":"CY-PO-1","consigneeName":"Cymbal Footwear","consigneeDomain":"cymbal-footwear.example"`))}},
+		draftJSON(`"shipperRef":"CY-PO-1","consigneeName":"Cymbal\u00a0 Footwear","consigneeDomain":"cymbal-footwear.example",`+
+			`"cargoDescription":" Sneakers \t and  boots "`))}},
 		llm.GenerateResponse{Text: "Ready."})
 	a, _, _ := newAssistant(m, &node{})
 	a.Self.Endpoint = ""
+	a.Self.Name = "Cymbal  Shoes"
 	r, err := a.Turn(context.Background(), &Conversation{}, "Book with OCEAN-BLUE.example. for cymbal-footwear.example")
 	if err != nil || len(r.Drafts) != 1 {
 		t.Fatalf("%+v, %v", r, err)
 	}
 	if d := r.Drafts[0]; d.Request.ShipperRef != "CY-PO-1" || d.Request.Subscription != nil || d.NotSent != nil {
 		t.Errorf("draft %+v", d)
+	}
+	// Whitespace is folded as the dialog shows it: shown is sent.
+	if q := r.Drafts[0].Request; q.Consignee.Name != "Cymbal Footwear" || q.Cargo.Description != "Sneakers and boots" || q.ShipperName != "Cymbal Shoes" {
+		t.Errorf("unfolded: %q, %q, %q", q.Consignee.Name, q.Cargo.Description, q.ShipperName)
 	}
 	// Too many open drafts.
 	for range MaxDrafts {
