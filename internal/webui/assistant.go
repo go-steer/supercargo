@@ -32,18 +32,28 @@ import (
 // The browser's assistant is the shipper role's assistant (the same Go
 // code ulpchat runs), one per session, with its own conversation and
 // drafts. As in ulpchat, the model drafts and nothing else: a booking is
-// sent only by Send, which only a person's click in the confirmation
-// dialog calls, and only once the dialog has been open ArmDelay.
+// sent only by the send route, which only a person's click in the
+// confirmation dialog calls, and only once the node handed the draft to
+// the page ArmDelay ago.
 
-// ArmDelay is how long a draft must have existed before it can be sent:
-// a click (or a script) can't confirm a dialog that was never on screen.
+// ArmDelay is how long a draft must have been on the page before it can
+// be sent: counted from the moment the node first returned it, so a click
+// (or a script) can't confirm a dialog that was never on screen. The
+// page's button arms after the same delay.
 var ArmDelay = 1500 * time.Millisecond
 
-// TurnTimeout bounds one turn, model calls and tools included.
-const TurnTimeout = 55 * time.Second
+// Limits: one turn's time (model calls and tools included), how many
+// turns run at once across sessions (each is model calls), and how much
+// transcript a session keeps.
+const (
+	TurnTimeout     = 55 * time.Second
+	MaxTurnsAtOnce  = 8
+	MaxTranscript   = 200       // lines
+	MaxTranscriptKB = 256 << 10 // bytes of text
+)
 
-// MaxTranscript is how many lines a session's transcript keeps.
-const MaxTranscript = 200
+// turnSlots bounds the turns running at once, across every session.
+var turnSlots = make(chan struct{}, MaxTurnsAtOnce)
 
 // Line is one line of the transcript: a person's message, the assistant's
 // answer (with the tools it called and the drafts it made), or a note
@@ -65,20 +75,49 @@ type ToolLine struct {
 type chat struct {
 	a    *assistant.Assistant
 	conv *assistant.Conversation
+	// work serialises what drives the model in this session: a turn, or a
+	// send and its report. A second tab asking meanwhile is told it's busy.
+	work sync.Mutex
 
 	mu     sync.Mutex
 	lines  []Line
 	tools  []ToolLine                       // the turn in progress
 	drafts map[string]assistant.DraftResult // open: drafted, not sent or discarded
+	order  []string                         // open drafts, in the order made
+	shown  map[string]time.Time             // when the node first handed each draft to the page
 }
 
 func (c *chat) add(l Line) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lines = append(c.lines, l)
-	if len(c.lines) > MaxTranscript {
-		c.lines = c.lines[len(c.lines)-MaxTranscript:]
+	size := 0
+	for _, x := range c.lines {
+		size += len(x.Text)
 	}
+	for len(c.lines) > 1 && (len(c.lines) > MaxTranscript || size > MaxTranscriptKB) {
+		size -= len(c.lines[0].Text)
+		c.lines = c.lines[1:]
+	}
+}
+
+func (c *chat) open(drafts []assistant.DraftResult) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, d := range drafts {
+		if _, ok := c.drafts[d.DraftID]; !ok {
+			c.order = append(c.order, d.DraftID)
+		}
+		c.drafts[d.DraftID] = d
+	}
+}
+
+func (c *chat) close(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.drafts, id)
+	delete(c.shown, id)
+	c.order = slices.DeleteFunc(c.order, func(o string) bool { return o == id })
 }
 
 // AssistantResponse is the assistant's state for this session.
@@ -89,14 +128,18 @@ type AssistantResponse struct {
 	Error     string                  `json:"error,omitempty"`
 }
 
-func (c *chat) state() AssistantResponse {
+// state is what the page sees; handing it the open drafts starts their
+// ArmDelay, once.
+func (c *chat) state(now time.Time) AssistantResponse {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	r := AssistantResponse{Available: true, Lines: slices.Clone(c.lines), Drafts: []assistant.DraftResult{}}
-	for _, d := range c.drafts {
-		r.Drafts = append(r.Drafts, d)
+	for _, id := range c.order {
+		r.Drafts = append(r.Drafts, c.drafts[id])
+		if _, ok := c.shown[id]; !ok {
+			c.shown[id] = now
+		}
 	}
-	slices.SortFunc(r.Drafts, func(a, b assistant.DraftResult) int { return strings.Compare(a.DraftID, b.DraftID) })
 	return r
 }
 
@@ -107,22 +150,36 @@ func (s *server) chatFor(r *http.Request) (*chat, error) {
 	}
 	id := s.sessionID(r)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	sess, ok := s.lookup(id)
+	var c *chat
+	if ok {
+		c = sess.chat
+	}
+	s.mu.Unlock()
 	if !ok {
 		return nil, errors.New("sign in first")
 	}
-	if sess.chat == nil {
-		a, err := s.cfg.NewAssistant()
-		if err != nil {
-			return nil, err
-		}
-		c := &chat{a: a, conv: &assistant.Conversation{}, drafts: map[string]assistant.DraftResult{}}
-		a.OnTool = func(ev assistant.ToolEvent) {
-			c.mu.Lock()
-			c.tools = append(c.tools, ToolLine{Name: ev.Name, Error: assistant.OneLine(ev.Error, 200)})
-			c.mu.Unlock()
-		}
+	if c != nil {
+		return c, nil
+	}
+	// Made outside the lock: it reads the skills and business files.
+	a, err := s.cfg.NewAssistant()
+	if err != nil {
+		return nil, err
+	}
+	c = &chat{a: a, conv: &assistant.Conversation{}, drafts: map[string]assistant.DraftResult{}, shown: map[string]time.Time{}}
+	a.OnTool = func(ev assistant.ToolEvent) {
+		c.mu.Lock()
+		c.tools = append(c.tools, ToolLine{Name: ev.Name, Error: assistant.OneLine(ev.Error, 200)})
+		c.mu.Unlock()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok = s.lookup(id)
+	if !ok {
+		return nil, errors.New("sign in first")
+	}
+	if sess.chat == nil { // another request may have made one meanwhile
 		sess.chat = c
 	}
 	return sess.chat, nil
@@ -138,7 +195,28 @@ func (s *server) assistantState(w http.ResponseWriter, r *http.Request, _ Person
 		control.Answer(w, http.StatusInternalServerError, AssistantResponse{Error: err.Error()})
 		return
 	}
-	control.Answer(w, http.StatusOK, c.state())
+	control.Answer(w, http.StatusOK, c.state(s.cfg.Now()))
+}
+
+// begin takes the session's work lock and a turn slot, or answers why not.
+func (s *server) begin(w http.ResponseWriter, c *chat) bool {
+	if !c.work.TryLock() {
+		control.Answer(w, http.StatusConflict, AssistantResponse{Error: "the assistant is busy with this session's previous request"})
+		return false
+	}
+	select {
+	case turnSlots <- struct{}{}:
+		return true
+	default:
+		c.work.Unlock()
+		control.Answer(w, http.StatusServiceUnavailable, AssistantResponse{Error: "the assistant is busy; try again in a moment"})
+		return false
+	}
+}
+
+func (s *server) end(c *chat) {
+	<-turnSlots
+	c.work.Unlock()
 }
 
 func (s *server) assistantTurn(w http.ResponseWriter, r *http.Request, _ Persona) {
@@ -146,9 +224,10 @@ func (s *server) assistantTurn(w http.ResponseWriter, r *http.Request, _ Persona
 		Text string `json:"text"`
 	}
 	c, ok := s.chatRequest(w, r, &req)
-	if !ok {
+	if !ok || !s.begin(w, c) {
 		return
 	}
+	defer s.end(c)
 	now := s.cfg.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), TurnTimeout)
 	defer cancel()
@@ -156,26 +235,30 @@ func (s *server) assistantTurn(w http.ResponseWriter, r *http.Request, _ Persona
 	c.tools = nil
 	c.mu.Unlock()
 	reply, err := c.a.Turn(ctx, c.conv, req.Text)
-	switch {
-	case errors.Is(err, assistant.ErrBusy):
-		control.Answer(w, http.StatusConflict, AssistantResponse{Error: err.Error()})
-		return
-	case errors.Is(err, assistant.ErrTooLong):
-		control.Answer(w, http.StatusBadRequest, AssistantResponse{Error: err.Error()})
-		return
-	case err != nil:
-		control.Answer(w, http.StatusBadGateway, AssistantResponse{Error: "the assistant couldn't answer: " + assistant.OneLine(err.Error(), 200)})
+	if errors.Is(err, assistant.ErrTooLong) || errors.Is(err, assistant.ErrBusy) {
+		code := http.StatusBadRequest
+		if errors.Is(err, assistant.ErrBusy) {
+			code = http.StatusConflict
+		}
+		control.Answer(w, code, AssistantResponse{Error: err.Error()})
 		return
 	}
 	c.add(Line{Who: "you", Text: req.Text, Time: now})
 	c.mu.Lock()
 	tools := c.tools
-	for _, d := range reply.Drafts {
-		c.drafts[d.DraftID] = d
-	}
 	c.mu.Unlock()
+	// Drafts made before a failure are real (and sendable): keep them.
+	c.open(reply.Drafts)
+	if err != nil {
+		c.add(Line{Who: "note", Text: "The assistant couldn't finish answering: " + assistant.OneLine(err.Error(), 200), Time: s.cfg.Now(),
+			Tools: tools, Drafts: reply.Drafts})
+		st := c.state(s.cfg.Now())
+		st.Error = "the assistant couldn't answer"
+		control.Answer(w, http.StatusBadGateway, st)
+		return
+	}
 	c.add(Line{Who: "assistant", Text: reply.Text, Time: s.cfg.Now(), Tools: tools, Drafts: reply.Drafts})
-	control.Answer(w, http.StatusOK, c.state())
+	control.Answer(w, http.StatusOK, c.state(s.cfg.Now()))
 }
 
 // SendRequest confirms or discards a draft.
@@ -191,45 +274,64 @@ func (s *server) assistantSend(w http.ResponseWriter, r *http.Request, _ Persona
 	if !ok {
 		return
 	}
-	d, err := c.a.Drafts.Get(req.DraftID)
-	if err != nil {
+	c.mu.Lock()
+	shown, wasShown := c.shown[req.DraftID]
+	_, open := c.drafts[req.DraftID]
+	c.mu.Unlock()
+	if !open {
 		control.Answer(w, http.StatusNotFound, AssistantResponse{Error: "no open draft " + assistant.OneLine(req.DraftID, 32)})
 		return
 	}
-	if s.cfg.Now().Sub(d.Created) < ArmDelay {
+	if !wasShown || s.cfg.Now().Sub(shown) < ArmDelay {
 		control.Answer(w, http.StatusTooEarly, AssistantResponse{Error: "the dialog has to be on screen a moment before it can be confirmed"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), TurnTimeout)
-	defer cancel()
-	sent, err := c.a.Send(ctx, req.DraftID)
-	if err != nil {
-		c.mu.Lock()
-		if _, still := c.a.Drafts.Get(req.DraftID); still != nil {
-			delete(c.drafts, req.DraftID) // gone: sent or not, it can't be sent twice
-		}
-		c.mu.Unlock()
-		c.add(Line{Who: "note", Text: "Draft " + req.DraftID + " was not sent: " + assistant.OneLine(err.Error(), 300), Time: s.cfg.Now()})
-		control.Answer(w, http.StatusBadGateway, mergeError(c.state(), err))
+	if !s.begin(w, c) {
 		return
 	}
-	c.mu.Lock()
-	delete(c.drafts, req.DraftID)
-	c.mu.Unlock()
-	status := ""
-	if sent.Confirmation != nil {
-		status = sent.Confirmation.Status
+	defer s.end(c)
+	// A send the person confirmed finishes even if the tab closes: cutting
+	// it off would leave its outcome unknown.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), TurnTimeout)
+	defer cancel()
+	sent, err := c.a.Send(ctx, req.DraftID)
+	switch {
+	case errors.Is(err, assistant.ErrNoDraft):
+		// Sent or discarded by another request just now: say nothing more.
+		c.close(req.DraftID)
+		control.Answer(w, http.StatusNotFound, AssistantResponse{Error: "no open draft " + assistant.OneLine(req.DraftID, 32)})
+		return
+	case err != nil:
+		if _, still := c.a.Drafts.Get(req.DraftID); still != nil {
+			c.close(req.DraftID) // gone: it can't be sent twice
+		}
+		if errors.Is(err, assistant.ErrOutcomeUnknown) {
+			// As in ulpchat: the model must not think the draft is unsent.
+			_ = c.conv.Note("Sending draft " + req.DraftID + " failed with an unknown outcome: it may have reached the carrier. " +
+				"The draft is gone; tell the user to check the shipments before booking again.")
+		}
+		c.add(Line{Who: "note", Text: "Draft " + req.DraftID + ": " + assistant.OneLine(err.Error(), 300), Time: s.cfg.Now()})
+		st := c.state(s.cfg.Now())
+		st.Error = assistant.OneLine(err.Error(), 300)
+		control.Answer(w, http.StatusBadGateway, st)
+		return
 	}
-	c.add(Line{Who: "note", Text: "Sent " + req.DraftID + " to " + sent.Draft.Operator + ", signed. Answer: " + status, Time: s.cfg.Now()})
+	c.close(req.DraftID)
+	status, ref := "", ""
+	if sent.Confirmation != nil {
+		status, ref = sent.Confirmation.Status, sent.Confirmation.BookingRef
+	}
+	c.add(Line{Who: "note", Text: strings.TrimSpace("Sent " + req.DraftID + " to " + sent.Draft.Operator + ", signed. Answer: " + status + " " + ref),
+		Time: s.cfg.Now()})
+	c.mu.Lock()
+	c.tools = nil
+	c.mu.Unlock()
 	if reply, err := c.a.Report(ctx, c.conv, sent); err == nil {
 		c.add(Line{Who: "assistant", Text: reply.Text, Time: s.cfg.Now()})
+	} else {
+		_ = c.conv.Note("Draft " + req.DraftID + " was sent: " + status + " " + ref + ".")
 	}
-	control.Answer(w, http.StatusOK, c.state())
-}
-
-func mergeError(st AssistantResponse, err error) AssistantResponse {
-	st.Error = assistant.OneLine(err.Error(), 300)
-	return st
+	control.Answer(w, http.StatusOK, c.state(s.cfg.Now()))
 }
 
 func (s *server) assistantDiscard(w http.ResponseWriter, r *http.Request, _ Persona) {
@@ -242,11 +344,9 @@ func (s *server) assistantDiscard(w http.ResponseWriter, r *http.Request, _ Pers
 		control.Answer(w, http.StatusNotFound, AssistantResponse{Error: "no open draft " + assistant.OneLine(req.DraftID, 32)})
 		return
 	}
-	c.mu.Lock()
-	delete(c.drafts, req.DraftID)
-	c.mu.Unlock()
+	c.close(req.DraftID)
 	c.add(Line{Who: "note", Text: "Draft " + req.DraftID + " discarded; nothing was sent.", Time: s.cfg.Now()})
-	control.Answer(w, http.StatusOK, c.state())
+	control.Answer(w, http.StatusOK, c.state(s.cfg.Now()))
 }
 
 // chatRequest checks a state-changing assistant request (same origin,
@@ -269,7 +369,7 @@ func (s *server) chatRequest(w http.ResponseWriter, r *http.Request, v any) (*ch
 }
 
 // disrupt forwards a carrier's "disrupt voyage" (confirmed in its dialog)
-// to the control API: the same action as ulpctl disrupt.
+// to the control API: the same action as ulpctl disrupt, validated there.
 func (s *server) disrupt(w http.ResponseWriter, r *http.Request, _ Persona) {
 	if !s.sameOrigin(r) {
 		control.Answer(w, http.StatusForbidden, errorBody("cross-site request refused"))

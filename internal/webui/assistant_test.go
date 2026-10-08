@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/assistant"
+	"github.com/go-steer/supercargo/internal/llm"
+	"github.com/go-steer/supercargo/internal/llm/fake"
 	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -34,7 +36,8 @@ import (
 type node struct {
 	mu     sync.Mutex
 	booked []shipper.BookRequest
-	fail   error // Book fails with it, if set
+	fail   error         // Book fails with it, if set
+	hold   chan struct{} // Book waits for it to close, if set
 }
 
 func (n *node) Profile(context.Context, string) (*shipper.Profile, error) {
@@ -51,6 +54,9 @@ func (n *node) Status(context.Context, string, string) (*shipper.StatusResponse,
 	return nil, errors.New("no")
 }
 func (n *node) Book(_ context.Context, req shipper.BookRequest) (*shipper.BookResponse, error) {
+	if n.hold != nil {
+		<-n.hold
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.fail != nil {
@@ -216,7 +222,7 @@ func TestSendFailures(t *testing.T) {
 	*now = now.Add(ArmDelay)
 	n.fail = &assistant.NodeError{Status: http.StatusBadRequest}
 	code, st := post(h, "/ui/api/assistant/send", SendRequest{DraftID: id}, alex)
-	if code != http.StatusBadGateway || len(st.Drafts) != 1 || st.Error == "" || !strings.Contains(st.Lines[len(st.Lines)-1].Text, "was not sent") {
+	if code != http.StatusBadGateway || len(st.Drafts) != 1 || st.Error == "" || !strings.Contains(st.Lines[len(st.Lines)-1].Text, "not sent") {
 		t.Errorf("a refused send: HTTP %d %+v", code, st)
 	}
 	n.fail = errors.New("connection reset")
@@ -262,5 +268,111 @@ func TestTranscriptBounded(t *testing.T) {
 	}
 	if len(st.Lines) != MaxTranscript || st.Lines[len(st.Lines)-1].Who != "assistant" {
 		t.Errorf("transcript: %d lines", len(st.Lines))
+	}
+}
+
+// TestArmFromShown: the delay runs from when the node handed the draft to
+// the page, not from when the model made it.
+func TestArmFromShown(t *testing.T) {
+	h, n, _, now := assistantUI(t)
+	alex := login(t, h, "alex")
+	_, st := post(h, "/ui/api/assistant/turn", map[string]string{"text": bookSentence}, alex)
+	id := st.Drafts[0].DraftID
+	*now = now.Add(ArmDelay - time.Millisecond)
+	if code, _ := post(h, "/ui/api/assistant/send", SendRequest{DraftID: id}, alex); code != http.StatusTooEarly || len(n.booked) != 0 {
+		t.Errorf("just under the delay: HTTP %d", code)
+	}
+	// Reading the state again doesn't restart (or skip) the clock.
+	do(h, http.MethodGet, "/ui/api/assistant", "", alex)
+	*now = now.Add(time.Millisecond)
+	if code, _ := post(h, "/ui/api/assistant/send", SendRequest{DraftID: id}, alex); code != http.StatusOK || len(n.booked) != 1 {
+		t.Errorf("at the delay: HTTP %d", code)
+	}
+}
+
+// TestConcurrentSends: two sends of one draft book once; while one runs,
+// the session is busy for turns too; the loser says nothing false.
+func TestConcurrentSends(t *testing.T) {
+	h, n, _, now := assistantUI(t)
+	alex := login(t, h, "alex")
+	_, st := post(h, "/ui/api/assistant/turn", map[string]string{"text": bookSentence}, alex)
+	id := st.Drafts[0].DraftID
+	*now = now.Add(ArmDelay)
+	n.hold = make(chan struct{})
+	first := make(chan int, 1)
+	go func() { code, _ := post(h, "/ui/api/assistant/send", SendRequest{DraftID: id}, alex); first <- code }()
+	time.Sleep(50 * time.Millisecond)
+	code, second := post(h, "/ui/api/assistant/send", SendRequest{DraftID: id}, alex)
+	if code != http.StatusConflict {
+		t.Errorf("a second send while the first runs: HTTP %d", code)
+	}
+	if code, _ := post(h, "/ui/api/assistant/turn", map[string]string{"text": "Hello"}, alex); code != http.StatusConflict {
+		t.Errorf("a turn while a send runs: HTTP %d", code)
+	}
+	close(n.hold)
+	if c := <-first; c != http.StatusOK || len(n.booked) != 1 {
+		t.Fatalf("the first send: HTTP %d, %d booked", c, len(n.booked))
+	}
+	code, st = post(h, "/ui/api/assistant/send", SendRequest{DraftID: id}, alex)
+	if code != http.StatusNotFound || len(n.booked) != 1 {
+		t.Errorf("a send after it: HTTP %d, %d booked", code, len(n.booked))
+	}
+	for _, l := range append(st.Lines, second.Lines...) {
+		if strings.Contains(l.Text, "not sent") {
+			t.Errorf("a false note: %q", l.Text)
+		}
+	}
+}
+
+// TestChatEndsWithSession: signing out drops the assistant and its
+// drafts; a two-role persona has both the assistant and disrupt.
+func TestChatEndsWithSession(t *testing.T) {
+	h, _, _, _ := assistantUI(t)
+	alex := login(t, h, "alex")
+	post(h, "/ui/api/assistant/turn", map[string]string{"text": bookSentence}, alex)
+	do(h, http.MethodPost, "/ui/api/logout", "{}", alex)
+	alex = login(t, h, "alex")
+	var st AssistantResponse
+	_ = json.Unmarshal(do(h, http.MethodGet, "/ui/api/assistant", "", alex).Body.Bytes(), &st)
+	if len(st.Lines) != 0 || len(st.Drafts) != 0 {
+		t.Errorf("a new session inherited the old one's chat: %+v", st)
+	}
+	jo := login(t, h, "jo")
+	if code, _ := post(h, "/ui/api/assistant/turn", map[string]string{"text": "Hello"}, jo); code != http.StatusOK {
+		t.Errorf("a two-role persona's turn: HTTP %d", code)
+	}
+	if code, _ := post(h, "/ui/api/disrupt", map[string]string{"bookingRef": "OB-1", "delay": "24h", "reason": "Fog."}, jo); code != http.StatusOK {
+		t.Errorf("a two-role persona's disrupt: HTTP %d", code)
+	}
+}
+
+// TestTurnLimits: a failing model leaves a note, not a lost message; when
+// every turn slot is taken, a turn waits for none of them.
+func TestTurnLimits(t *testing.T) {
+	failing := Handler(Config{Domain: "cymbal-shoes.example", Personas: personas, Control: &echo{},
+		NewAssistant: func() (*assistant.Assistant, error) {
+			return &assistant.Assistant{Model: &fake.Model{Respond: func(llm.GenerateRequest) (llm.GenerateResponse, error) {
+				return llm.GenerateResponse{}, errors.New("model unavailable")
+			}}, Node: &node{}, Drafts: &assistant.Drafts{}}, nil
+		}})
+	c := login(t, failing, "alex")
+	code, st := post(failing, "/ui/api/assistant/turn", map[string]string{"text": "Hello"}, c)
+	if code != http.StatusBadGateway || len(st.Lines) != 2 || st.Lines[0].Text != "Hello" || st.Lines[1].Who != "note" {
+		t.Errorf("a failed turn: HTTP %d %+v", code, st.Lines)
+	}
+	h, _, _, _ := assistantUI(t)
+	alex := login(t, h, "alex")
+	for range MaxTurnsAtOnce {
+		turnSlots <- struct{}{}
+	}
+	code, _ = post(h, "/ui/api/assistant/turn", map[string]string{"text": "Hello"}, alex)
+	for range MaxTurnsAtOnce {
+		<-turnSlots
+	}
+	if code != http.StatusServiceUnavailable {
+		t.Errorf("a turn with every slot taken: HTTP %d", code)
+	}
+	if code, _ := post(h, "/ui/api/assistant/turn", map[string]string{"text": "Hello"}, alex); code != http.StatusOK {
+		t.Errorf("a turn once a slot is free (the session's lock was released): HTTP %d", code)
 	}
 }

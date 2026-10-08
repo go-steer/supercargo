@@ -566,6 +566,7 @@ function renderRoles() {
 // ── sign-in ──────────────────────────────────────────────────────────
 async function showLogin() {
   state.events?.close();
+  setPolling(false);
   $('login').classList.add('show');
   try {
     const res = await fetch(API + 'personas', { credentials: 'same-origin' });
@@ -595,7 +596,7 @@ async function signIn(id) {
 
 async function start() {
   state.me = await api('me');
-  state.messages = []; state.lastSeq = 0; state.entries = []; state.open.clear(); state.chat = null; state.tab = {};
+  state.messages = []; state.lastSeq = 0; state.entries = []; state.open.clear(); state.chat = null; state.tab = {}; state.shownDrafts = new Set();
   const { me } = state;
   $('company').textContent = me.company;
   $('domain').textContent = me.domain;

@@ -232,10 +232,11 @@ func (s *server) personas(w http.ResponseWriter, _ *http.Request) {
 }
 
 // sameOrigin rejects a state-changing request another site could have
-// sent: it must be JSON, and an Origin header, if any, must be a host the
-// UI is served as, over http or https. Not necessarily this request's
-// Host: a proxy may forward the page's https://<proxy name> as
-// http://localhost:port. (The session cookie is SameSite=Strict too.)
+// sent: it must be JSON, and an Origin header, if any, must be this
+// request's host and port exactly (another port on localhost is another
+// site, such as the other node's UI), or one of web.hosts with no port: a
+// proxy forwards the page's https://<proxy name> as http://localhost:port.
+// (The session cookie is SameSite=Strict too.)
 func (s *server) sameOrigin(r *http.Request) bool {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		return false
@@ -245,7 +246,10 @@ func (s *server) sameOrigin(r *http.Request) bool {
 		return true
 	}
 	u, err := url.Parse(o)
-	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && s.allowedHost(u.Host)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host) || (u.Port() == "" && slices.Contains(s.cfg.Hosts, strings.ToLower(u.Hostname())))
 }
 
 func (s *server) login(w http.ResponseWriter, r *http.Request) {
