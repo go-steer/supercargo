@@ -262,3 +262,17 @@ func TestScrollbackKept(t *testing.T) {
 		t.Error("back at the end, the view stopped following")
 	}
 }
+
+// TestAuroraFrame: the rules framing the chat are the aurora, end to end,
+// and follow a resize.
+func TestAuroraFrame(t *testing.T) {
+	m := newModel(t, nil, "dark")
+	for _, w := range []int{80, 120} {
+		m.Update(tea.WindowSizeMsg{Width: w, Height: 30})
+		rule := strings.Split(m.render(), "\n")[1]
+		// #217BFE and #FF5E62, the gradient's first and last stops.
+		if !strings.Contains(rule, "38;2;33;123;254") || !strings.Contains(rule, "38;2;255;94;98") || strings.Count(rule, "─") != w {
+			t.Errorf("width %d: the frame isn't the aurora: %q", w, rule)
+		}
+	}
+}

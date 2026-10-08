@@ -28,7 +28,6 @@ type styles struct {
 	p       theme.Palette
 	text    lipgloss.Style
 	dim     lipgloss.Style
-	rule    lipgloss.Style
 	you     lipgloss.Style
 	tool    lipgloss.Style
 	ok      lipgloss.Style
@@ -44,7 +43,6 @@ func newStyles(p theme.Palette) styles {
 		p:       p,
 		text:    lipgloss.NewStyle().Foreground(c(p.Text)),
 		dim:     lipgloss.NewStyle().Foreground(c(p.Dim)),
-		rule:    lipgloss.NewStyle().Foreground(c(p.Border)),
 		you:     lipgloss.NewStyle().Foreground(c(p.Blue)).Bold(true),
 		tool:    lipgloss.NewStyle().Foreground(c(p.Dim)).Bold(true),
 		ok:      lipgloss.NewStyle().Foreground(c(p.Green)),

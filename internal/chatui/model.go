@@ -73,6 +73,10 @@ type Model struct {
 	now        func() time.Time
 	themeFixed bool
 	st         styles
+	// frame caches the aurora rule for frameWidth: it is painted one
+	// colour per cell, so it isn't rebuilt every frame.
+	frame      string
+	frameWidth int
 
 	rows     []Row
 	pending  []assistant.DraftResult // drafts waiting for the dialog
@@ -360,7 +364,11 @@ func (m *Model) render() string {
 	if m.width == 0 || m.quitting {
 		return ""
 	}
-	rule := m.st.rule.Render(strings.Repeat("─", m.width))
+	// The chat is where the model works, so its frame is the aurora.
+	if m.frameWidth != m.width {
+		m.frame, m.frameWidth = m.st.aurora(strings.Repeat("─", m.width), false), m.width
+	}
+	rule := m.frame
 	body := m.vp.View()
 	if m.dialog != nil {
 		body = m.dialogView()
