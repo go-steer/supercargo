@@ -1,6 +1,6 @@
 module github.com/go-steer/supercargo/dev/smoke/browserdrive
 
-go 1.26.6
+go 1.26.9
 
 require github.com/chromedp/chromedp v0.14.2
 
