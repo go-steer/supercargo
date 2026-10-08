@@ -162,7 +162,9 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
 .entry { padding: 4px 10px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
 .entry-head { display: flex; gap: 8px; align-items: center; margin-bottom: 3px; }
 .kind { font-size: 10px; font-weight: 700; letter-spacing: .12em; padding: 0 6px; border-radius: 3px; border: 1px solid var(--border-soft); color: var(--text-dim); }
-.kind.model { color: #fff; border: none; background: var(--aurora); }
+.kind.model { border: 1px solid transparent;
+  background: linear-gradient(var(--bg-surface), var(--bg-surface)) padding-box, var(--aurora) border-box; }
+.kind.model span { background: var(--aurora); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .side { font-size: 10px; color: var(--text-dim); border: 1px dotted var(--border-soft); border-radius: 3px; padding: 0 5px; }
 .entry .json { max-height: none; border: none; background: transparent; padding: 0 0 0 4px; }
 
@@ -477,7 +479,9 @@ function renderActivity() {
     if (!sides.includes(side) || (actFilter !== 'all' && kind !== actFilter)) continue;
     const e = el('div', 'entry'), head = el('div', 'entry-head');
     const ts = el('span', 'ts', time.slice(0, 8)); ts.appendChild(el('i', null, time.slice(8)));
-    head.append(ts, el('span', 'kind' + (kind === 'model' ? ' model' : ''), kind.toUpperCase()), el('span', 'side', side));
+    const badge = el('span', 'kind' + (kind === 'model' ? ' model' : ''));
+    badge.appendChild(el('span', null, kind.toUpperCase()));
+    head.append(ts, badge, el('span', 'side', side));
     e.append(head, jsonBlock(data, 1)); // nested objects start folded, like an editor's fold-to-level-1
     box.appendChild(e);
   }
