@@ -28,12 +28,12 @@ dir="$(repo_root)/dev/smoke"
 tests=()
 if (($#)); then
   for name in "$@"; do
-    [[ -x "$dir/$name" && "$name" != *.sh ]] || { echo "smoke: no test $name in dev/smoke" >&2; exit 1; }
+    [[ -f "$dir/$name" && -x "$dir/$name" && "$name" != *.sh ]] || { echo "smoke: no test $name in dev/smoke" >&2; exit 1; }
     tests+=("$dir/$name")
   done
 else
   for f in "$dir"/*; do
-    [[ -x "$f" && "$f" != *.sh ]] && tests+=("$f")
+    [[ -f "$f" && -x "$f" && "$f" != *.sh ]] && tests+=("$f")
   done
 fi
 

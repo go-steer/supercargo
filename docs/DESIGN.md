@@ -971,6 +971,7 @@ The node keeps the last 1,000 entries. A subscriber that falls behind is cut off
 | LLM evals (manual / nightly) | A fixed set of inquiries and alerts with expected facts; check citations are valid and no data from other bookings appears |
 | Smoke | `dev/smoke/*`, run by `dev/tools/smoke` in CI: real `ulpnode` processes over real sockets, one script per scenario (`booking`; `push`, which is `dev/demo/hello-ulp` scripted). They share `dev/smoke/lib.sh` with the demo, so the demo and its check can't drift apart |
 | End to end | `docker compose up` + scripted `ulpchat`/`ulpctl` run of the full demo |
+| Browser | `dev/smoke/browser`: both nodes serve their UIs, and headless Chrome (driven by `chromedp`, in its own module under `dev/smoke/browserdrive`) books through Cymbal's assistant and confirmation dialog, disrupts from Ocean Blue's carrier view, and sees the alert, banner and DELAYED card reach Cymbal live. It skips locally without Chrome (set `SUPERCARGO_CHROME`); CI requires it (`SUPERCARGO_BROWSER_REQUIRED=1`) |
 
 ### A.14 Build milestones
 
