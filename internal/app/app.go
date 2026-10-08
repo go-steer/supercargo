@@ -45,6 +45,7 @@ import (
 	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/llm/anthropic"
+	"github.com/go-steer/supercargo/internal/llm/gemini"
 	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/operator"
 	"github.com/go-steer/supercargo/internal/shipper"
@@ -639,9 +640,47 @@ func NewModel(c *config.LLM, fake llm.Model) (llm.Model, error) {
 	case c.Provider == config.ProviderFake:
 		return fake, nil
 	}
-	key := os.Getenv(c.APIKeyEnv)
-	if key == "" {
-		return nil, fmt.Errorf("llm: the environment variable %s, which holds the API key, is empty", c.APIKeyEnv)
+	env := func(name, what string) (string, error) {
+		v := os.Getenv(name)
+		if v == "" {
+			return "", fmt.Errorf("llm: the environment variable %s, which holds the %s, is empty", name, what)
+		}
+		return v, nil
+	}
+	if c.Backend == config.BackendVertex {
+		// Vertex AI: Application Default Credentials, no key.
+		project, err := env(c.ProjectEnv, "Vertex AI project")
+		if err != nil {
+			return nil, err
+		}
+		location, err := env(c.LocationEnv, "Vertex AI location")
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if c.Provider == config.ProviderGemini {
+			if c.Model == "" {
+				return nil, errors.New("llm: gemini needs a model")
+			}
+			return gemini.New(ctx, gemini.Options{Model: c.Model, Vertex: &gemini.Vertex{Project: project, Location: location}})
+		}
+		creds, err := anthropic.DefaultCredentials()
+		if err != nil {
+			return nil, err
+		}
+		return anthropic.New(anthropic.Options{Model: c.Model, CacheSystem: true,
+			Vertex: &anthropic.Vertex{Project: project, Region: location, Credentials: creds}})
+	}
+	key, err := env(c.APIKeyEnv, "API key")
+	if err != nil {
+		return nil, err
+	}
+	if c.Provider == config.ProviderGemini {
+		if c.Model == "" {
+			return nil, errors.New("llm: gemini needs a model")
+		}
+		return gemini.New(context.Background(), gemini.Options{Model: c.Model, APIKey: key})
 	}
 	return anthropic.New(anthropic.Options{APIKey: key, Model: c.Model, CacheSystem: true})
 }

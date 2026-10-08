@@ -52,13 +52,22 @@ web_hosts() {
 demo_setup() {
   local dir=$1 hps=$2 root llm
   root="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
-  # ULP_LLM=anthropic answers inquiries and summarizes alerts with Claude
-  # (the key comes from ANTHROPIC_API_KEY); the default is the fake model,
-  # which needs no key.
+  # ULP_LLM picks the models (every model role: Cymbal's assistant and
+  # summarizer, Ocean Blue's inquiry responder); the default is the fake
+  # model, which needs nothing. ULP_LLM_MODEL overrides the model ID.
+  #   anthropic       Claude by API key (ANTHROPIC_API_KEY)
+  #   gemini          Gemini by API key (GEMINI_API_KEY)
+  #   vertex-claude   Claude on Vertex AI (ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION)
+  #   vertex-gemini   Gemini on Vertex AI (GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION)
+  # Vertex AI uses Application Default Credentials (a gcloud login): no key.
+  local model="${ULP_LLM_MODEL:-}" gem="${ULP_LLM_MODEL:-gemini-3.8-flash}"
   case "${ULP_LLM:-fake}" in
-    fake) llm="provider: fake   # deterministic answers, no API key" ;;
-    anthropic) llm="provider: anthropic   # the key comes from ANTHROPIC_API_KEY" ;;
-    *) echo "demo_setup: ULP_LLM must be fake or anthropic" >&2; return 1 ;;
+    fake) llm="{ provider: fake }   # deterministic answers, no API key" ;;
+    anthropic) llm="{ provider: anthropic${model:+, model: $model} }   # the key comes from ANTHROPIC_API_KEY" ;;
+    gemini) llm="{ provider: gemini, model: $gem }   # the key comes from GEMINI_API_KEY" ;;
+    vertex-claude) llm="{ provider: anthropic, backend: vertex${model:+, model: $model} }   # Vertex AI: Application Default Credentials" ;;
+    vertex-gemini) llm="{ provider: gemini, backend: vertex, model: $gem }   # Vertex AI: Application Default Credentials" ;;
+    *) echo "demo_setup: ULP_LLM must be fake, anthropic, gemini, vertex-claude or vertex-gemini" >&2; return 1 ;;
   esac
   # ULP_OTEL_ENDPOINT=localhost:4318 exports both nodes' traces there
   # (dev/demo/otel up starts a local viewer).
@@ -102,8 +111,7 @@ operator:
   transit: 134h
 simulator:
   hoursPerSecond: $hps
-llm:
-  $llm
+llm: $llm
 skills:
   dir: "$root/dev/demo/skills/ocean-blue"   # Ocean Blue's own agent skills
 control:
@@ -131,8 +139,7 @@ control:
   socket: $dir/cy.sock
 business:
   file: $dir/business.yaml   # private: never in an envelope
-llm:
-  $llm
+llm: $llm
 web:                     # the browser UI at http://cymbal-shoes.localhost:$SH_PORT/ui/
   auth: demo             # no password: local demos only
   personas:

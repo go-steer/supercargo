@@ -781,7 +781,9 @@ For a model with tools (`ulpchat`, milestone 5), skill descriptions go into the 
 
 Each model call logs the agent skills it ran with (name and content hash).
 
-**The Anthropic adapter** (`internal/llm/anthropic`, derived from mast's provider) sends the system prompt (cached), the messages, and, for a request with a JSON schema, a single `respond` tool whose input schema is that schema, with `tool_choice` forcing it. The tool call's input is the reply, and it is still validated like any model output. It talks to Anthropic's API directly, not through the outbound guard, because that host comes from the operator's own configuration, not from a partner. The SDK's environment defaults are switched off: they would take a base URL (`ANTHROPIC_BASE_URL`, a profile file), other credentials and extra headers from the environment, any of which could send the key to another host. A JSON reply that stopped early (`max_tokens`) is an error, even if what arrived parses, so the template fallback runs. The key never appears in the config file, only the name of the environment variable holding it, and a node configured for Claude without one doesn't start. A real-model test (`TestRealModelInquiry`) is opt-in (`SUPERCARGO_REAL_LLM=1`) and never part of `dev/tools/ci`.
+**The Anthropic adapter** (`internal/llm/anthropic`, derived from mast's provider) sends the system prompt (cached), the messages, and, for a request with a JSON schema, a single `respond` tool whose input schema is that schema, with the system prompt asking for it (not `tool_choice`, which Claude on Vertex AI refuses to force). The tool call's input is the reply; a reply in text is taken only if it is a JSON object (a Markdown fence around it is stripped), and a call to any other tool is dropped. Either way it is still validated like any model output. It talks to Anthropic's API directly, not through the outbound guard, because that host comes from the operator's own configuration, not from a partner. The SDK's environment defaults are switched off: they would take a base URL (`ANTHROPIC_BASE_URL`, a profile file), other credentials and extra headers from the environment, any of which could send the key to another host. A JSON reply that stopped early (`max_tokens`) is an error, even if what arrived parses, so the template fallback runs. The key never appears in the config file, only the name of the environment variable holding it, and a node configured for Claude without one doesn't start. With `backend: vertex` the same adapter talks to Claude on Vertex AI (the SDK's `vertex` option): the project and region come from environment variables, and authentication is Google's Application Default Credentials (a gcloud login on a workstation, the service's own identity on Cloud Run), so there is no key at all.
+
+**The Gemini adapter** (`internal/llm/gemini`, on `google.golang.org/genai`) maps the same interface: the system prompt to the system instruction, tools to function declarations (their JSON schemas as given), a JSON schema to a JSON response type with that schema, and tool results to function responses, named after the call they answer. Gemini 3 signs its function calls (a thought signature) and refuses a conversation that sends a call back without it, so `llm.ToolCall` carries an opaque `Signature` that the adapter returns unchanged; the model's thought text is never taken as the reply. A finish other than a normal stop, a tool call or the token limit (a safety block, say) is an error, and so is a JSON reply cut at the limit. It runs on the Gemini API with a key, or on Vertex AI with Application Default Credentials. Real-model tests are opt-in (`SUPERCARGO_REAL_LLM=1`) and never part of `dev/tools/ci`: `TestRealModelInquiry` (Claude by key) and `TestRealModels` (`internal/app`: Gemini and Claude on Vertex AI, and Gemini by key if one is set, each through a plain reply, a tool call and its result, and a JSON reply).
 
 **LLM #1: shipper assistant** (`internal/assistant`, behind `ulpchat` and the browser UI's chat; its tools use the node's control API)
 
@@ -887,9 +889,12 @@ discovery:
   ttl: 1h                        # profiles are never used past this
   refreshFloor: 1m               # at most one fetch per domain per floor
 llm:
-  provider: anthropic            # anthropic | fake; omit for template-only answers
-  model: <model id>
-  apiKeyEnv: ANTHROPIC_API_KEY   # the default; the key itself never goes in this file
+  provider: anthropic            # anthropic | gemini | fake; omit for template-only answers
+  backend: api                   # api (a key) | vertex (Vertex AI, Application Default Credentials)
+  model: <model id>              # required for gemini
+  apiKeyEnv: ANTHROPIC_API_KEY   # api only; default ANTHROPIC_API_KEY or GEMINI_API_KEY; the key itself never goes in this file
+  # projectEnv: ANTHROPIC_VERTEX_PROJECT_ID   # vertex only; defaults: ANTHROPIC_VERTEX_PROJECT_ID
+  # locationEnv: CLOUD_ML_REGION              # and CLOUD_ML_REGION for Claude, GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION for Gemini
 skills:
   dir: /etc/ulp/skills           # absolute; company agent skills (optional), after the built-in ones
 mcp:                             # later (A.7)

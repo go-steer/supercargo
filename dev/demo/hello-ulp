@@ -27,8 +27,10 @@
 # Environment: OP_PORT (8441), SH_PORT (8442), HOURS_PER_SECOND (1: the
 # voyage departs about half a minute after booking and arrives about two
 # and a half minutes later), ULP_LLM (fake: deterministic answers, no key;
-# anthropic: Ocean Blue answers inquiries and Cymbal summarizes alerts with
-# Claude, the key from ANTHROPIC_API_KEY in both nodes' terminals),
+# anthropic or gemini: by API key, from ANTHROPIC_API_KEY or GEMINI_API_KEY;
+# vertex-claude or vertex-gemini: through Vertex AI with Application
+# Default Credentials and the project and region from the usual variables;
+# ULP_LLM_MODEL picks the model, default gemini-3.8-flash for Gemini),
 # ULP_OTEL_ENDPOINT (export both nodes' traces to this OTLP/HTTP collector,
 # e.g. localhost:4318 after dev/demo/otel up), HELLO_ULP_SESSION (the
 # tmux session name, hello-ulp; give tests their own so they never replace
@@ -80,7 +82,9 @@ if $tmux; then
   # A tmux server already running wouldn't see this shell's environment,
   # so pass on what the operator node needs.
   env_args=()
-  [[ -n "${ANTHROPIC_API_KEY:-}" ]] && env_args+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
+  for v in ANTHROPIC_API_KEY GEMINI_API_KEY ANTHROPIC_VERTEX_PROJECT_ID CLOUD_ML_REGION GOOGLE_CLOUD_PROJECT GOOGLE_CLOUD_LOCATION; do
+    [[ -n "${!v:-}" ]] && env_args+=(-e "$v=${!v}")
+  done
   # DESIGN's screen layout, panes addressed by ID: tmux renumbers panes by
   # position as they split, so indices would point at the wrong ones.
   #   Cymbal Shoes (you)     | Ocean Blue node log
