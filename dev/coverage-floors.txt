@@ -83,4 +83,4 @@ github.com/go-steer/supercargo/internal/control         89.0  # 90.2: a director
 github.com/go-steer/supercargo/internal/app             89.0  # 90.3
 github.com/go-steer/supercargo/cmd/ulpnode              90.0  # 91.3
 github.com/go-steer/supercargo/cmd/ulpctl               91.0  # 92.7
-github.com/go-steer/supercargo/cmd/ulpchat               86.0  # 87.3: main runs a real terminal
+github.com/go-steer/supercargo/cmd/ulpchat               83.0  # 83.8: only main, which runs a real terminal, is uncovered; building the assistant moved to internal/app (ShipperAssistant), leaving a smaller package
