@@ -201,8 +201,8 @@ func book(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if cfg.Role != config.RoleShipper {
-		return errors.New("book: the config is not a shipper's")
+	if !cfg.Has(config.RoleShipper) {
+		return errors.New("book: the config has no shipper role")
 	}
 	// The booking goes through the running node, which records it and so
 	// accepts the operator's pushes for it.
@@ -310,8 +310,8 @@ func ask(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if cfg.Role != config.RoleShipper || cfg.Control == nil {
-		return errors.New("ask: the config must be a shipper's, with a control socket")
+	if !cfg.Customer() || cfg.Control == nil {
+		return errors.New("ask: the config needs the shipper or receiver role, and a control socket")
 	}
 	var resp shipper.AskResponse
 	code, err := control.Call(control.Client(cfg.Control.Socket, 75*time.Second), "/ask",
@@ -363,8 +363,8 @@ func status(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if cfg.Role != config.RoleShipper || cfg.Control == nil {
-		return errors.New("status: the config must be a shipper's, with a control socket")
+	if !cfg.Customer() || cfg.Control == nil {
+		return errors.New("status: the config needs the shipper or receiver role, and a control socket")
 	}
 	var resp shipper.StatusResponse
 	code, err := control.Call(control.Client(cfg.Control.Socket, 30*time.Second), "/status",

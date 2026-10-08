@@ -39,6 +39,13 @@ type pair struct {
 
 func startPair(t *testing.T, operatorExtra string) *pair {
 	t.Helper()
+	return startPairWith(t, operatorExtra, "role: shipper")
+}
+
+// startPairWith is startPair with Cymbal Shoes' role line replaced by
+// shipperRoles (more YAML may follow it).
+func startPairWith(t *testing.T, operatorExtra, shipperRoles string) *pair {
+	t.Helper()
 	cert, key, ca := tlsFiles(t, "cymbal-shoes.example", "ocean-blue.example")
 	sAddr, oAddr := freePort(t), freePort(t)
 	tlsYAML := `tls: { mode: local-ca, certFile: "` + cert + `", keyFile: "` + key + `", caFile: "` + ca + `" }
@@ -47,7 +54,7 @@ peers: { cymbal-shoes.example: "` + sAddr + `", ocean-blue.example: "` + oAddr +
 	shipperKey := keyFile(t)
 	sCfg, err := config.Parse([]byte(`domain: cymbal-shoes.example
 name: Cymbal Shoes
-role: shipper
+` + shipperRoles + `
 listen: "` + sAddr + `"
 keys: [{ kid: cy-1, privateKeyFile: "` + shipperKey + `" }]
 partners: [ocean-blue.example]
@@ -110,7 +117,7 @@ func TestRoundTripFromConfig(t *testing.T) {
 	if conf.Status != intents.StatusConfirmed {
 		t.Errorf("confirmation %+v", conf)
 	}
-	if _, err := p.operator.Bookings.Get("ocean-blue.example", conf.BookingRef); err != nil {
+	if _, err := p.operator.Carrier.Bookings.Get("ocean-blue.example", conf.BookingRef); err != nil {
 		t.Errorf("operator didn't store the booking: %v", err)
 	}
 	if !p.operator.Keys.IsPinned("cymbal-shoes.example") || !p.shipper.Keys.IsPinned("ocean-blue.example") {

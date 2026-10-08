@@ -160,8 +160,16 @@ are in:
 - The node API (#15): `internal/activity` (the activity stream, which the
   log renders from), the control API's reads, and `ulpnode watch`.
 
-Next is the payload alignment (tracking #68, DESIGN §A.5): the message
-bodies move to the standard ULP payload schemas (pf's, snake_case) inside
-our unchanged signed envelope; then back to the browser UI (#30) and the
-deployment (#38). The M5 TUI work is in review (#55–#57); cited cause IDs
-in alerts are always checked against the shipper's log before a model.
+- The payload alignment (#68, DESIGN §A.5): the message bodies are the
+  standard ULP payload schemas (pf's, snake_case, with header `dialect`)
+  inside our unchanged signed envelope, and profiles carry pf's
+  capabilities and supported dialects.
+
+- Nodes with several roles (#75, DESIGN §A.6): `roles: [...]`, a
+  `receiver` role, records kept per side (`App.Carrier`, `App.Customer`),
+  each model within one role, and no message to or from the node itself.
+
+Next: the rest of #75 (per-role assistants, personas), then the browser
+UI (#30) and the deployment (#38); the M5 TUI work is in review
+(#55–#57). Cited cause IDs in alerts are always checked against the
+shipper's log before a model.

@@ -63,6 +63,9 @@ const (
 const (
 	RoleOperator = "operator"
 	RoleShipper  = "shipper"
+	// RoleReceiver is a consignee on others' bookings: it takes their
+	// events and asks about them, and never books.
+	RoleReceiver = "receiver"
 )
 
 // Profile is the published document. Members this version doesn't define
@@ -204,10 +207,15 @@ func (d *Document) validate(opts ParseOptions, algs sig.Algorithms) error {
 	if len(p.Party.Roles) == 0 {
 		return errors.New("party.roles is empty")
 	}
+	seen := map[string]bool{}
 	for _, r := range p.Party.Roles {
-		if r != RoleOperator && r != RoleShipper {
+		if r != RoleOperator && r != RoleShipper && r != RoleReceiver {
 			return fmt.Errorf("party.roles: %s is not a role", logsafe.Quote(r))
 		}
+		if seen[r] {
+			return fmt.Errorf("party.roles: %s appears twice", r)
+		}
+		seen[r] = true
 	}
 	if len(p.Services) == 0 || len(p.Services) > MaxServices {
 		return fmt.Errorf("services has %d entries, want 1-%d", len(p.Services), MaxServices)

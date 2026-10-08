@@ -36,7 +36,13 @@ type Shipper struct {
 	// which of an answer's citations the shipper holds.
 	Events *store.EventLog
 	Now    func() time.Time
+	// NoBooking is a receiver without the shipper role: it follows others'
+	// bookings and asks about them, and Book refuses.
+	NoBooking bool
 }
+
+// ErrNoShipperRole is a booking on a node without the shipper role.
+var ErrNoShipperRole = errors.New("shipper: this node has no shipper role, so it can't book")
 
 // Book sends a booking request to operator and returns its answer. Only a
 // "confirmed" answer is recorded as a booking; "rejected" and the reserved
@@ -45,6 +51,9 @@ type Shipper struct {
 // Book is the deterministic send step. In the demo it runs only after the
 // person at the CLI confirmed the draft; no model calls it.
 func (s *Shipper) Book(ctx context.Context, operator string, req *intents.BookingRequestBody) (*intents.BookingConfirmationBody, error) {
+	if s.NoBooking {
+		return nil, ErrNoShipperRole
+	}
 	h := envelope.NewHeader(intents.BookingRequest, s.Node.Domain(), operator, s.Now())
 	resp, err := s.Node.Exchange(ctx, h, req, intents.BookingConfirmation)
 	if err != nil {

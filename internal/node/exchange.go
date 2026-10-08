@@ -47,6 +47,10 @@ func (e *RemoteError) Error() string {
 // acted on.
 var ErrBadResponse = errors.New("node: response rejected")
 
+// ErrSelf is a message addressed to this node itself: every intent is
+// between two parties, whatever roles a node has.
+var ErrSelf = errors.New("node: a message to this node itself (every intent is between two parties)")
+
 // Exchange signs body as a new message (or, with inReplyTo set on h, a
 // reply), sends it to h.Receiver, and returns the partner's verified,
 // decoded response, which must have one of the expect intents. A partner's
@@ -121,6 +125,9 @@ func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Bod
 	if h.Sender != n.cfg.Domain || h.Intent != body.Intent() {
 		return nil, fmt.Errorf("node: header sender %q / intent %q don't match this node and the body", h.Sender, h.Intent)
 	}
+	if h.Receiver == n.cfg.Domain {
+		return nil, ErrSelf
+	}
 	if err := body.Validate(); err != nil {
 		return nil, fmt.Errorf("node: invalid %s body: %w", body.Intent(), err)
 	}
@@ -129,7 +136,7 @@ func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Bod
 		return nil, err
 	}
 	if n.cfg.OutboundGuard != nil {
-		if err := n.cfg.OutboundGuard(b); err != nil {
+		if err := n.cfg.OutboundGuard(h.Intent, b); err != nil {
 			return nil, fmt.Errorf("node: refused to send %s: %w", h.Intent, err)
 		}
 	}

@@ -176,6 +176,11 @@ func (n *Node) verify(ctx context.Context, u *envelope.Unverified, ev *Event) (e
 	if claimed.Receiver != n.cfg.Domain {
 		return nil, http.StatusMisdirectedRequest, &Rejection{Code: intents.CodeForbidden, Reason: "receiver is " + claimed.Receiver}
 	}
+	// Every intent is between two parties: a node with several roles still
+	// never does business with itself (docs/DESIGN.md, A.6).
+	if claimed.Sender == n.cfg.Domain {
+		return nil, http.StatusForbidden, &Rejection{Code: intents.CodeForbidden, Reason: "sender is this node"}
+	}
 	if _, ok := n.cfg.Handlers[claimed.Intent]; !ok {
 		return nil, http.StatusBadRequest, &Rejection{Code: intents.CodeUnsupportedIntent, Reason: "no handler for " + claimed.Intent}
 	}
@@ -286,7 +291,7 @@ func (n *Node) sealReply(ctx context.Context, h *envelope.Header, reply *Reply, 
 	// Replies are outbound too: the same guard as requests (fail closed:
 	// the sender gets a bare 500, nothing signed).
 	if n.cfg.OutboundGuard != nil {
-		if err := n.cfg.OutboundGuard(b); err != nil {
+		if err := n.cfg.OutboundGuard(reply.Body.Intent(), b); err != nil {
 			return nil, fmt.Errorf("node: refused to reply %s: %w", reply.Body.Intent(), err)
 		}
 	}

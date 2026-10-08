@@ -248,7 +248,7 @@ Every company runs the same **ULP node** binary with role-specific modules. This
 
 | Binary | Purpose |
 |---|---|
-| `cmd/ulpnode` | The node. `--role operator` or `--role shipper` (the receiver and Mallory use the shipper role with no chat) |
+| `cmd/ulpnode` | The node, with the roles its config enables: `operator`, `shipper`, `receiver`, or several ([A.6](#a6-authorization-rules)). Mallory uses the shipper role with no chat |
 | `cmd/ulpchat` | Shipper chat CLI; talks to the local node's internal API and the LLM |
 | `cmd/ulpctl` | Presenter console: `disrupt`, `attack`, `reset`, `show` |
 
@@ -338,7 +338,7 @@ Each entry in `keys` is a public JWK: `kty`, `crv` and `x` per RFC 8037 for Ed25
 
 Fetching and validating a profile:
 - **The request.** `GET https://{domain}/.well-known/ulp`, through the guarded client ([A.2](#a2-identity-keys-and-trust-design-decisions)). The response must be `200` (redirects aren't followed) with `Content-Type: application/json`, and at most 64 KiB.
-- **The document.** `protocolVersion` is the node's, `party.domain` is the domain it was fetched from, the roles are known ones, and there is at least one service.
+- **The document.** `protocolVersion` is the node's, `party.domain` is the domain it was fetched from, the roles are known ones (`operator`, `shipper`, `receiver`, each at most once; a company may have several), and there is at least one service.
   - **Endpoints.** `transports.rest` is required, because every party receives envelopes over REST. Every endpoint is an `https` URL on the party's own domain (exactly, lowercase), with no port, userinfo, query or fragment. The standard port is the endpoint; in a local deployment the peer map says where that is.
   - **Keys.** 1–16 of them.
   - **Services.** 1–16, each with at most 64 intents named `ulp.` and dot-separated lowercase words.
@@ -349,7 +349,7 @@ Fetching and validating a profile:
   - A registry (such as an API hub) may help a deployment find partners, but it is not protocol discovery: the profile at the domain is.
 - **Strict parsing, room to grow.** Members this version doesn't define are ignored, so profiles can grow. Duplicate members, and members that differ from a defined one only in case, are rejected.
 
-Shipper and receiver nodes publish the same document (with `roles: ["shipper"]` and only the intents they accept, e.g. `ulp.tnt.event` and `ulp.tnt.alert`), so operators can verify *their* signatures and push to them.
+Shipper and receiver nodes publish the same document (with `roles: ["shipper"]` or `["receiver"]` and only the intents they accept, e.g. `ulp.tnt.event` and `ulp.tnt.alert`), so operators can verify *their* signatures and push to them. A node with several roles lists them all, and the intents of each.
 
 **`GET /.well-known/agent-card.json`:** a standard A2A agent card (name, description, URL, skills). It lists only the **agentic** skills, the ones where a caller delegates an open-ended task to this company's agent: for the demo operator that's `shipment-inquiry` (later `rebooking-negotiation`). Structured intents such as `ocean.booking.request` aren't skills; they're served by the REST binding. Check the exact path and fields against the A2A spec version you target.
 
@@ -639,6 +639,13 @@ These are evaluated after signature, replay and body validation, and **before** 
 | `ocean.tnt.request` | The same rule as `tnt.inquiry` (the booking's shipper, or from milestone 7 a delegate with `tnt:read`), the same single `forbidden` |
 | `tnt.event` / `tnt.alert` (inbound at the shipper) | `sender == booking.operator` (the booking is looked up under the sender, so another carrier never finds it), and the booking has an active subscription that lists this intent. Every failure is the same `forbidden`, so the answer reveals nothing about which bookings exist |
 | Subscription endpoint | Must be on the sender's own domain (prevents using the operator to push data to third parties) |
+| Any intent | `sender != self`: a message from the node's own domain is refused on its claimed header, before any key is fetched (a bare `403`), and the node never sends one to itself (`node.ErrSelf`). Every intent is between two parties |
+
+**Nodes with several roles.** A company can be several parties at once: a shipper is also a receiver when it ships to its own warehouse, and a carrier is also a shipper when it books a feeder leg with another carrier. A node's roles (`operator`, `shipper`, `receiver`) are the capabilities its config enables; who it is in a given flow is decided per booking, which is how every rule above already works (none checks the receiving node's role). The receiver is the consignee on someone else's booking: it takes that booking's events and asks about it, and never books. **Until milestone 7** (the shipper's delegation) a receiver-only node holds no bookings, so it refuses every event; the role exists now so profiles and configs can name it. Its records are the same kind as a shipper's.
+1. **Records are kept per side.** The operator role's records (the bookings it confirmed, the events it published) and the customer side's (shipper and receiver: bookings other carriers issued, the events received for them) are separate stores, and nothing reads across them. Asked as a carrier about a booking it holds as a shipper, a node answers the same `forbidden` as for any unknown booking.
+2. **Each model works within one role.** The inquiry responder reads the carrier side's records only; the alert summarizer and the shipper's assistant read the customer side's only, with its business context. It's one company, but customer data in the context of a model that writes outbound messages is an exfiltration path for prompt injection. Assistants are to be configured per role, with one conversation each (#75, with the browser UI's personas).
+3. **Private context stays with its role.** The business file is for the shipper and receiver roles, and its outbound guard checks what the customer side sends (booking requests, inquiries, status requests), not the carrier side's replies. A confirmation echoes its request (the eBL names the consignee), so a guard there would let anyone who can book test guesses at the private context by whether the reply fails.
+4. **Each role's handlers are its own.** No two roles handle one intent (startup fails if they would), and the control API serves every role's routes on one socket (startup fails if two collide).
 
 ### A.7 Transport bindings
 
@@ -850,7 +857,7 @@ ulp-demo/
 ```yaml
 domain: ocean-blue.example
 name: Ocean Blue                 # published in the profile
-role: operator                   # operator | shipper
+roles: [operator]                # operator, shipper, receiver: one or more (the one-role form role: operator still works)
 listen: ":8443"
 tls:
   mode: local-ca                 # or insecure-dev (plain HTTP, loudly logged)

@@ -182,6 +182,14 @@ func TestPipelineRejects(t *testing.T) {
 	cases := []tc{
 		{"wrong receiver", request(func(h *envelope.Header, _ *intents.BookingRequestBody) { h.Receiver = "other-carrier.example" }),
 			intents.CodeForbidden, false, http.StatusMisdirectedRequest},
+		// Signed with the operator's own key: it would verify, so it must
+		// be refused before that, on the claim alone.
+		{"from the node itself", func() ([]byte, string) {
+			h := header(intents.BookingRequest, operatorDomain, operatorDomain)
+			b := bookingRequest()
+			b.Subscription.Endpoint = "https://" + operatorDomain + "/ulp"
+			return seal(t, ob.signer, ob.kid, h, b), h.MessageID
+		}, intents.CodeForbidden, false, http.StatusForbidden},
 		{"intent the operator doesn't serve", func() ([]byte, string) {
 			h := header(intents.TnTEvent, shipperDomain, operatorDomain)
 			ref := "OB-BKG-1"

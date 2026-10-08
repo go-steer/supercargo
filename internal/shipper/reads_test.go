@@ -83,7 +83,10 @@ func TestControlLeakRefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := shipperWith(t, func(envelope.Header) (string, any) { return intents.TnTInquiryResponse, nil },
-		func(c *node.Config) { c.OutboundGuard = biz.Guard() })
+		func(c *node.Config) {
+			g := biz.Guard()
+			c.OutboundGuard = func(_ string, b []byte) error { return g(b) }
+		})
 	_ = s.Bookings.Add(store.Booking{Ref: "OB-BKG-1", Operator: "ocean-blue.example", Shipper: "cymbal-shoes.example"})
 	h := ControlHandler(s, profiles{})
 	b, _ := json.Marshal(AskRequest{BookingRef: "OB-BKG-1", Question: "Spring launch stock: shelves full by the 16th. Possible?"})

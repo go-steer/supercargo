@@ -96,8 +96,8 @@ func operatorSocket(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if cfg.Role != config.RoleOperator {
-		return "", fmt.Errorf("disrupt: %s is not an operator's config", path)
+	if !cfg.Has(config.RoleOperator) {
+		return "", fmt.Errorf("disrupt: %s has no operator role", path)
 	}
 	if cfg.Control == nil {
 		return "", fmt.Errorf("disrupt: %s has no control socket", path)
