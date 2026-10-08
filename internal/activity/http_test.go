@@ -136,11 +136,41 @@ func TestShutdownEndsStreams(t *testing.T) {
 	}
 }
 
+// TestStreamSides: ?side= keeps that side's entries and the whole node's,
+// in the history and live.
+func TestStreamSides(t *testing.T) {
+	b := NewBus(0)
+	side := func(s, id string) Entry { e := envelope(id); e.Side = s; return e }
+	b.Publish(side(SideOperator, "op"))
+	b.Publish(side(SideCustomer, "cu"))
+	b.Publish(side("", "node"))
+	srv := httptest.NewServer(Handler(b))
+	t.Cleanup(srv.Close)
+	var got []string
+	err := Stream(context.Background(), srv.Client(), srv.URL+"?side=customer", 0, func(e Entry, _ error) error {
+		got = append(got, e.Envelope.MessageID)
+		switch len(got) {
+		case 2:
+			go func() { b.Publish(side(SideOperator, "op-live")); b.Publish(side(SideCustomer, "cu-live")) }()
+		case 3:
+			return errStop
+		}
+		return nil
+	})
+	if !errors.Is(err, errStop) || strings.Join(got, ",") != "cu,node,cu-live" {
+		t.Errorf("customer stream: %v, %v", got, err)
+	}
+	if !(Entry{Side: SideOperator}).Visible(nil) || (Entry{Side: SideOperator}).Visible([]string{SideCustomer}) {
+		t.Error("Visible")
+	}
+}
+
 func TestHandlerRejects(t *testing.T) {
 	h := Handler(NewBus(0))
 	for name, req := range map[string]*http.Request{
 		"POST":      httptest.NewRequest(http.MethodPost, "/events", nil),
 		"bad since": httptest.NewRequest(http.MethodGet, "/events?since=x", nil),
+		"bad side":  httptest.NewRequest(http.MethodGet, "/events?side=everyone", nil),
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)

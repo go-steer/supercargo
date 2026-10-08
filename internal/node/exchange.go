@@ -147,7 +147,8 @@ func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Bod
 	if err != nil {
 		return nil, err
 	}
-	ev := Event{Direction: "out", Intent: h.Intent, Sender: h.Sender, Receiver: h.Receiver, MessageID: h.MessageID, KID: n.cfg.KID, Verified: true}
+	ev := Event{Direction: "out", Intent: h.Intent, Sender: h.Sender, Receiver: h.Receiver, MessageID: h.MessageID, KID: n.cfg.KID, Verified: true,
+		Wire: msg, Header: &h, Body: b, Opener: h.Intent, OpenedHere: true}
 	resp, via, err := post(ctx, msg)
 	ev.Via = via
 	if errors.Is(err, rest.ErrNoResponse) && len(expect) == 0 {
@@ -169,7 +170,7 @@ func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Bod
 }
 
 func (n *Node) checkResponse(ctx context.Context, req envelope.Header, resp []byte, expect []string, via string) (*Request, error) {
-	ev := Event{Direction: "in", Via: via, Outcome: "rejected"}
+	ev := Event{Direction: "in", Via: via, Outcome: "rejected", Wire: resp, Opener: req.Intent, OpenedHere: true}
 	reject := func(reason string) (*Request, error) {
 		ev.Reason, ev.Time = reason, n.cfg.Now()
 		n.observe(ctx, ev)
@@ -181,6 +182,7 @@ func (n *Node) checkResponse(ctx context.Context, req envelope.Header, resp []by
 	}
 	h := u.ClaimedHeader()
 	ev.Intent, ev.Sender, ev.Receiver, ev.MessageID, ev.KID = h.Intent, h.Sender, h.Receiver, h.MessageID, u.KID()
+	ev.Header = &h
 	switch {
 	case h.Sender != req.Receiver:
 		return reject("response is from " + h.Sender + ", not " + req.Receiver)
@@ -202,6 +204,8 @@ func (n *Node) checkResponse(ctx context.Context, req envelope.Header, resp []by
 		return reject(err.Error())
 	}
 	ev.Verified = true
+	signed := env.Header
+	ev.Header, ev.Body = &signed, env.Body
 	sent, err := env.Header.SentTime()
 	if err != nil {
 		return reject(err.Error())

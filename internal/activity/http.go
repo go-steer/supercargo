@@ -33,7 +33,8 @@ var Heartbeat = 15 * time.Second
 // Handler serves the activity stream as Server-Sent Events: GET with an
 // optional ?since=N (or a Last-Event-ID header, as a reconnecting
 // EventSource sends) replays the kept entries after N, then streams new
-// ones. Each event's id is the entry's sequence number and its type the
+// ones; ?side=operator or ?side=customer (repeatable) keeps those sides'
+// entries and the whole node's. Each event's id is the entry's sequence number and its type the
 // entry's kind; a "gap" event says entries were missed. The stream ends
 // when the client goes away, or falls behind (reconnect with the last id
 // seen).
@@ -48,6 +49,13 @@ func Handler(b *Bus) http.Handler {
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		sides := r.URL.Query()["side"]
+		for _, s := range sides {
+			if s != SideOperator && s != SideCustomer {
+				http.Error(w, "side must be operator or customer", http.StatusBadRequest)
+				return
+			}
 		}
 		rc := http.NewResponseController(w)
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -70,7 +78,7 @@ func Handler(b *Bus) http.Handler {
 			return
 		}
 		for _, e := range past {
-			if !write(frame(e)) {
+			if e.Visible(sides) && !write(frame(e)) {
 				return
 			}
 		}
@@ -87,7 +95,7 @@ func Handler(b *Bus) http.Handler {
 				if !ok {
 					return // fell behind; the client reconnects with its last id
 				}
-				if !write(frame(e)) {
+				if e.Visible(sides) && !write(frame(e)) {
 					return
 				}
 			case <-tick.C:

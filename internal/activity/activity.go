@@ -21,6 +21,7 @@
 package activity
 
 import (
+	"slices"
 	"sync"
 	"time"
 
@@ -40,9 +41,12 @@ const (
 // Entry is one thing the node did. Exactly one of the kind-specific fields
 // is set, matching Kind.
 type Entry struct {
-	Seq      uint64    `json:"seq"`
-	Time     time.Time `json:"time"`
-	Kind     string    `json:"kind"`
+	Seq  uint64    `json:"seq"`
+	Time time.Time `json:"time"`
+	Kind string    `json:"kind"`
+	// Side is the role the entry belongs to (SideOperator or SideCustomer),
+	// or empty for the whole node's (a message that didn't parse).
+	Side     string    `json:"side,omitempty"`
 	Envelope *Envelope `json:"envelope,omitempty"`
 	Record   *Record   `json:"record,omitempty"`
 	Model    *Model    `json:"model,omitempty"`
@@ -69,6 +73,19 @@ type Envelope struct {
 	// Reason is the node's own account of a refusal. It goes to this node's
 	// operator (the log, the control API), never to a partner.
 	Reason string `json:"reason,omitempty"`
+}
+
+// Sides: which of a node's roles an entry belongs to. The shipper and
+// receiver roles are one side, the customer's (docs/DESIGN.md, A.6).
+const (
+	SideOperator = "operator"
+	SideCustomer = "customer"
+)
+
+// Visible reports whether e belongs to one of sides, or to the whole
+// node. No sides means every side.
+func (e Entry) Visible(sides []string) bool {
+	return len(sides) == 0 || e.Side == "" || slices.Contains(sides, e.Side)
 }
 
 // Actions on a record.

@@ -62,7 +62,7 @@ func (n *Node) Process(ctx context.Context, msg []byte) (res rest.Result) {
 	}
 	ps.End(trace.WithTimestamp(parsed))
 	if err != nil {
-		n.observe(ctx, Event{Time: n.cfg.Now(), Direction: "in", Outcome: "malformed", Reason: err.Error()})
+		n.observe(ctx, Event{Time: n.cfg.Now(), Direction: "in", Outcome: "malformed", Reason: err.Error(), Wire: msg})
 		return rest.Result{Status: http.StatusBadRequest}
 	}
 	claimed := u.ClaimedHeader()
@@ -71,13 +71,15 @@ func (n *Node) Process(ctx context.Context, msg []byte) (res rest.Result) {
 		via = "a2a"
 	}
 	ev := Event{Direction: "in", Via: via, Intent: claimed.Intent, Sender: claimed.Sender, Receiver: claimed.Receiver,
-		MessageID: claimed.MessageID, KID: u.KID()}
+		MessageID: claimed.MessageID, KID: u.KID(), Wire: msg, Header: &claimed, Opener: claimed.Intent}
 
 	env, status, rej := n.verify(ctx, u, &ev)
 	if env == nil {
 		n.observeRejection(ctx, ev, rej)
 		return rest.Result{Status: status}
 	}
+	signed := env.Header
+	ev.Header, ev.Body = &signed, env.Body
 
 	// Verified from here on: h is the signed header, sent by a party whose
 	// key resolved, addressed to this node.
@@ -315,7 +317,8 @@ func (n *Node) sealReply(ctx context.Context, h *envelope.Header, reply *Reply, 
 		return nil, fmt.Errorf("node: reply is %d bytes, over the %d the receiver accepts", len(out), envelope.MaxSize)
 	}
 	n.observe(ctx, Event{Time: n.cfg.Now(), Direction: "out", Via: via, Intent: rh.Intent, Sender: rh.Sender, Receiver: rh.Receiver,
-		MessageID: rh.MessageID, KID: n.cfg.KID, Outcome: "sent", Verified: true})
+		MessageID: rh.MessageID, KID: n.cfg.KID, Outcome: "sent", Verified: true,
+		Wire: out, Header: &rh, Body: b, Opener: h.Intent})
 	return out, nil
 }
 
