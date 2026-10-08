@@ -79,6 +79,16 @@ func RegisterControl(mux *http.ServeMux, s *Shipper, profiles rest.Profiles) {
 		control.Answer(w, http.StatusOK, RecordsResponse{Summary: ptr(store.Summarize(b, recs)),
 			Records: store.ViewRecords(recs)})
 	})
+	mux.HandleFunc("GET /shipments/{operator}/{ref}/journey", func(w http.ResponseWriter, r *http.Request) {
+		op, ref := r.PathValue("operator"), r.PathValue("ref")
+		b, err := s.Bookings.Get(op, ref)
+		if err != nil {
+			control.Answer(w, http.StatusNotFound, JourneyResponse{Error: "no booking " + ref + " with " + op})
+			return
+		}
+		j := store.BuildJourney(b, s.records(op, ref))
+		control.Answer(w, http.StatusOK, JourneyResponse{Journey: &j})
+	})
 	mux.HandleFunc("GET /profile/{domain}", func(w http.ResponseWriter, r *http.Request) {
 		domain := r.PathValue("domain")
 		if !envelope.ValidDomain(domain) {
@@ -221,6 +231,13 @@ type AskResponse struct {
 // ShipmentsResponse is GET /shipments.
 type ShipmentsResponse struct {
 	Shipments []store.Summary `json:"shipments"`
+}
+
+// JourneyResponse is GET /shipments/{operator}/{ref}/journey: the
+// booking's journey from the records this node holds (docs/ui/route-map.md).
+type JourneyResponse struct {
+	Journey *store.Journey `json:"journey,omitempty"`
+	Error   string         `json:"error,omitempty"`
 }
 
 // RecordsResponse is GET /shipments/{operator}/{ref}/events: the booking

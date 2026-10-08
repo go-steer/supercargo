@@ -938,9 +938,10 @@ Both CLIs reach their node through its **control socket**: HTTP over a Unix sock
 | both | `GET /messages`, `GET /messages/{seq}` | The **message log**: the envelopes this node sent and received, exactly as on the wire. `?side=` as for `/events`, `?since=N`, `?conversation=` (a correlationId), `?limit=` (at most 500, the default). A message of a side not asked for is not found. |
 | shipper | `GET /shipments` | Its bookings at a glance: status from the latest actual event, ETA (the actual arrival, else the latest estimate, else the plan), counts. |
 | shipper | `GET /shipments/{operator}/{ref}/events` | A booking's summary and its records as verified: body, sender, message ID. |
+| shipper | `GET /shipments/{operator}/{ref}/journey` | The booking's **journey** ([route map design](ui/route-map.md)): legs (planned, in progress, done, delayed) with departure and arrival moments (planned, estimated or actual, each with its source event), ports with events (an unscheduled one splits a leg), where the shipment is (at a port, or at sea: estimated), and its alerts. Built from the records this node holds, nothing else. |
 | shipper | `GET /profile/{domain}` | A partner's profile at a glance, fetched through the node's key cache (the guarded client and strict parser). |
 | shipper | `POST /book`, `POST /ask` | Send a booking a person confirmed; send an inquiry. |
-| operator | `GET /bookings`, `GET /bookings/{ref}/events` | Its bookings and what it published for each. |
+| operator | `GET /bookings`, `GET /bookings/{ref}/events`, `GET /bookings/{ref}/journey` | Its bookings, what it published for each, and each one's journey as it published it. |
 | operator | `POST /disrupt` | Delay a voyage (`ulpctl`). |
 
 **The activity stream** has one entry for everything a watcher should see. Each entry has a sequence number, a time and a kind:

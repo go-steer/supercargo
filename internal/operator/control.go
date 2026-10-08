@@ -68,6 +68,17 @@ func RegisterControl(mux *http.ServeMux, sim *Simulator, bookings *store.Booking
 		}
 		control.Answer(w, http.StatusNotFound, BookingRecordsResponse{Error: "no booking " + ref})
 	})
+	mux.HandleFunc("GET /bookings/{ref}/journey", func(w http.ResponseWriter, r *http.Request) {
+		ref := r.PathValue("ref")
+		for _, b := range bookings.List() {
+			if b.Ref == ref {
+				j := store.BuildJourney(b, log.List(b.Operator, b.Ref))
+				control.Answer(w, http.StatusOK, JourneyResponse{Journey: &j})
+				return
+			}
+		}
+		control.Answer(w, http.StatusNotFound, JourneyResponse{Error: "no booking " + ref})
+	})
 	mux.HandleFunc("POST /disrupt", func(w http.ResponseWriter, r *http.Request) {
 		var req DisruptRequest
 		if err := control.Decode(r, &req); err != nil {
@@ -96,6 +107,13 @@ func RegisterControl(mux *http.ServeMux, sim *Simulator, bookings *store.Booking
 // BookingsResponse is GET /bookings: the operator's bookings, newest first.
 type BookingsResponse struct {
 	Bookings []store.Summary `json:"bookings"`
+}
+
+// JourneyResponse is GET /bookings/{ref}/journey: the booking's journey
+// as this carrier published it (docs/ui/route-map.md).
+type JourneyResponse struct {
+	Journey *store.Journey `json:"journey,omitempty"`
+	Error   string         `json:"error,omitempty"`
 }
 
 // BookingRecordsResponse is GET /bookings/{ref}/events: the booking at a

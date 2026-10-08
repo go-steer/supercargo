@@ -48,7 +48,7 @@ Journey
     arrival           planned | estimated | actual  (time, and the event ID behind it)
     status            planned | in progress | done | delayed
   calls[]:            every port with an event: UN/LOCODE, event IDs, kind (load, depart, arrive, unscheduled)
-  position:           { at: UN/LOCODE | between: [from, to], fraction, estimated: bool, since: event ID }
+  position:           { at: UN/LOCODE | between: [from, to], estimated: bool, since: event ID }
   alerts[]:           alert IDs with their leg, severity and new ETA
 ```
 
@@ -58,9 +58,11 @@ Journey
 - **Status** comes from the events: done once an actual arrival is held,
   in progress after an actual departure, delayed when an alert moves the
   arrival past the plan.
-- **Position** is the last actual event's port, or "between" two calls,
-  where the fraction is the elapsed share of the planned (or estimated)
-  sailing time, marked estimated.
+- **Position** is the last actual event's port, or "between" two calls
+  after an actual departure, marked estimated. No fraction of the way is
+  given: the shipper can't know how far along a vessel is at sea (in the
+  demo, the voyage even runs on the operator's simulated clock), so the
+  views draw "at sea" without pretending to know where.
 - Every field carries the event or alert IDs it came from, so the UI can
   link each mark to its message.
 

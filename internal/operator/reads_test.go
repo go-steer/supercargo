@@ -53,4 +53,12 @@ func TestControlReads(t *testing.T) {
 	if code := get("/bookings/OB-BKG-9/events", &rr); code != http.StatusNotFound || rr.Error == "" {
 		t.Errorf("unknown booking: HTTP %d %+v", code, rr)
 	}
+	var jr JourneyResponse
+	if code := get("/bookings/"+ref+"/journey", &jr); code != http.StatusOK || jr.Journey == nil || len(jr.Journey.Legs) != 1 ||
+		len(jr.Journey.Calls) != 1 || jr.Journey.Position.At == nil {
+		t.Errorf("journey: HTTP %d %+v", code, jr)
+	}
+	if code := get("/bookings/OB-BKG-9/journey", &jr); code != http.StatusNotFound || jr.Error == "" {
+		t.Errorf("unknown booking's journey: HTTP %d %+v", code, jr)
+	}
 }
