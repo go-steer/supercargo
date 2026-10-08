@@ -94,11 +94,22 @@ type Config struct {
 	// them, so a web page that rebinds its own name to this machine can't
 	// reach the UI.
 	Hosts []string
+	// FrameAncestors are origins that may frame this UI (a presenter page
+	// on another node); without them only this UI's own pages may.
+	FrameAncestors []string
+	// Panels, if any, are the UIs /ui/presenter shows side by side.
+	Panels []Panel
 	// NewAssistant makes the shipper role's assistant for one session (nil:
 	// the UI has no assistant). Each session gets its own, with its own
 	// conversation and drafts.
 	NewAssistant func() (*assistant.Assistant, error)
 	Now          func() time.Time
+}
+
+// Panel is one UI on the presenter page.
+type Panel struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
 }
 
 // Session limits: a session lasts SessionTTL; at most MaxSessions are
@@ -143,6 +154,8 @@ func Handler(cfg Config) http.Handler {
 		cookie: "ulp_session_" + strings.NewReplacer(".", "_", "-", "_").Replace(cfg.Domain)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ui/{$}", s.index)
+	mux.HandleFunc("GET /ui/presenter", s.presenter)
+	mux.HandleFunc("GET /ui/api/presenter", s.presenterPanels)
 	mux.HandleFunc("GET /ui/static/{$}", http.NotFound) // no listing, no stray index
 	mux.Handle("GET /ui/static/", s.files)
 	mux.HandleFunc("GET /ui/api/personas", s.personas)
@@ -166,7 +179,7 @@ func Handler(cfg Config) http.Handler {
 	mux.HandleFunc("POST /ui/api/assistant/send", s.authed(s.role(asShipper, s.assistantSend)))
 	mux.HandleFunc("POST /ui/api/assistant/discard", s.authed(s.role(asShipper, s.assistantDiscard)))
 	mux.HandleFunc("POST /ui/api/disrupt", s.authed(s.role([]string{RoleOperator}, s.disrupt)))
-	return s.hostCheck(headers(mux))
+	return s.hostCheck(s.headers(mux))
 }
 
 // hostCheck refuses a request naming a host the UI isn't served as. A page
@@ -196,11 +209,12 @@ func (s *server) allowedHost(hostport string) bool {
 
 // headers sets what every UI response carries: no inline script or style,
 // no framing by other origins, no sniffing, no referrer.
-func headers(next http.Handler) http.Handler {
+func (s *server) headers(next http.Handler) http.Handler {
+	ancestors := strings.Join(append([]string{"'self'"}, s.cfg.FrameAncestors...), " ")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "+
-			"frame-ancestors 'self'; base-uri 'none'; form-action 'self'")
+			"frame-ancestors "+ancestors+"; base-uri 'none'; form-action 'self'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		if strings.HasPrefix(r.URL.Path, "/ui/api/") {
@@ -219,6 +233,39 @@ func (s *server) index(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(b)
+}
+
+// presenter serves the presenter page: the configured UIs, each in a
+// frame (and only those: its CSP allows framing nothing else).
+func (s *server) presenter(w http.ResponseWriter, _ *http.Request) {
+	if len(s.cfg.Panels) == 0 {
+		http.NotFound(w, nil)
+		return
+	}
+	b, err := static.ReadFile("static/presenter.html")
+	if err != nil {
+		http.Error(w, "no presenter page", http.StatusInternalServerError)
+		return
+	}
+	var origins []string
+	for _, p := range s.cfg.Panels {
+		if u, err := url.Parse(p.URL); err == nil {
+			origins = append(origins, u.Scheme+"://"+u.Host)
+		}
+	}
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; "+
+		"frame-src "+strings.Join(origins, " ")+"; frame-ancestors 'self'; base-uri 'none'; form-action 'none'")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(b)
+}
+
+// PresenterResponse is the presenter page's panels.
+type PresenterResponse struct {
+	Panels []Panel `json:"panels"`
+}
+
+func (s *server) presenterPanels(w http.ResponseWriter, _ *http.Request) {
+	control.Answer(w, http.StatusOK, PresenterResponse{Panels: append([]Panel{}, s.cfg.Panels...)})
 }
 
 // PersonasResponse is who may sign in, and to which company.

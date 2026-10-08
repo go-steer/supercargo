@@ -372,3 +372,35 @@ func TestSessionReplacement(t *testing.T) {
 		t.Errorf("a live session was pushed out while expired ones were kept: HTTP %d", rec.Code)
 	}
 }
+
+// TestPresenter: the presenter page frames exactly the configured UIs
+// (its CSP allows no other frame), and a UI may be framed only by its own
+// pages and the configured ancestors.
+func TestPresenter(t *testing.T) {
+	plain, _, _ := newUI(t)
+	if rec := do(plain, http.MethodGet, "/ui/presenter", "", nil); rec.Code != http.StatusNotFound {
+		t.Errorf("a node without a presenter served one: HTTP %d", rec.Code)
+	}
+	if csp := do(plain, http.MethodGet, "/ui/", "", nil).Header().Get("Content-Security-Policy"); !strings.Contains(csp, "frame-ancestors 'self';") {
+		t.Errorf("default frame-ancestors: %s", csp)
+	}
+	h := Handler(Config{Domain: "ocean-blue.example", Personas: personas, Control: &echo{},
+		FrameAncestors: []string{"https://8441-ws.example"},
+		Panels:         []Panel{{Name: "Cymbal Shoes", URL: "https://8442-ws.example/ui/"}, {Name: "Ocean Blue", URL: "https://8441-ws.example/ui/"}}})
+	rec := do(h, http.MethodGet, "/ui/presenter", "", nil)
+	csp := rec.Header().Get("Content-Security-Policy")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "presenter.js") ||
+		!strings.Contains(csp, "frame-src https://8442-ws.example https://8441-ws.example;") || strings.Contains(csp, "frame-src *") {
+		t.Errorf("presenter: HTTP %d, CSP %s", rec.Code, csp)
+	}
+	var pr PresenterResponse
+	if rec := do(h, http.MethodGet, "/ui/api/presenter", "", nil); rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &pr) != nil || len(pr.Panels) != 2 {
+		t.Errorf("panels: HTTP %d %+v", rec.Code, pr)
+	}
+	if csp := do(h, http.MethodGet, "/ui/", "", nil).Header().Get("Content-Security-Policy"); !strings.Contains(csp, "frame-ancestors 'self' https://8441-ws.example;") {
+		t.Errorf("frame-ancestors with the presenter: %s", csp)
+	}
+	if rec := do(h, http.MethodGet, "/ui/presenter", "", nil, "Host", "evil.example"); rec.Code != http.StatusMisdirectedRequest {
+		t.Errorf("the presenter through a foreign host: HTTP %d", rec.Code)
+	}
+}
