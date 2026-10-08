@@ -132,6 +132,11 @@ func TestParseRejects(t *testing.T) {
 		"bad domain":                  {"domain: ocean-blue.example", "domain: Ocean Blue"},
 		"no name":                     {"name: Ocean Blue", "name: \"\""},
 		"bad role":                    {"role: operator", "role: admin"},
+		"role and roles":              {"role: operator", "role: operator\nroles: [operator]"},
+		"no roles":                    {"role: operator", "roles: []"},
+		"unknown role in roles":       {"role: operator", "roles: [operator, admin]"},
+		"duplicate role":              {"role: operator", "roles: [operator, operator]"},
+		"operator section, no role":   {"role: operator", "roles: [shipper, receiver]"},
 		"bad listen":                  {`listen: ":8443"`, "listen: 8443"},
 		"bad tls mode":                {"mode: local-ca", "mode: none"},
 		"local-ca without cert":       {"certFile: /certs/ob.pem, ", ""},
@@ -232,6 +237,32 @@ func TestParseRejects(t *testing.T) {
 	}
 	if _, err := Parse([]byte("{")); err == nil {
 		t.Error("invalid YAML accepted")
+	}
+}
+
+// TestRoles: a node may have several roles; the one-role form still
+// works; each role's section follows its role.
+func TestRoles(t *testing.T) {
+	c, err := Parse([]byte(strings.Replace(operatorYAML, "role: operator", "roles: [operator, shipper]", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Has(RoleOperator) || !c.Has(RoleShipper) || c.Has(RoleReceiver) || !c.Customer() || c.OneRole != "" {
+		t.Errorf("roles %v (role %q)", c.Roles, c.OneRole)
+	}
+	if c, err := Parse([]byte(operatorYAML)); err != nil || !slices.Equal(c.Roles, []string{RoleOperator}) || c.Customer() {
+		t.Errorf("one-role form: %v, %v", c, err)
+	}
+	// A carrier that also ships may keep private business context; a
+	// carrier alone may not.
+	both := strings.Replace(operatorYAML, "role: operator", "roles: [operator, shipper]", 1) + "business: { file: /etc/ulp/business.yaml }\n"
+	if _, err := Parse([]byte(both)); err != nil {
+		t.Errorf("operator and shipper with business: %v", err)
+	}
+	receiver := `{domain: cymbal-footwear.example, name: Cymbal Footwear, roles: [receiver], listen: ":8443", tls: {mode: insecure-dev},
+		keys: [{kid: cf-1, privateKeyFile: /etc/ulp/cf.pem}], business: {file: /etc/ulp/business.yaml}}`
+	if c, err := Parse([]byte(receiver)); err != nil || !c.Customer() || c.Has(RoleShipper) || c.Simulator != nil {
+		t.Errorf("receiver: %+v, %v", c, err)
 	}
 }
 

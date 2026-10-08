@@ -59,16 +59,19 @@ import (
 type App struct {
 	Config *config.Config
 	Node   *node.Node
-	// Shipper is set for the shipper role.
+	// Shipper is set for the shipper or receiver role (a receiver's can't
+	// book).
 	Shipper *shipper.Shipper
-	// Bookings are the node's own (the operator's confirmed, or the
-	// shipper's recorded).
-	Bookings *store.Bookings
+	// Carrier is the operator role's records: the bookings it confirmed and
+	// the events and alerts it published. Nil without the operator role.
+	Carrier *Records
+	// Customer is the shipper and receiver roles' records: the bookings
+	// other carriers issued and the events and alerts received for them.
+	// Nil without either role. Nothing reads across Carrier and Customer
+	// (docs/DESIGN.md, A.6).
+	Customer *Records
 	// Keys is the key cache (partners pinned).
-	Keys *discovery.Cache
-	// Events are the booking events and alerts the node received (shipper)
-	// or published (operator).
-	Events *store.EventLog
+	Keys   *discovery.Cache
 	Server *http.Server
 	Logger *slog.Logger
 	// Business is the shipper's private business context (nil if none).
@@ -139,8 +142,13 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		return nil, err
 	}
 
-	a := &App{Config: cfg, Bookings: store.NewBookings(), Events: store.NewEventLog(0), Keys: cache, Logger: logger,
-		Activity: activity.NewBus(0)}
+	a := &App{Config: cfg, Keys: cache, Logger: logger, Activity: activity.NewBus(0)}
+	if cfg.Has(config.RoleOperator) {
+		a.Carrier = newRecords()
+	}
+	if cfg.Customer() {
+		a.Customer = newRecords()
+	}
 	// The log is the activity stream's first reader: what the log says and
 	// what a live client sees are the same entries.
 	a.Activity.Sink(activity.SlogSink(logger))
@@ -151,9 +159,14 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	}
 	a.Activity.Sink(metrics.Observe)
 	a.metrics = metrics
+	// Each role brings its own handlers; two never claim one intent.
 	handlers := map[string]node.Handler{}
-	if cfg.Role == config.RoleOperator {
-		if err := a.operatorRole(handlers); err != nil {
+	if cfg.Has(config.RoleOperator) {
+		role := map[string]node.Handler{}
+		if err := a.operatorRole(role); err != nil {
+			return nil, err
+		}
+		if err := merge(handlers, role); err != nil {
 			return nil, err
 		}
 	}
@@ -164,13 +177,17 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		}
 		guard = a.Business.Guard()
 	}
-	if cfg.Role == config.RoleShipper {
-		if err := a.shipperRole(handlers); err != nil {
+	if cfg.Customer() {
+		role := map[string]node.Handler{}
+		if err := a.shipperRole(role); err != nil {
+			return nil, err
+		}
+		if err := merge(handlers, role); err != nil {
 			return nil, err
 		}
 	}
 	restURL, a2aURL := "", ""
-	if cfg.Role == config.RoleOperator {
+	if cfg.Has(config.RoleOperator) {
 		// The operator's agent serves the shipment-inquiry skill.
 		a2aURL = "https://" + cfg.Domain + "/a2a"
 	}
@@ -181,7 +198,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		}
 	}
 	n, err := node.New(node.Config{
-		Domain: cfg.Domain, Name: cfg.Name, Roles: []string{cfg.Role},
+		Domain: cfg.Domain, Name: cfg.Name, Roles: cfg.Roles,
 		KID: kid, Signer: signer, PublicJWK: jwk, RESTURL: restURL, A2AURL: a2aURL, AllowHTTP: insecure,
 		Keys:       cache,
 		Replay:     store.NewReplay(store.ReplayOptions{Retention: cfg.Security.ReplayRetention}),
@@ -203,17 +220,21 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	if a.Publisher != nil {
 		a.Publisher.Pusher = n
 	}
-	if cfg.Role == config.RoleShipper {
-		a.Shipper = &shipper.Shipper{Node: n, Bookings: a.Bookings, Events: a.Events, Now: time.Now}
+	if a.Customer != nil {
+		a.Shipper = &shipper.Shipper{Node: n, Bookings: a.Customer.Bookings, Events: a.Customer.Events, Now: time.Now,
+			NoBooking: !cfg.Has(config.RoleShipper)}
 	}
 	if cfg.Control != nil {
-		role := operator.ControlHandler(a.Simulator, a.Bookings, a.Events)
-		if a.Shipper != nil {
-			role = shipper.ControlHandler(a.Shipper, cache)
-		}
+		// One control API for every role; a route two roles both claimed
+		// would panic here, at startup.
 		mux := http.NewServeMux()
 		mux.Handle("GET /events", activity.Handler(a.Activity))
-		mux.Handle("/", role)
+		if a.Carrier != nil {
+			operator.RegisterControl(mux, a.Simulator, a.Carrier.Bookings, a.Carrier.Events)
+		}
+		if a.Shipper != nil {
+			shipper.RegisterControl(mux, a.Shipper, cache)
+		}
 		a.Control = control.Server(mux, slog.NewLogLogger(logger.Handler(), slog.LevelInfo))
 	}
 	a.Server = &http.Server{
@@ -234,11 +255,33 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	return a, nil
 }
 
+// Records are one side's bookings and the events and alerts for them.
+type Records struct {
+	Bookings *store.Bookings
+	Events   *store.EventLog
+}
+
+func newRecords() *Records {
+	return &Records{Bookings: store.NewBookings(), Events: store.NewEventLog(0)}
+}
+
+// merge adds a role's handlers to the node's, refusing an intent two
+// roles both claim.
+func merge(into, role map[string]node.Handler) error {
+	for intent, h := range role {
+		if _, dup := into[intent]; dup {
+			return fmt.Errorf("app: two roles handle %s", intent)
+		}
+		into[intent] = h
+	}
+	return nil
+}
+
 // Serve runs the HTTP server until ctx is done, then shuts it down
 // gracefully.
 func (a *App) Serve(ctx context.Context) error {
 	cfg := a.Config
-	a.Logger.Info("node starting", "domain", cfg.Domain, "role", cfg.Role, "listen", cfg.Listen, "tls", cfg.TLS.Mode)
+	a.Logger.Info("node starting", "domain", cfg.Domain, "roles", cfg.Roles, "listen", cfg.Listen, "tls", cfg.TLS.Mode)
 	if cfg.TLS.Mode == config.TLSInsecureDev {
 		a.Logger.Warn("INSECURE DEVELOPMENT MODE: no TLS. Nothing ties a profile, or its keys, to its domain. Never use this outside a local demo.")
 	}
@@ -318,7 +361,7 @@ func (a *App) shutdown() {
 func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	cfg, log := a.Config, a.Logger
 	o := cfg.Operator
-	a.Publisher = &operator.Publisher{Domain: cfg.Domain, Log: a.Events, Now: time.Now,
+	a.Publisher = &operator.Publisher{Domain: cfg.Domain, Log: a.Carrier.Events, Now: time.Now,
 		OnDrop: func(ref, id string, err error) {
 			a.Activity.Publish(activity.Entry{Kind: activity.KindPush,
 				Push: &activity.Push{Booking: ref, ID: id, Problem: "dropped", Error: err.Error()}})
@@ -352,8 +395,8 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	if model != nil {
 		log.Info("inquiry responder", "model", model.Name(), "skills", skillIDs(agentSkills))
 	}
-	handlers[intents.OceanTnTRequest] = &operator.StatusService{Bookings: a.Bookings, Log: a.Events}
-	handlers[intents.TnTInquiry] = &operator.InquiryService{Bookings: a.Bookings, Log: a.Events, Model: model, Name: cfg.Name, Skills: agentSkills,
+	handlers[intents.OceanTnTRequest] = &operator.StatusService{Bookings: a.Carrier.Bookings, Log: a.Carrier.Events}
+	handlers[intents.TnTInquiry] = &operator.InquiryService{Bookings: a.Carrier.Bookings, Log: a.Carrier.Events, Model: model, Name: cfg.Name, Skills: agentSkills,
 		OnModelCall: func(c operator.ModelCall) {
 			a.Activity.Publish(activity.Entry{Kind: activity.KindModel, Model: &activity.Model{
 				Booking: c.Booking, Attempt: c.Attempt, Model: c.Model, PromptHash: c.PromptHash, Skills: c.Skills,
@@ -362,7 +405,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 		},
 	}
 	handlers[intents.BookingRequest] = &operator.BookingService{
-		Bookings: a.Bookings, Deny: deny, RefPrefix: o.RefPrefix, ContainerPrefix: o.ContainerPrefix, Now: time.Now,
+		Bookings: a.Carrier.Bookings, Deny: deny, RefPrefix: o.RefPrefix, ContainerPrefix: o.ContainerPrefix, Now: time.Now,
 		Voyage: operator.Voyage{Vessel: o.Vessel, Number: o.Voyage, DepartureHour: o.DepartureHour, Transit: o.Transit},
 		OnBooked: func(b store.Booking) {
 			v := &activity.Voyage{Booking: b.Ref, Started: true, Departure: b.Confirmation.PlannedDeparture,
@@ -391,7 +434,7 @@ func (a *App) shipperRole(handlers map[string]node.Handler) error {
 	if model != nil {
 		a.Logger.Info("alert summarizer", "model", model.Name(), "skills", skillIDs(agentSkills))
 	}
-	a.Summarizer = &shipper.Summarizer{Log: a.Events, Business: a.Business, Model: model, Skills: agentSkills, Name: cfg.Name,
+	a.Summarizer = &shipper.Summarizer{Log: a.Customer.Events, Business: a.Business, Model: model, Skills: agentSkills, Name: cfg.Name,
 		OnSummary: func(s activity.Summary) {
 			a.Activity.Publish(activity.Entry{Kind: activity.KindSummary, Summary: &s})
 		},
@@ -399,7 +442,7 @@ func (a *App) shipperRole(handlers map[string]node.Handler) error {
 			a.Activity.Publish(activity.Entry{Kind: activity.KindModel, Model: &m})
 		},
 	}
-	inbound := &shipper.Inbound{Bookings: a.Bookings, Log: a.Events, Now: time.Now,
+	inbound := &shipper.Inbound{Bookings: a.Customer.Bookings, Log: a.Customer.Events, Now: time.Now,
 		OnEvent: func(b store.Booking, e *intents.TnTEventBody) { a.record(activity.ActionRecorded, b.Ref, e) },
 		OnAlert: func(b store.Booking, al *intents.TnTAlertBody) {
 			a.record(activity.ActionRecorded, b.Ref, al)

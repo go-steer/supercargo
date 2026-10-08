@@ -143,7 +143,7 @@ llm: { provider: fake }
 	// (27h of lead-in at 20h/s, after a 2s start delay).
 	codes := func() []string {
 		var out []string
-		for _, r := range sh.Events.List("ocean-blue.example", ref) {
+		for _, r := range sh.Customer.Events.List("ocean-blue.example", ref) {
 			var e intents.TnTEventBody
 			_ = json.Unmarshal(r.Body, &e)
 			if r.Intent == intents.TnTEvent {
@@ -158,7 +158,7 @@ llm: { provider: fake }
 	if got := strings.Join(codes()[:4], ", "); got != "GTIN ACT, LOAD ACT, DEPA ACT, ARRI EST" {
 		t.Errorf("shipper recorded %s", got)
 	}
-	for _, r := range sh.Events.List("ocean-blue.example", ref) {
+	for _, r := range sh.Customer.Events.List("ocean-blue.example", ref) {
 		if r.Header.Sender != "ocean-blue.example" || r.Header.BookingRef == nil || *r.Header.BookingRef != ref {
 			t.Errorf("record header %+v", r.Header)
 		}
@@ -173,7 +173,7 @@ llm: { provider: fake }
 	}
 	var alert *store.Record
 	waitUntil(t, 10*time.Second, func() bool {
-		for _, r := range sh.Events.List("ocean-blue.example", ref) {
+		for _, r := range sh.Customer.Events.List("ocean-blue.example", ref) {
 			if r.Intent == intents.TnTAlert {
 				alert = &r
 				return true

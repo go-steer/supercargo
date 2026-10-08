@@ -574,3 +574,29 @@ func TestRejectionError(t *testing.T) {
 		t.Errorf("Error() = %q", s)
 	}
 }
+
+// TestNoMessagesToSelf: a node with several roles still never sends to
+// itself, over any binding; nothing is posted.
+func TestNoMessagesToSelf(t *testing.T) {
+	op := newParty(t, "ob-2026-1")
+	c := baseConfig(t, op, staticKeys{}, handlerFunc{})
+	posted := false
+	c.Poster = posterFunc(func(context.Context, string, []byte) ([]byte, error) { posted = true; return nil, nil })
+	n, err := node.New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := envelope.NewHeader(intents.BookingRequest, operatorDomain, operatorDomain, time.Now())
+	if _, err := n.Exchange(context.Background(), h, bookingRequest(), intents.BookingConfirmation); !errors.Is(err, node.ErrSelf) {
+		t.Errorf("Exchange to self: %v", err)
+	}
+	if _, err := n.ExchangeA2A(context.Background(), h, bookingRequest(), intents.BookingConfirmation); !errors.Is(err, node.ErrSelf) {
+		t.Errorf("ExchangeA2A to self: %v", err)
+	}
+	if err := n.Push(context.Background(), h, bookingRequest(), "https://"+operatorDomain+"/ulp"); !errors.Is(err, node.ErrSelf) {
+		t.Errorf("Push to self: %v", err)
+	}
+	if posted {
+		t.Error("a message to self was posted")
+	}
+}

@@ -31,6 +31,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -49,17 +50,22 @@ const (
 	TLSInsecureDev = "insecure-dev" // plain HTTP everywhere: nothing ties a profile to its domain
 )
 
-// Roles.
+// Roles. A node may have several: a company can be a carrier and a
+// shipper, or a shipper and a receiver (docs/DESIGN.md, A.6).
 const (
 	RoleOperator = "operator"
 	RoleShipper  = "shipper"
+	RoleReceiver = "receiver"
 )
 
 // Config is one company's node configuration.
 type Config struct {
-	Domain   string            `yaml:"domain"`
-	Name     string            `yaml:"name"`
-	Role     string            `yaml:"role"`
+	Domain string `yaml:"domain"`
+	Name   string `yaml:"name"`
+	// Roles are the roles this node has, one or more.
+	Roles []string `yaml:"roles"`
+	// Role is the one-role form, still accepted: it becomes Roles.
+	OneRole  string            `yaml:"role"`
 	Listen   string            `yaml:"listen"`
 	TLS      TLS               `yaml:"tls"`
 	Keys     []Key             `yaml:"keys"`
@@ -237,6 +243,38 @@ func Parse(data []byte) (*Config, error) {
 	return &c, nil
 }
 
+// Has reports whether the node has role.
+func (c *Config) Has(role string) bool { return slices.Contains(c.Roles, role) }
+
+// Customer reports whether the node has a customer-side role: shipper or
+// receiver. Both keep the same kind of records, bookings another party
+// issued, apart from an operator role's.
+func (c *Config) Customer() bool { return c.Has(RoleShipper) || c.Has(RoleReceiver) }
+
+// normalizeRoles folds the one-role form into Roles and checks them.
+func (c *Config) normalizeRoles() error {
+	switch {
+	case c.OneRole != "" && len(c.Roles) > 0:
+		return errors.New("roles: give roles or role, not both")
+	case c.OneRole != "":
+		c.Roles, c.OneRole = []string{c.OneRole}, ""
+	}
+	if len(c.Roles) == 0 {
+		return fmt.Errorf("roles: at least one of %s, %s and %s", RoleOperator, RoleShipper, RoleReceiver)
+	}
+	seen := map[string]bool{}
+	for _, r := range c.Roles {
+		if r != RoleOperator && r != RoleShipper && r != RoleReceiver {
+			return fmt.Errorf("roles: %q is not %s, %s or %s", r, RoleOperator, RoleShipper, RoleReceiver)
+		}
+		if seen[r] {
+			return fmt.Errorf("roles: %q appears twice", r)
+		}
+		seen[r] = true
+	}
+	return nil
+}
+
 func (c *Config) validate() error {
 	if !envelope.ValidDomain(c.Domain) {
 		return fmt.Errorf("domain %q is not a lowercase DNS domain", c.Domain)
@@ -244,8 +282,8 @@ func (c *Config) validate() error {
 	if c.Name == "" || len(c.Name) > 128 || strings.ContainsFunc(c.Name, unsafeRune) {
 		return errors.New("name must be 1-128 characters without control or format characters (it is published)")
 	}
-	if c.Role != RoleOperator && c.Role != RoleShipper {
-		return fmt.Errorf("role %q is not %s or %s", c.Role, RoleOperator, RoleShipper)
+	if err := c.normalizeRoles(); err != nil {
+		return err
 	}
 	if !validHostPort(c.Listen, true) {
 		return fmt.Errorf("listen %q is not [host]:port", c.Listen)
@@ -296,10 +334,10 @@ func (c *Config) validate() error {
 		return fmt.Errorf("security: replayRetention %v must exceed twice maxSkew (%v)", c.Security.ReplayRetention, c.Security.MaxSkew)
 	}
 	switch {
-	case c.Role == RoleOperator && c.Operator == nil:
-		return errors.New("operator: an operator node needs an operator section")
-	case c.Role == RoleShipper && c.Operator != nil:
-		return errors.New("operator: a shipper node has no operator section")
+	case c.Has(RoleOperator) && c.Operator == nil:
+		return errors.New("operator: the operator role needs an operator section")
+	case !c.Has(RoleOperator) && c.Operator != nil:
+		return errors.New("operator: an operator section needs the operator role")
 	case c.Operator != nil:
 		o := c.Operator
 		if o.RefPrefix == "" || len(o.ContainerPrefix) != 4 || o.Vessel == "" || o.Voyage == "" || o.Transit <= 0 ||
@@ -376,16 +414,16 @@ func (c *Config) validate() error {
 			return fmt.Errorf("telemetry: serviceName %q is not a short plain name", t.ServiceName)
 		}
 	}
-	if c.Business != nil && (c.Role != RoleShipper || !filepath.IsAbs(c.Business.File)) {
-		return fmt.Errorf("business: for shipper nodes only, with an absolute file path (got %q)", c.Business.File)
+	if c.Business != nil && (!c.Customer() || !filepath.IsAbs(c.Business.File)) {
+		return fmt.Errorf("business: for the shipper or receiver role only, with an absolute file path (got %q)", c.Business.File)
 	}
 	if c.Skills != nil && (c.Skills.Dir == "" || !filepath.IsAbs(c.Skills.Dir)) {
 		return fmt.Errorf("skills: dir %q must be an absolute path", c.Skills.Dir)
 	}
-	if c.Role != RoleOperator && c.Simulator != nil {
-		return errors.New("simulator: for operator nodes only")
+	if !c.Has(RoleOperator) && c.Simulator != nil {
+		return errors.New("simulator: for the operator role only")
 	}
-	if c.Role == RoleOperator {
+	if c.Has(RoleOperator) {
 		if c.Simulator == nil {
 			c.Simulator = &Simulator{}
 		}

@@ -176,6 +176,11 @@ func (n *Node) verify(ctx context.Context, u *envelope.Unverified, ev *Event) (e
 	if claimed.Receiver != n.cfg.Domain {
 		return nil, http.StatusMisdirectedRequest, &Rejection{Code: intents.CodeForbidden, Reason: "receiver is " + claimed.Receiver}
 	}
+	// Every intent is between two parties: a node with several roles still
+	// never does business with itself (docs/DESIGN.md, A.6).
+	if claimed.Sender == n.cfg.Domain {
+		return nil, http.StatusForbidden, &Rejection{Code: intents.CodeForbidden, Reason: "sender is this node"}
+	}
 	if _, ok := n.cfg.Handlers[claimed.Intent]; !ok {
 		return nil, http.StatusBadRequest, &Rejection{Code: intents.CodeUnsupportedIntent, Reason: "no handler for " + claimed.Intent}
 	}

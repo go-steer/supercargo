@@ -118,6 +118,7 @@ func TestParseProfile(t *testing.T) {
 	// accepted in insecure mode.
 	m := profileMap(t)
 	m["supportedSince"] = "2026"
+	m["party"].(map[string]any)["roles"] = []any{"operator", "shipper", "receiver"} // a company can be several parties
 	m["party"].(map[string]any)["logo"] = "https://ocean-blue.example/logo.png"
 	delete(m["transports"].(map[string]any), "a2a")
 	delete(m["transports"].(map[string]any), "mcp")
@@ -155,6 +156,7 @@ func TestParseProfileRejects(t *testing.T) {
 		{"name too long", func(m map[string]any) { party(m)["name"] = strings.Repeat("O", 129) }},
 		{"no roles", func(m map[string]any) { party(m)["roles"] = []any{} }},
 		{"unknown role", func(m map[string]any) { party(m)["roles"] = []any{"admin"} }},
+		{"duplicate role", func(m map[string]any) { party(m)["roles"] = []any{"operator", "operator"} }},
 		{"no services", func(m map[string]any) { m["services"] = []any{} }},
 		{"service without name", func(m map[string]any) { service(m)["name"] = "" }},
 		{"intent without prefix", func(m map[string]any) { service(m)["intents"] = []any{"booking.request"} }},

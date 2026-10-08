@@ -42,6 +42,13 @@ type DisruptResponse struct {
 // operator's bookings and what it published.
 func ControlHandler(sim *Simulator, bookings *store.Bookings, log *store.EventLog) http.Handler {
 	mux := http.NewServeMux()
+	RegisterControl(mux, sim, bookings, log)
+	return mux
+}
+
+// RegisterControl adds the routes to mux, which may hold another role's:
+// a node with several roles serves one control API.
+func RegisterControl(mux *http.ServeMux, sim *Simulator, bookings *store.Bookings, log *store.EventLog) {
 	mux.HandleFunc("GET /bookings", func(w http.ResponseWriter, _ *http.Request) {
 		out := []store.Summary{}
 		for _, b := range bookings.List() {
@@ -84,7 +91,6 @@ func ControlHandler(sim *Simulator, bookings *store.Bookings, log *store.EventLo
 			control.Answer(w, http.StatusOK, DisruptResponse{Alert: alert})
 		}
 	})
-	return mux
 }
 
 // BookingsResponse is GET /bookings: the operator's bookings, newest first.

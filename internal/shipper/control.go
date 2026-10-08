@@ -54,6 +54,13 @@ type BookResponse struct {
 // the TUI and the browser UI show; they serve both alike.
 func ControlHandler(s *Shipper, profiles rest.Profiles) http.Handler {
 	mux := http.NewServeMux()
+	RegisterControl(mux, s, profiles)
+	return mux
+}
+
+// RegisterControl adds the routes to mux, which may hold another role's:
+// a node with several roles serves one control API.
+func RegisterControl(mux *http.ServeMux, s *Shipper, profiles rest.Profiles) {
 	mux.HandleFunc("GET /shipments", func(w http.ResponseWriter, _ *http.Request) {
 		out := []store.Summary{}
 		for _, b := range s.Bookings.List() {
@@ -102,6 +109,10 @@ func ControlHandler(s *Shipper, profiles rest.Profiles) http.Handler {
 			return
 		}
 		conf, err := s.Book(r.Context(), req.Operator, &req.Request)
+		if errors.Is(err, ErrNoShipperRole) {
+			control.Answer(w, http.StatusForbidden, BookResponse{Error: err.Error()})
+			return
+		}
 		if errors.Is(err, business.ErrLeak) {
 			control.Answer(w, http.StatusUnprocessableEntity, BookResponse{Error: leakMessage})
 			return
@@ -172,7 +183,6 @@ func ControlHandler(s *Shipper, profiles rest.Profiles) http.Handler {
 			control.Answer(w, http.StatusOK, StatusResponse{Operator: st.Operator, Status: st.Status, Missing: st.Missing})
 		}
 	})
-	return mux
 }
 
 // StatusRequest is the body of the control API's POST /status: ask a
