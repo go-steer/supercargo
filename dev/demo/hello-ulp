@@ -65,6 +65,14 @@ book="$q/bin/ulpnode book --config $q/shipper.yaml --operator ocean-blue.example
 disrupt="$q/bin/ulpctl disrupt --config $q/operator.yaml --booking OB-BKG-1042 --delay 72h --reason \"Engine repair, unscheduled call at Halifax.\""
 ask="$q/bin/ulpnode ask --config $q/shipper.yaml --booking OB-BKG-1042 \"What caused the delay, and how firm is the new ETA?\""
 
+# The browser UIs: on a Cloud Workstation, through its proxy.
+ob_ui="http://ocean-blue.localhost:$OP_PORT/ui/"
+cy_ui="http://cymbal-shoes.localhost:$SH_PORT/ui/"
+if [[ -n "${WEB_HOST:-}" ]]; then
+  ob_ui="https://$OP_PORT-$WEB_HOST/ui/"
+  cy_ui="https://$SH_PORT-$WEB_HOST/ui/"
+fi
+
 if $tmux; then
   command -v tmux >/dev/null || { echo "hello-ulp: tmux is not installed; run without --tmux" >&2; exit 1; }
   session="${HELLO_ULP_SESSION:-hello-ulp}"
@@ -97,7 +105,7 @@ if $tmux; then
   echo "the sentences); answer y in the dialog. Once Cymbal's log (bottom left) shows"
   echo "the departure, press Enter in the bottom-right pane to disrupt, then ask the"
   echo "assistant: Ask ocean-blue.example why OB-BKG-1042 is delayed."
-  echo "Browser UIs: http://ocean-blue.localhost:$OP_PORT/ui/ (Sam) and http://cymbal-shoes.localhost:$SH_PORT/ui/ (Alex)."
+  echo "Browser UIs: $ob_ui (Sam) and $cy_ui (Alex)."
   [[ -n "${HELLO_ULP_NO_ATTACH:-}" ]] && exit 0 # tests
   exec tmux attach -t "$session"
 fi
@@ -107,8 +115,8 @@ cat <<EOF
 Hello ULP is set up in $dir. Open four terminals:
 
   Each company's browser UI, once its node runs (sign in as its persona):
-       Ocean Blue:   http://ocean-blue.localhost:$OP_PORT/ui/
-       Cymbal Shoes: http://cymbal-shoes.localhost:$SH_PORT/ui/
+       Ocean Blue:   $ob_ui
+       Cymbal Shoes: $cy_ui
 
   1. Ocean Blue's node (the operator):
        $operator

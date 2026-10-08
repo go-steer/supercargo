@@ -20,6 +20,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -44,15 +45,20 @@ func newUI(t *testing.T) (http.Handler, *echo, *time.Time) {
 	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 	ctl := &echo{}
 	return Handler(Config{Company: "Ocean Blue", Domain: "ocean-blue.example", Personas: personas, Control: ctl,
-		Now: func() time.Time { return now }}), ctl, &now
+		Hosts: []string{"8441-ws.cloudworkstations.dev"}, Now: func() time.Time { return now }}), ctl, &now
 }
 
 func do(h http.Handler, method, path, body string, cookie *http.Cookie, hdr ...string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Host = "ocean-blue.localhost:8441"
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	for i := 0; i+1 < len(hdr); i += 2 {
+		if hdr[i] == "Host" {
+			req.Host = hdr[i+1]
+			continue
+		}
 		req.Header.Set(hdr[i], hdr[i+1])
 	}
 	if cookie != nil {
@@ -107,7 +113,7 @@ func TestStaticAndHeaders(t *testing.T) {
 func TestSignInRequired(t *testing.T) {
 	h, ctl, _ := newUI(t)
 	for _, path := range []string{"/ui/api/me", "/ui/api/messages", "/ui/api/messages/1", "/ui/api/events", "/ui/api/shipments",
-		"/ui/api/bookings", "/ui/api/profile/x.example"} {
+		"/ui/api/bookings"} {
 		if rec := do(h, http.MethodGet, path, "", &http.Cookie{Name: "ulp_session_ocean_blue_example", Value: "forged"}); rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s: HTTP %d", path, rec.Code)
 		}
@@ -142,9 +148,19 @@ func TestLogin(t *testing.T) {
 			t.Errorf("%s: HTTP %d, %d cookies", name, rec.Code, len(rec.Result().Cookies()))
 		}
 	}
-	// The same origin, said explicitly, is fine.
-	if rec := do(h, http.MethodPost, "/ui/api/login", `{"persona":"sam"}`, nil, "Origin", "http://example.com"); rec.Code != http.StatusOK {
+	// The same origin, said explicitly, is fine; so is a proxy's https
+	// name for it, forwarded as plain http to localhost.
+	if rec := do(h, http.MethodPost, "/ui/api/login", `{"persona":"sam"}`, nil, "Origin", "http://ocean-blue.localhost:8441"); rec.Code != http.StatusOK {
 		t.Errorf("same origin: HTTP %d", rec.Code)
+	}
+	if rec := do(h, http.MethodPost, "/ui/api/login", `{"persona":"sam"}`, nil, "Host", "localhost:8441",
+		"Origin", "https://8441-ws.cloudworkstations.dev"); rec.Code != http.StatusOK {
+		t.Errorf("through the workstation proxy: HTTP %d", rec.Code)
+	}
+	for name, origin := range map[string]string{"another scheme": "file://ocean-blue.localhost", "null": "null", "another port's host": "https://evil.example:8441"} {
+		if rec := do(h, http.MethodPost, "/ui/api/login", `{"persona":"sam"}`, nil, "Origin", origin); rec.Code != http.StatusForbidden {
+			t.Errorf("%s: HTTP %d", name, rec.Code)
+		}
 	}
 }
 
@@ -184,18 +200,17 @@ func TestRoleGates(t *testing.T) {
 		want int
 	}{
 		{alex, "/ui/api/shipments", http.StatusOK},
-		{alex, "/ui/api/profile/ocean-blue.example", http.StatusOK},
+		{alex, "/ui/api/profile/ocean-blue.example", http.StatusNotFound}, // no UI route makes the node fetch a profile yet
 		{alex, "/ui/api/bookings", http.StatusForbidden},
 		{alex, "/ui/api/bookings/OB-1/events", http.StatusForbidden},
 		{sam, "/ui/api/bookings", http.StatusOK},
 		{sam, "/ui/api/shipments", http.StatusForbidden},
-		{sam, "/ui/api/profile/x.example", http.StatusForbidden},
 		{jo, "/ui/api/bookings", http.StatusOK},
 		{jo, "/ui/api/shipments", http.StatusOK},
 	} {
 		ctl.got = nil
 		rec := do(h, http.MethodGet, tc.path, "", tc.who)
-		if rec.Code != tc.want || (tc.want == http.StatusForbidden) != (ctl.got == nil) {
+		if rec.Code != tc.want || (tc.want == http.StatusOK) != (ctl.got != nil) {
 			t.Errorf("%s: HTTP %d, want %d (control reached: %v)", tc.path, rec.Code, tc.want, ctl.got != nil)
 		}
 	}
@@ -240,5 +255,114 @@ func TestPersonaSides(t *testing.T) {
 		if got := strings.Join(Persona{Roles: strings.Split(roles, ",")}.Sides(), ","); got != want {
 			t.Errorf("%s: %s, want %s", roles, got, want)
 		}
+	}
+}
+
+// TestHostCheck: the UI answers only to the names it is served as, so a
+// page that rebinds its own name to this machine gets nothing, not even
+// the sign-in page.
+func TestHostCheck(t *testing.T) {
+	h, ctl, _ := newUI(t)
+	for _, host := range []string{"localhost:8441", "127.0.0.1:8441", "[::1]:8441", "cymbal-shoes.localhost", "OCEAN-BLUE.LOCALHOST.", "8441-ws.cloudworkstations.dev"} {
+		if rec := do(h, http.MethodGet, "/ui/api/personas", "", nil, "Host", host); rec.Code != http.StatusOK {
+			t.Errorf("%s: HTTP %d", host, rec.Code)
+		}
+	}
+	for _, host := range []string{"evil.example:8441", "evil.example", "localhost.evil.example", "8442-ws.cloudworkstations.dev", "10.0.0.5:8441", ""} {
+		for _, path := range []string{"/ui/", "/ui/api/personas"} {
+			if rec := do(h, http.MethodGet, path, "", nil, "Host", host); rec.Code != http.StatusMisdirectedRequest {
+				t.Errorf("%s %s: HTTP %d", host, path, rec.Code)
+			}
+		}
+		if rec := do(h, http.MethodPost, "/ui/api/login", `{"persona":"alex"}`, nil, "Host", host, "Origin", "http://"+host); rec.Code != http.StatusMisdirectedRequest {
+			t.Errorf("a rebound login via %s: HTTP %d", host, rec.Code)
+		}
+	}
+	if ctl.got != nil {
+		t.Error("the control API was reached through a foreign host")
+	}
+}
+
+// TestStreamsEndWithSession: a live stream stops once its session ends,
+// and a session has at most MaxStreams.
+func TestStreamsEndWithSession(t *testing.T) {
+	StreamCheck = 10 * time.Millisecond
+	defer func() { StreamCheck = 5 * time.Second }()
+	block := make(chan struct{})
+	ctl := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		select {
+		case <-r.Context().Done():
+		case <-block:
+		}
+	})
+	h := Handler(Config{Domain: "ocean-blue.example", Personas: personas, Control: ctl})
+	c := login(t, h, "alex")
+	done := make(chan int, 1)
+	go func() { done <- do(h, http.MethodGet, "/ui/api/events", "", c).Code }()
+	time.Sleep(50 * time.Millisecond)
+	do(h, http.MethodPost, "/ui/api/logout", "{}", c)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		close(block)
+		t.Fatal("the stream outlived its session")
+	}
+	c = login(t, h, "alex")
+	var wg sync.WaitGroup
+	for range MaxStreams {
+		wg.Add(1)
+		go func() { defer wg.Done(); do(h, http.MethodGet, "/ui/api/events", "", c) }()
+	}
+	time.Sleep(50 * time.Millisecond)
+	if rec := do(h, http.MethodGet, "/ui/api/events", "", c); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("one stream too many: HTTP %d", rec.Code)
+	}
+	close(block)
+	wg.Wait()
+}
+
+// TestForwardRefuses: no sides means no filter, so a persona with no role
+// gets nothing; "." and ".." never reach the control API as path values.
+func TestForwardRefuses(t *testing.T) {
+	ctl := &echo{}
+	h := Handler(Config{Domain: "ocean-blue.example", Personas: []Persona{{ID: "none", Name: "None"}, personas[0]}, Control: ctl})
+	if rec := do(h, http.MethodGet, "/ui/api/messages", "", login(t, h, "none")); rec.Code != http.StatusForbidden {
+		t.Errorf("a persona with no role: HTTP %d", rec.Code)
+	}
+	c := login(t, h, "alex")
+	for _, path := range []string{"/ui/api/messages/..", "/ui/api/shipments/./OB-1/events", "/ui/api/shipments/x.example/../events"} {
+		ctl.got = nil
+		if rec := do(h, http.MethodGet, path, "", c); rec.Code == http.StatusOK && ctl.got != nil {
+			t.Errorf("%s reached the control API at %s", path, ctl.got.URL)
+		}
+	}
+	if rec := do(h, http.MethodGet, "/ui/static/", "", nil); rec.Code != http.StatusNotFound {
+		t.Errorf("/ui/static/: HTTP %d", rec.Code)
+	}
+}
+
+// TestSessionReplacement: signing in again ends the old session, and the
+// cap pushes out expired sessions before live ones.
+func TestSessionReplacement(t *testing.T) {
+	h, _, now := newUI(t)
+	old := login(t, h, "alex")
+	rec := do(h, http.MethodPost, "/ui/api/login", `{"persona":"sam"}`, old)
+	if rec.Code != http.StatusOK {
+		t.Fatal(rec.Code)
+	}
+	if rec := do(h, http.MethodGet, "/ui/api/me", "", old); rec.Code != http.StatusUnauthorized {
+		t.Errorf("the replaced session still works: HTTP %d", rec.Code)
+	}
+	for range MaxSessions - 1 {
+		login(t, h, "sam")
+	}
+	*now = now.Add(SessionTTL)
+	live := login(t, h, "alex") // the cap is passed: the expired go, not this one
+	for range 5 {
+		login(t, h, "sam")
+	}
+	if rec := do(h, http.MethodGet, "/ui/api/me", "", live); rec.Code != http.StatusOK {
+		t.Errorf("a live session was pushed out while expired ones were kept: HTTP %d", rec.Code)
 	}
 }

@@ -25,9 +25,11 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -303,9 +305,18 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.Handle(webui.Prefix, webui.Handler(webui.Config{Company: a.Config.Name, Domain: a.Config.Domain, Personas: personas,
-		Control: a.controlAPI, Secure: a.Config.TLS.Mode != config.TLSInsecureDev}))
+		Control: a.controlAPI, Secure: a.Config.TLS.Mode != config.TLSInsecureDev, Hosts: append(listenHosts(a.Config.Listen), w.Hosts...)}))
 	mux.Handle("/", protocol)
 	return mux
+}
+
+// listenHosts is the listen address's host, if it names one, for the UI's
+// host check.
+func listenHosts(listen string) []string {
+	if h, _, err := net.SplitHostPort(listen); err == nil && h != "" {
+		return []string{strings.ToLower(h)}
+	}
+	return nil
 }
 
 // registerRoutes adds each role's control routes to mux. ServeMux panics

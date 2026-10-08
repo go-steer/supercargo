@@ -290,6 +290,7 @@ web:
 	srv := p.shipper.Server.Handler
 	call := func(method, path, body string, c *http.Cookie) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Host = "cymbal-shoes.localhost"
 		if body != "" {
 			r.Header.Set("Content-Type", "application/json")
 		}
@@ -329,6 +330,7 @@ web:
 		t.Errorf("the UI: HTTP %d", rec.Code)
 	}
 	r := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	r.Host = "ocean-blue.localhost"
 	rec := httptest.NewRecorder()
 	p.operator.Server.Handler.ServeHTTP(rec, r)
 	if rec.Code != http.StatusNotFound {

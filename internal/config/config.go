@@ -103,6 +103,10 @@ type Web struct {
 	Auth string `yaml:"auth"`
 	// Personas are who may sign in, and the roles each may act in.
 	Personas []Persona `yaml:"personas"`
+	// Hosts are extra host names the UI may be reached as, besides
+	// localhost names and the listen address: a proxy's, such as a Cloud
+	// Workstations port ("8441-<workstation host>"). Lowercase DNS names.
+	Hosts []string `yaml:"hosts"`
 }
 
 // Persona is someone who signs in to the UI.
@@ -494,8 +498,6 @@ func validHostPort(s string, listen bool) bool {
 }
 
 // unsafeRune matches characters that don't belong in a published name.
-var personaID = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
-
 func (c *Config) validateWeb() error {
 	w := c.Web
 	if w == nil {
@@ -504,10 +506,18 @@ func (c *Config) validateWeb() error {
 	if w.Auth != "demo" {
 		return fmt.Errorf("web: auth %q is not demo (hosted sign-in comes with the deployment)", w.Auth)
 	}
-	// Both TLS modes so far are local; this holds the line for the hosted
-	// one the deployment adds (#81), where sign-in goes through IAP.
-	if c.TLS.Mode != TLSInsecureDev && c.TLS.Mode != TLSLocalCA {
-		return errors.New("web: demo sign-in has no password, so it is for local deployments only (tls insecure-dev or local-ca)")
+	// No password: only this machine may reach it. The hosted deployment
+	// signs people in through IAP instead (#81).
+	if !loopback(c.Listen) || (c.TLS.Mode != TLSInsecureDev && c.TLS.Mode != TLSLocalCA) {
+		return fmt.Errorf("web: demo sign-in has no password, so the node must listen on loopback only (127.0.0.1, ::1 or localhost), not %q", c.Listen)
+	}
+	if len(w.Hosts) > 16 {
+		return errors.New("web: at most 16 hosts")
+	}
+	for _, h := range w.Hosts {
+		if !envelope.ValidDomain(h) {
+			return fmt.Errorf("web: host %q is not a lowercase DNS name", h)
+		}
 	}
 	if len(w.Personas) == 0 || len(w.Personas) > 32 {
 		return errors.New("web: 1-32 personas are required")
@@ -532,6 +542,21 @@ func (c *Config) validateWeb() error {
 		}
 	}
 	return nil
+}
+
+var personaID = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+
+// loopback reports whether listen's host is this machine only.
+func loopback(listen string) bool {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func unsafeRune(r rune) bool {

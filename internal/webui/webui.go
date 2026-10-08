@@ -24,10 +24,12 @@
 package webui
 
 import (
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/base64"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -84,19 +86,33 @@ type Config struct {
 	Control http.Handler
 	// Secure marks the session cookie Secure (the node serves TLS).
 	Secure bool
-	Now    func() time.Time
+	// Hosts are the host names (no port) the UI may be reached as besides
+	// localhost, 127.0.0.1, ::1 and any *.localhost name: the node's
+	// listen address, or a proxy's name for it (a Cloud Workstations port,
+	// say). A request's Host, and its Origin if it has one, must be one of
+	// them, so a web page that rebinds its own name to this machine can't
+	// reach the UI.
+	Hosts []string
+	Now   func() time.Time
 }
 
 // Session limits: a session lasts SessionTTL; at most MaxSessions are
-// kept (sign-in needs no password in demo mode, so its cost is bounded).
+// kept (sign-in needs no password in demo mode, so its cost is bounded),
+// each with at most MaxStreams live activity streams. A stream is
+// re-checked every StreamCheck and ends with its session.
 const (
 	SessionTTL  = 12 * time.Hour
 	MaxSessions = 1000
+	MaxStreams  = 4
 )
+
+// StreamCheck is how often a live stream re-checks its session.
+var StreamCheck = 5 * time.Second
 
 type session struct {
 	persona Persona
 	expires time.Time
+	streams int
 }
 
 type server struct {
@@ -121,6 +137,7 @@ func Handler(cfg Config) http.Handler {
 		cookie: "ulp_session_" + strings.NewReplacer(".", "_", "-", "_").Replace(cfg.Domain)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ui/{$}", s.index)
+	mux.HandleFunc("GET /ui/static/{$}", http.NotFound) // no listing, no stray index
 	mux.Handle("GET /ui/static/", s.files)
 	mux.HandleFunc("GET /ui/api/personas", s.personas)
 	mux.HandleFunc("POST /ui/api/login", s.login)
@@ -132,10 +149,34 @@ func Handler(cfg Config) http.Handler {
 	shipper := []string{RoleShipper, RoleReceiver}
 	mux.HandleFunc("GET /ui/api/shipments", s.authed(s.forward("/shipments", shipper)))
 	mux.HandleFunc("GET /ui/api/shipments/{operator}/{ref}/events", s.authed(s.forward("/shipments/{operator}/{ref}/events", shipper)))
-	mux.HandleFunc("GET /ui/api/profile/{domain}", s.authed(s.forward("/profile/{domain}", shipper)))
 	mux.HandleFunc("GET /ui/api/bookings", s.authed(s.forward("/bookings", []string{RoleOperator})))
 	mux.HandleFunc("GET /ui/api/bookings/{ref}/events", s.authed(s.forward("/bookings/{ref}/events", []string{RoleOperator})))
-	return headers(mux)
+	return s.hostCheck(headers(mux))
+}
+
+// hostCheck refuses a request naming a host the UI isn't served as. A page
+// on another site can rebind its own name to this machine and then pass
+// any Origin check (its origin is "this host" to the browser); it can't
+// make the browser send a Host it doesn't own.
+func (s *server) hostCheck(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowedHost(r.Host) {
+			http.Error(w, "unknown host", http.StatusMisdirectedRequest)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// allowedHost reports whether hostport names a host the UI is served as.
+func (s *server) allowedHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.ToLower(strings.Trim(host, "[]")), ".")
+	return host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasSuffix(host, ".localhost") ||
+		slices.Contains(s.cfg.Hosts, host)
 }
 
 // headers sets what every UI response carries: no inline script or style,
@@ -178,9 +219,11 @@ func (s *server) personas(w http.ResponseWriter, _ *http.Request) {
 }
 
 // sameOrigin rejects a state-changing request another site could have
-// sent: it must be JSON, and an Origin header, if any, must be this host.
-// (The session cookie is SameSite=Strict too.)
-func sameOrigin(r *http.Request) bool {
+// sent: it must be JSON, and an Origin header, if any, must be a host the
+// UI is served as, over http or https. Not necessarily this request's
+// Host: a proxy may forward the page's https://<proxy name> as
+// http://localhost:port. (The session cookie is SameSite=Strict too.)
+func (s *server) sameOrigin(r *http.Request) bool {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		return false
 	}
@@ -189,11 +232,11 @@ func sameOrigin(r *http.Request) bool {
 		return true
 	}
 	u, err := url.Parse(o)
-	return err == nil && u.Host == r.Host
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && s.allowedHost(u.Host)
 }
 
 func (s *server) login(w http.ResponseWriter, r *http.Request) {
-	if !sameOrigin(r) {
+	if !s.sameOrigin(r) {
 		control.Answer(w, http.StatusForbidden, errorBody("cross-site request refused"))
 		return
 	}
@@ -211,11 +254,25 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	id := newID()
 	s.mu.Lock()
+	// Signing in again replaces the session the browser had.
+	if c, err := r.Cookie(s.cookie); err == nil {
+		s.drop(c.Value)
+	}
 	s.sessions[id] = &session{persona: s.cfg.Personas[i], expires: s.cfg.Now().Add(SessionTTL)}
 	s.order = append(s.order, id)
-	for len(s.order) > MaxSessions {
-		delete(s.sessions, s.order[0])
-		s.order = s.order[1:]
+	if len(s.order) > MaxSessions {
+		// Expired sessions go first; past that, the oldest.
+		now := s.cfg.Now()
+		s.order = slices.DeleteFunc(s.order, func(o string) bool {
+			if sess, ok := s.sessions[o]; !ok || !now.Before(sess.expires) {
+				delete(s.sessions, o)
+				return true
+			}
+			return false
+		})
+		for len(s.order) > MaxSessions {
+			s.drop(s.order[0])
+		}
 	}
 	s.mu.Unlock()
 	//nolint:gosec // G124: Secure whenever the node serves TLS; insecure-dev is plain HTTP, local demos only
@@ -225,13 +282,13 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
-	if !sameOrigin(r) {
+	if !s.sameOrigin(r) {
 		control.Answer(w, http.StatusForbidden, errorBody("cross-site request refused"))
 		return
 	}
 	if c, err := r.Cookie(s.cookie); err == nil {
 		s.mu.Lock()
-		delete(s.sessions, c.Value)
+		s.drop(c.Value)
 		s.mu.Unlock()
 	}
 	//nolint:gosec // G124: as at sign-in
@@ -240,23 +297,89 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	control.Answer(w, http.StatusOK, struct{}{})
 }
 
+// drop ends session id. Call with mu held.
+func (s *server) drop(id string) {
+	delete(s.sessions, id)
+	if i := slices.Index(s.order, id); i >= 0 {
+		s.order = slices.Delete(s.order, i, i+1)
+	}
+}
+
+// sessionID is the request's session cookie value.
+func (s *server) sessionID(r *http.Request) string {
+	if c, err := r.Cookie(s.cookie); err == nil {
+		return c.Value
+	}
+	return ""
+}
+
+// lookup is session id's persona, if the session is live. Call with mu held.
+func (s *server) lookup(id string) (*session, bool) {
+	sess, ok := s.sessions[id]
+	if !ok {
+		return nil, false
+	}
+	if !s.cfg.Now().Before(sess.expires) {
+		s.drop(id)
+		return nil, false
+	}
+	return sess, true
+}
+
 // current is the request's signed-in persona.
 func (s *server) current(r *http.Request) (Persona, bool) {
-	c, err := r.Cookie(s.cookie)
-	if err != nil {
-		return Persona{}, false
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sess, ok := s.sessions[c.Value]
+	sess, ok := s.lookup(s.sessionID(r))
 	if !ok {
 		return Persona{}, false
 	}
-	if !s.cfg.Now().Before(sess.expires) {
-		delete(s.sessions, c.Value)
-		return Persona{}, false
-	}
 	return sess.persona, true
+}
+
+// stream runs a live stream for session id: at most MaxStreams
+// at once, and cancelled once the session ends (sign-out, expiry, being
+// pushed out), checked every StreamCheck.
+func (s *server) stream(w http.ResponseWriter, id string, r *http.Request, serve func(*http.Request)) {
+	s.mu.Lock()
+	sess, ok := s.lookup(id)
+	if ok && sess.streams >= MaxStreams {
+		ok = false
+	}
+	if ok {
+		sess.streams++
+	}
+	s.mu.Unlock()
+	if !ok {
+		control.Answer(w, http.StatusTooManyRequests, errorBody("too many live streams for this session"))
+		return
+	}
+	ctx, cancel := context.WithCancel(r.Context())
+	defer func() {
+		cancel()
+		s.mu.Lock()
+		sess.streams--
+		s.mu.Unlock()
+	}()
+	go func() {
+		t := time.NewTicker(StreamCheck)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.mu.Lock()
+				_, live := s.lookup(id)
+				s.mu.Unlock()
+				if !live {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	serve(r.WithContext(ctx))
 }
 
 func (s *server) authed(h func(http.ResponseWriter, *http.Request, Persona)) http.HandlerFunc {
@@ -292,11 +415,20 @@ func (s *server) forward(path string, roles []string) func(http.ResponseWriter, 
 			control.Answer(w, http.StatusForbidden, errorBody("your roles don't include this"))
 			return
 		}
+		// No sides would mean no filter, and so every side: refuse.
+		if len(p.Sides()) == 0 {
+			control.Answer(w, http.StatusForbidden, errorBody("your persona acts in no role"))
+			return
+		}
 		// The control API matches on the escaped path: fill both forms, so
 		// a value with a "/" stays one segment.
 		target, escaped := path, path
-		for _, name := range []string{"seq", "operator", "ref", "domain"} {
+		for _, name := range []string{"seq", "operator", "ref"} {
 			v := r.PathValue(name)
+			if v == "." || v == ".." {
+				control.Answer(w, http.StatusBadRequest, errorBody("not a valid "+name))
+				return
+			}
 			target = strings.ReplaceAll(target, "{"+name+"}", v)
 			escaped = strings.ReplaceAll(escaped, "{"+name+"}", url.PathEscape(v))
 		}
@@ -309,6 +441,10 @@ func (s *server) forward(path string, roles []string) func(http.ResponseWriter, 
 		r2.URL = &url.URL{Path: target, RawPath: escaped, RawQuery: q.Encode()}
 		r2.RequestURI = ""
 		r2.Header.Del("Cookie")
+		if path == "/events" {
+			s.stream(w, s.sessionID(r), r2, func(r *http.Request) { s.cfg.Control.ServeHTTP(w, r) })
+			return
+		}
 		s.cfg.Control.ServeHTTP(w, r2)
 	}
 }
