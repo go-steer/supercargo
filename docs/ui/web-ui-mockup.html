@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<!--
+Copyright 2026 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+<!--
+supercargo browser UI: a static mockup (#30), slices 1-3: the shell, the
+demo login, and the messages panel, with the activity stream and the
+assistant panel's frame. Sample data only; nothing here talks to a node.
+Open it in a browser. Theme, participant and persona switch at the top.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>supercargo · web UI mockup</title>
+<style>
+:root {
+  --aurora-1: #217bfe; --aurora-2: #078efb; --aurora-3: #a770ef; --aurora-4: #ff5e62;
+  --aurora: linear-gradient(90deg, var(--aurora-1), var(--aurora-2), var(--aurora-3), var(--aurora-4));
+}
+body[data-theme='grayscale-dark'] {
+  --bg: #202124; --bg-surface: #1a1b1e; --bg-elevated: #2a2b2e;
+  --border: #3c4043; --border-soft: #5f6368; --text: #e8eaed; --text-dim: #9aa0a6;
+  --green: #81c995; --red: #f28b82; --yellow: #fdd663; --blue: #8ab4f8;
+  /* New category tokens (Google palette, 300 tones on dark). */
+  --purple: #c58af9; --cyan: #78d9ec; --orange: #fcad70; --pink: #ff8bcb;
+  --scan: rgb(255 255 255 / 1.8%);
+  --glow: 0 0 20px rgb(33 123 254 / 15%), 0 0 40px rgb(167 112 239 / 10%);
+}
+body[data-theme='grayscale-light'] {
+  --bg: #f8f9fa; --bg-surface: #fff; --bg-elevated: #f1f3f4;
+  --border: #dadce0; --border-soft: #bdc1c6; --text: #202124; --text-dim: #5f6368;
+  --green: #188038; --red: #d50000; --yellow: #dc6d00; --blue: #1a73e8;
+  /* 600-700 tones: readable as text on white. */
+  --purple: #9334e6; --cyan: #007b83; --orange: #c26401; --pink: #c5157a;
+  --scan: transparent;
+  --glow: 0 0 18px rgb(33 123 254 / 12%), 0 0 36px rgb(167 112 239 / 8%);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace; font-size: 13px;
+  background: var(--bg); color: var(--text);
+}
+button { font: inherit; color: inherit; background: none; border: 1px solid var(--border); border-radius: 4px; padding: 3px 9px; cursor: pointer; }
+button:hover { border-color: var(--border-soft); }
+.dim { color: var(--text-dim); }
+.mockbar {
+  display: flex; gap: 14px; align-items: center; padding: 4px 12px; font-size: 11px;
+  background: repeating-linear-gradient(45deg, var(--bg-elevated) 0 8px, var(--bg) 8px 16px);
+  border-bottom: 1px dashed var(--border-soft); color: var(--text-dim);
+}
+.mockbar select { font: inherit; background: var(--bg-surface); color: var(--text); border: 1px solid var(--border); border-radius: 3px; }
+
+/* ── chrome ─────────────────────────────────────────────────────── */
+header {
+  display: flex; align-items: center; gap: 16px; padding: 8px 14px;
+  background: var(--bg-surface); border-bottom: 1px solid var(--border);
+}
+.wordmark { font-weight: 700; font-size: 15px; background: var(--aurora); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.who { display: flex; gap: 8px; align-items: baseline; }
+.who b { font-weight: 600; }
+.spacer { flex: 1; }
+.status { display: flex; gap: 6px; align-items: center; color: var(--text-dim); font-size: 12px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); }
+.demo-badge { font-size: 10px; letter-spacing: .12em; padding: 2px 6px; border: 1px solid var(--yellow); color: var(--yellow); border-radius: 3px; }
+
+nav.roles { display: flex; gap: 22px; padding: 0 14px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+.rolegroup { display: flex; align-items: center; gap: 4px; }
+.rolegroup > .label { font-size: 10px; letter-spacing: .13em; text-transform: uppercase; color: var(--text-dim); margin-right: 6px; }
+.tab { border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 9px 10px 7px; color: var(--text-dim); }
+.tab.on { color: var(--text); border-bottom-color: var(--blue); }
+.tab .n { font-size: 10px; padding: 0 5px; border-radius: 8px; background: var(--bg-elevated); margin-left: 4px; }
+
+main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(460px, 1.35fr); grid-template-rows: 1fr 1fr; gap: 10px; padding: 10px; min-height: 0; }
+.panel {
+  display: flex; flex-direction: column; min-height: 0; background: var(--bg-surface);
+  border: 1px solid var(--border); border-radius: 6px; overflow: hidden; position: relative;
+}
+.panel::after { content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(0deg, var(--scan) 0 1px, transparent 1px 3px); }
+.panel.tall { grid-row: span 2; }
+.panel-bar { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--border); background: var(--bg-elevated); }
+.panel-title { font-size: 10px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+.panel-body { flex: 1; overflow: auto; padding: 6px 0; }
+.filters { display: flex; gap: 4px; margin-left: auto; }
+.filters button { font-size: 11px; padding: 1px 7px; }
+.filters button.on { border-color: var(--blue); color: var(--blue); }
+
+/* The assistant panel: the aurora frame and glow, where a model works. */
+.panel.ai { border: 1px solid transparent; box-shadow: var(--glow);
+  background: linear-gradient(var(--bg-surface), var(--bg-surface)) padding-box, var(--aurora) border-box; }
+.panel.ai .panel-bar { border-bottom: 1px solid transparent;
+  border-image: var(--aurora) 1; }
+.panel.ai .panel-title { background: var(--aurora); -webkit-background-clip: text; background-clip: text; color: transparent; }
+
+/* ── messages ───────────────────────────────────────────────────── */
+.msg { border-left: 3px solid transparent; padding: 3px 10px 3px 9px; cursor: pointer; }
+.msg:hover { background: var(--bg-elevated); }
+.msg.ok { border-left-color: var(--green); }
+.msg.warn { border-left-color: var(--yellow); }
+.msg.bad { border-left-color: var(--red); }
+.msg .line { display: grid; grid-template-columns: 96px 16px minmax(190px, auto) 1fr auto; gap: 8px; align-items: center; white-space: nowrap; }
+.ts { color: var(--blue); }
+.ts i { font-style: normal; color: var(--text-dim); }
+.arrow { color: var(--text); text-align: center; }
+.peer { overflow: hidden; text-overflow: ellipsis; }
+.peer .via { color: var(--text-dim); margin-left: 6px; font-size: 11px; }
+.chip { display: inline-block; padding: 0 7px; border-radius: 10px; font-size: 11px; line-height: 18px; border: 1px solid currentColor; }
+.fam-booking { color: var(--purple); }
+.fam-tnt { color: var(--cyan); }
+.fam-alert { color: var(--orange); }
+.fam-inquiry { color: var(--pink); }
+.fam-error { color: var(--red); }
+.chip .sev { font-weight: 700; margin-left: 4px; }
+.sev-high { color: var(--yellow); }
+.sev-medium { color: var(--yellow); font-weight: 400 !important; }
+.sev-low { color: var(--text-dim); font-weight: 400 !important; }
+.chip.model { border-image: var(--aurora) 1; border-radius: 0; }
+.verdict { font-size: 11px; }
+.verdict.ok { color: var(--green); }
+.verdict.warn { color: var(--yellow); }
+.verdict.bad { color: var(--red); }
+.verdict .kid { color: var(--text-dim); }
+.summary { color: var(--text-dim); font-size: 12px; padding-left: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.detail { display: none; margin: 6px 0 6px 120px; }
+.msg.open .detail { display: block; }
+.detail-bar { display: flex; gap: 6px; margin-bottom: 4px; font-size: 11px; }
+.detail-bar button { font-size: 11px; padding: 0 7px; }
+.detail-bar button.on { border-color: var(--blue); color: var(--blue); }
+.raw { white-space: pre-wrap; word-break: break-all; color: var(--text-dim); font-size: 11px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; max-height: 180px; overflow: auto; }
+.unverified { border: 1px dashed var(--red); border-radius: 4px; padding: 6px 8px; background: color-mix(in srgb, var(--red) 6%, transparent); }
+.unverified .tag { color: var(--red); font-size: 10px; letter-spacing: .12em; margin-bottom: 4px; }
+.convo { padding: 6px 10px 2px; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-dim); border-top: 1px solid var(--border); margin-top: 4px; }
+.convo:first-child { border-top: none; margin-top: 0; }
+
+/* ── JSON, as an editor shows it ────────────────────────────────── */
+.json { white-space: pre; font-size: 12px; line-height: 1.5; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; overflow: auto; max-height: 300px; }
+.j-key { color: var(--blue); }
+.j-str { color: var(--orange); }
+.j-num { color: var(--cyan); }
+.j-lit { color: var(--purple); }
+.j-p { color: var(--text-dim); }
+.fold { cursor: pointer; user-select: none; color: var(--text-dim); display: inline-block; width: 12px; }
+.folded > .kids, .folded > .close-line { display: none; }
+.folded > .ellipsis { display: inline; }
+.ellipsis { display: none; color: var(--text-dim); }
+
+/* ── activity ───────────────────────────────────────────────────── */
+.entry { padding: 4px 10px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
+.entry-head { display: flex; gap: 8px; align-items: center; margin-bottom: 3px; }
+.kind { font-size: 10px; font-weight: 700; letter-spacing: .12em; padding: 0 6px; border-radius: 3px; border: 1px solid var(--border-soft); color: var(--text-dim); }
+.kind.model { color: #fff; border: none; background: var(--aurora); }
+.side { font-size: 10px; color: var(--text-dim); border: 1px dotted var(--border-soft); border-radius: 3px; padding: 0 5px; }
+.entry .json { max-height: none; border: none; background: transparent; padding: 0 0 0 4px; }
+
+/* ── assistant ──────────────────────────────────────────────────── */
+.chat { padding: 4px 14px; }
+.turn { margin: 10px 0; }
+.turn .who { font-size: 11px; letter-spacing: .1em; }
+.turn.you .who { color: var(--blue); font-weight: 700; }
+.turn.ai .who { font-weight: 700; background: var(--aurora); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.turn.ai .text { border-left: 2px solid; border-image: linear-gradient(180deg, var(--aurora-1), var(--aurora-3), var(--aurora-4)) 1; padding-left: 10px; }
+.toolcall { color: var(--text-dim); font-size: 12px; margin: 3px 0 3px 2px; }
+.toolcall .okk { color: var(--green); }
+.composer { border-top: 1px solid var(--border); padding: 8px 12px; color: var(--text-dim); }
+
+/* ── login ──────────────────────────────────────────────────────── */
+.login { position: fixed; inset: 0; display: none; place-items: center; background: color-mix(in srgb, var(--bg) 92%, transparent); z-index: 5; }
+.login.show { display: grid; }
+.login-card { width: 460px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; padding: 22px 24px; box-shadow: 0 8px 40px rgb(0 0 0 / 35%); }
+.login-card h1 { font-size: 15px; margin: 0 0 4px; }
+.login-card p { color: var(--text-dim); margin: 0 0 16px; font-size: 12px; }
+.persona { display: flex; width: 100%; text-align: left; align-items: center; gap: 12px; padding: 10px 12px; margin-bottom: 8px; }
+.persona .avatar { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--bg-elevated); font-weight: 700; }
+.persona .roles-of { color: var(--text-dim); font-size: 11px; }
+.login-foot { margin-top: 12px; font-size: 11px; color: var(--yellow); }
+</style>
+</head>
+<body data-theme="grayscale-dark">
+
+<div class="mockbar">
+  <span>MOCKUP (#30) · sample data</span>
+  <label>participant <select id="participant">
+    <option value="cymbal">Cymbal Shoes (shipper)</option>
+    <option value="ocean">Ocean Blue (carrier + shipper)</option>
+  </select></label>
+  <label>theme <select id="theme">
+    <option value="grayscale-dark">grayscale dark</option>
+    <option value="grayscale-light">grayscale light</option>
+  </select></label>
+  <button id="show-login">show the login</button>
+</div>
+
+<header>
+  <span class="wordmark">⟨u⟩lp</span>
+  <span class="who"><b id="company"></b><span class="dim" id="domain"></span></span>
+  <span class="dim">·</span>
+  <span class="who"><span id="persona"></span><span class="dim" id="persona-roles"></span></span>
+  <span class="spacer"></span>
+  <span class="demo-badge">DEMO MODE</span>
+  <span class="status"><span class="dot"></span>node connected</span>
+  <button id="signout">sign out</button>
+</header>
+
+<nav class="roles" id="roles"></nav>
+
+<main>
+  <section class="panel tall" id="left"></section>
+  <section class="panel">
+    <div class="panel-bar">
+      <span class="panel-title">Messages</span>
+      <span class="dim" style="font-size:11px">this node's side only</span>
+      <span class="filters" id="msg-filters">
+        <button class="on" data-f="all">all</button><button data-f="refused">refused</button>
+      </span>
+    </div>
+    <div class="panel-body" id="messages"></div>
+  </section>
+  <section class="panel">
+    <div class="panel-bar">
+      <span class="panel-title">Activity</span>
+      <span class="filters" id="act-filters">
+        <button class="on" data-f="all">all</button><button data-f="envelope">envelope</button><button data-f="record">record</button><button data-f="model">model</button>
+      </span>
+    </div>
+    <div class="panel-body" id="activity"></div>
+  </section>
+</main>
+
+<div class="login" id="login">
+  <div class="login-card">
+    <h1 id="login-title"></h1>
+    <p>Pick who you are. Each persona acts in the roles listed; you only ever see those roles' messages and activity.</p>
+    <div id="personas"></div>
+    <div class="login-foot">⚠ Demo mode: no password. Real sign-in (OIDC) comes later.</div>
+  </div>
+</div>
+
+<script>
+'use strict';
+// ── sample data ──────────────────────────────────────────────────────
+const JWS = (seed) => '{"protected":"eyJhbGciOiJFZDI1NTE5Iiwia2lkIjoiY3ktZGVtby0xIiwidHlwIjoidWxwLWVudmVsb3BlK2p3cyJ9","payload":"' +
+  btoa(seed).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_') + 'eyJoZWFkZXIiOnsidWxwVmVyc2lvbiI6IjAuMy1kZW1vIiwiaW50ZW50IjoidWxwLm9jZWFuLmJvb2tpbmcucmVxdWVzdCJ9fQ","signature":"kYI5u6q2DZAdLkl2hFdgFkSvhcmL_Mlxbdeh10VNDT-annNO7wgRsjrlT3jjzYOxSgHmtaiGT4yUDsGTDIorCw"}';
+
+const booking = {
+  shipper_reference: 'CY-PO-55120', shipper_name: 'Cymbal Shoes', port_of_loading: 'NLRTM', port_of_discharge: 'USEWR',
+  containers: [{ equipment_size_type: '45G1', count: 1, gross_weight_kg: 12000 }],
+  cargo: { description: 'Footwear (sneakers)', hs_code: '6404' }, earliest_departure: '2026-10-06',
+  consignee: { name: 'Cymbal Footwear', domain: 'cymbal-footwear.example' },
+  subscription: { endpoint: 'https://cymbal-shoes.example/ulp', intents: ['ulp.tnt.event', 'ulp.tnt.alert'] },
+};
+const confirmation = {
+  booking_reference: 'OB-BKG-1042', status: 'confirmed',
+  ebl: { transport_document_reference: 'OB-TD-1042', vessel_name: 'Ocean Blue Aurora', voyage_number: '42W',
+    port_of_loading: 'NLRTM', port_of_discharge: 'USEWR', shipper_name: 'Cymbal Shoes', consignee_name: 'Cymbal Footwear',
+    status: 'BOOKED', containers: [{ container_number: 'OCBU0000004', equipment_size_type: '45G1', seal_number: 'OCBUS0000001', gross_weight_kg: 12000, is_reefer: false }] },
+  planned_departure: '2026-10-07T18:00:00Z', planned_arrival: '2026-10-13T08:00:00Z',
+};
+const depa = { event_id: 'EV-000003', event_type: 'TRANSPORT', event_type_code: 'DEPA', event_classifier_code: 'ACT',
+  event_date_time: '2026-10-07T18:00:00Z', description: 'Departed Rotterdam', un_location_code: 'NLRTM',
+  facility_name: 'Port of Rotterdam', vessel_name: 'Ocean Blue Aurora', voyage_number: '42W', equipment_reference: null };
+const arriEst = { ...depa, event_id: 'EV-000005', event_type_code: 'ARRI', event_classifier_code: 'EST',
+  event_date_time: '2026-10-16T08:00:00Z', description: 'Estimated arrival Newark', un_location_code: 'USEWR', facility_name: 'Port Newark' };
+const alert = { alert_id: 'AL-000006', kind: 'delay', severity: 'high', summary: 'Engine repair, unscheduled call at Halifax.',
+  previous_eta: '2026-10-13T08:00:00Z', new_eta: '2026-10-16T08:00:00Z', cause_event_ids: ['EV-000005'] };
+const inquiry = { question: 'What is causing the delay on OB-BKG-1042, and how firm is the new ETA?' };
+const answer = { answer: 'Current estimated arrival at Port Newark: 2026-10-16T08:00:00Z (EV-000005). Latest alert: engine repair, unscheduled call at Halifax (AL-000006).',
+  sources: ['EV-000005', 'AL-000006'] };
+const replyErr = { code: 'replay', detail: 'This message was already received.', retryable: false };
+
+// One conversation each; m = [time, dir, intent, peer, via, verdict, summary, body, extra]
+const views = {
+  cymbal: {
+    company: 'Cymbal Shoes', domain: 'cymbal-shoes.example',
+    personas: [{ name: 'Alex', title: 'Logistics, Cymbal Shoes', roles: ['shipper'] }],
+    roles: [{ side: 'customer', label: 'As shipper', tabs: ['Assistant', 'Shipments', 'Alerts'] }],
+    convos: [
+      ['booking OB-BKG-1042', [
+        ['10:14:24.118', 'out', 'ulp.ocean.booking.request', 'ocean-blue.example', 'rest', 'signed', '1 × 45G1, NLRTM → USEWR, from 2026-10-06', booking],
+        ['10:14:24.402', 'in', 'ulp.ocean.booking.confirmation', 'ocean-blue.example', 'rest', 'verified', 'confirmed OB-BKG-1042 · OB-TD-1042 · Ocean Blue Aurora 42W', confirmation],
+      ]],
+      ['track & trace OB-BKG-1042', [
+        ['10:15:02.931', 'in', 'ulp.tnt.event', 'ocean-blue.example', 'rest', 'verified', 'TRANSPORT DEPA ACT · NLRTM · 2026-10-07T18:00Z', depa],
+        ['10:16:11.540', 'in', 'ulp.tnt.event', 'ocean-blue.example', 'rest', 'verified', 'TRANSPORT ARRI EST · USEWR · 2026-10-16T08:00Z', arriEst],
+        ['10:16:11.544', 'in', 'ulp.tnt.alert', 'ocean-blue.example', 'rest', 'verified', 'delay: ETA 13th → 16th · engine repair at Halifax', alert, { sev: 'high' }],
+      ]],
+      ['inquiry OB-BKG-1042', [
+        ['10:18:17.002', 'out', 'ulp.tnt.inquiry', 'ocean-blue.example', 'a2a', 'signed', inquiry.question, inquiry],
+        ['10:18:19.315', 'in', 'ulp.tnt.inquiry.response', 'ocean-blue.example', 'a2a', 'verified', 'Current estimated arrival … (EV-000005, AL-000006)', answer, { model: true }],
+      ]],
+      ['refused', [
+        ['10:19:40.003', 'in', 'ulp.tnt.event', 'mallory.example', 'rest', 'bad_signature', 'signature does not verify', null],
+        ['10:19:52.660', 'in', '(unreadable)', '', 'rest', 'malformed', 'not a JWS', null, { raw: '<script>alert("hi")<\/script>' }],
+      ]],
+    ],
+  },
+  ocean: {
+    company: 'Ocean Blue', domain: 'ocean-blue.example',
+    personas: [
+      { name: 'Sam', title: 'Ops desk, Ocean Blue', roles: ['operator'] },
+      { name: 'Priya', title: 'Procurement, Ocean Blue', roles: ['shipper'] },
+      { name: 'Jordan', title: 'Operations lead, Ocean Blue', roles: ['operator', 'shipper'] },
+    ],
+    roles: [
+      { side: 'operator', label: 'As carrier', tabs: ['Bookings', 'Voyages', 'Inquiries'] },
+      { side: 'customer', label: 'As shipper', tabs: ['Assistant', 'Shipments'] },
+    ],
+    convos: [
+      ['booking OB-BKG-1042 · from cymbal-shoes.example', [
+        ['10:14:24.130', 'in', 'ulp.ocean.booking.request', 'cymbal-shoes.example', 'rest', 'verified', '1 × 45G1, NLRTM → USEWR, from 2026-10-06', booking],
+        ['10:14:24.398', 'out', 'ulp.ocean.booking.confirmation', 'cymbal-shoes.example', 'rest', 'signed', 'confirmed OB-BKG-1042 · OB-TD-1042', confirmation],
+      ], 'operator'],
+      ['track & trace OB-BKG-1042 · to cymbal-shoes.example', [
+        ['10:16:11.536', 'out', 'ulp.tnt.event', 'cymbal-shoes.example', 'rest', 'signed', 'TRANSPORT ARRI EST · USEWR · 2026-10-16T08:00Z', arriEst],
+        ['10:16:11.540', 'out', 'ulp.tnt.alert', 'cymbal-shoes.example', 'rest', 'signed', 'delay: ETA 13th → 16th', alert, { sev: 'high' }],
+      ], 'operator'],
+      ['booking NF-77 · to north-feeder.example', [
+        ['10:21:03.020', 'out', 'ulp.ocean.booking.request', 'north-feeder.example', 'rest', 'signed', '2 × 22G1, USEWR → USBAL, from 2026-10-17', { ...booking, shipper_reference: 'OB-FEED-9', shipper_name: 'Ocean Blue' }],
+        ['10:21:03.380', 'in', 'ulp.ocean.booking.confirmation', 'north-feeder.example', 'rest', 'verified', 'confirmed NF-77', { ...confirmation, booking_reference: 'NF-77' }],
+      ], 'customer'],
+      ['refused', [
+        ['10:22:10.115', 'in', 'ulp.ocean.booking.request', 'cymbal-shoes.example', 'rest', 'replay', 'seen before (messageId 4fb028ff…)', booking],
+        ['10:22:10.119', 'out', 'ulp.error', 'cymbal-shoes.example', 'rest', 'signed', 'replay: This message was already received.', replyErr],
+        ['10:22:31.871', 'in', 'ulp.tnt.inquiry', 'mallory.example', 'a2a', 'forbidden', 'not a party to OB-BKG-1042', inquiry],
+      ], 'operator'],
+    ],
+  },
+};
+
+const activity = {
+  cymbal: [
+    ['10:16:11.545', 'record', 'customer', { action: 'recorded', booking: 'OB-BKG-1042', alert }],
+    ['10:16:12.880', 'model', 'customer', { booking: 'OB-BKG-1042', attempt: 1, model: 'fake', prompt_hash: '9c41e2…', skills: ['alert-summary@1a2b'],
+      input_tokens: 420, output_tokens: 61, latency_ms: 3, outcome: 'ok' }],
+    ['10:16:12.881', 'summary', 'customer', { booking: 'OB-BKG-1042', alert_id: 'AL-000006', impact: 'misses', generated_by: 'llm',
+      text: 'Delay on OB-BKG-1042: arriving 2026-10-16, it misses your receiving slot on 2026-10-15.' }],
+    ['10:16:11.540', 'envelope', 'customer', { dir: 'in', intent: 'ulp.tnt.event', sender: 'ocean-blue.example', via: 'rest', kid: 'ob-demo-1', verified: true, outcome: 'accepted' }],
+    ['10:19:40.004', 'envelope', 'customer', { dir: 'in', intent: 'ulp.tnt.event', sender: 'mallory.example', verified: false, outcome: 'rejected', code: 'bad_signature', reason: 'signature does not verify' }],
+  ],
+  ocean: [
+    ['10:14:24.200', 'voyage', 'operator', { booking: 'OB-BKG-1042', started: true, departure: '2026-10-07T18:00:00Z', arrival: '2026-10-13T08:00:00Z', hours_per_second: 1 }],
+    ['10:16:11.537', 'record', 'operator', { action: 'published', booking: 'OB-BKG-1042', alert }],
+    ['10:18:18.902', 'model', 'operator', { booking: 'OB-BKG-1042', attempt: 1, model: 'fake', skills: ['shipment-inquiry@d8b8', 'delay-phrasing@0f38'],
+      input_tokens: 512, output_tokens: 74, latency_ms: 4, outcome: 'ok' }],
+    ['10:21:03.381', 'envelope', 'customer', { dir: 'in', intent: 'ulp.ocean.booking.confirmation', sender: 'north-feeder.example', verified: true, outcome: 'response' }],
+    ['10:22:31.872', 'envelope', 'operator', { dir: 'in', intent: 'ulp.tnt.inquiry', sender: 'mallory.example', via: 'a2a', verified: true, outcome: 'rejected', code: 'forbidden', reason: 'not a party to OB-BKG-1042' }],
+  ],
+};
+
+// ── rendering ────────────────────────────────────────────────────────
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const family = (intent) => intent.startsWith('ulp.ocean.booking') ? 'booking' : intent === 'ulp.tnt.alert' ? 'alert'
+  : intent.startsWith('ulp.tnt.inquiry') ? 'inquiry' : intent === 'ulp.error' ? 'error' : intent.startsWith('ulp.') ? 'tnt' : 'error';
+const VERDICTS = {
+  signed: ['ok', '✓ SIGNED'], verified: ['ok', '✓ VERIFIED'],
+  replay: ['warn', '✓ VERIFIED · REFUSED replay'], forbidden: ['warn', '✓ VERIFIED · DENIED forbidden'],
+  bad_signature: ['bad', '✗ BAD SIGNATURE'], malformed: ['bad', '✗ MALFORMED'],
+};
+
+// JSON as an editor shows it: one span per token, objects fold.
+function jsonNode(v, indent, last, foldFrom = Infinity) {
+  const pad = '  '.repeat(indent), comma = last ? '' : ',';
+  const frag = document.createDocumentFragment();
+  const tok = (cls, t) => frag.appendChild(el('span', cls, t));
+  if (v === null || typeof v === 'boolean') { tok('j-lit', String(v)); tok('j-p', comma); return frag; }
+  if (typeof v === 'number') { tok('j-num', String(v)); tok('j-p', comma); return frag; }
+  if (typeof v === 'string') { tok('j-str', JSON.stringify(v)); tok('j-p', comma); return frag; }
+  const arr = Array.isArray(v), entries = arr ? v.map((x, i) => [i, x]) : Object.entries(v);
+  const wrap = el('span');
+  const fold = el('span', 'fold', '▾');
+  fold.onclick = (e) => { e.stopPropagation(); wrap.classList.toggle('folded'); fold.textContent = wrap.classList.contains('folded') ? '▸' : '▾'; };
+  if (entries.length) wrap.appendChild(fold);
+  if (entries.length && indent >= foldFrom) { wrap.classList.add('folded'); fold.textContent = '▸'; }
+  wrap.appendChild(el('span', 'j-p', arr ? '[' : '{'));
+  const short = arr && entries.every(([, x]) => typeof x !== 'object' || x === null);
+  if (short) {
+    wrap.classList.remove('folded'); fold.textContent = '▾';
+    entries.forEach(([, x], i) => { if (i) wrap.appendChild(el('span', 'j-p', ' ')); wrap.appendChild(jsonNode(x, 0, i === entries.length - 1)); });
+    wrap.appendChild(el('span', 'j-p', ']' + comma));
+    frag.appendChild(wrap); return frag;
+  }
+  wrap.appendChild(el('span', 'ellipsis', ' … ' + (arr ? ']' : '}') + comma));
+  const kids = el('span', 'kids');
+  entries.forEach(([k, x], i) => {
+    kids.appendChild(document.createTextNode('\n' + pad + '  '));
+    if (!arr) { kids.appendChild(el('span', 'j-key', JSON.stringify(k))); kids.appendChild(el('span', 'j-p', ': ')); }
+    kids.appendChild(jsonNode(x, indent + 1, i === entries.length - 1, foldFrom));
+  });
+  wrap.appendChild(kids);
+  const close = el('span', 'close-line');
+  close.appendChild(document.createTextNode('\n' + pad));
+  close.appendChild(el('span', 'j-p', (arr ? ']' : '}') + comma));
+  wrap.appendChild(close);
+  frag.appendChild(wrap);
+  return frag;
+}
+const jsonBlock = (v, foldFrom = Infinity) => { const pre = el('div', 'json'); pre.appendChild(jsonNode(v, 0, true, foldFrom)); return pre; };
+
+function messageRow(m) {
+  const [time, dir, intent, peer, via, verdict, summary, body, extra = {}] = m;
+  const [sev, vtext] = VERDICTS[verdict];
+  const row = el('div', 'msg ' + (extra.sev === 'high' && sev === 'ok' ? 'warn' : sev));
+  const line = el('div', 'line');
+  const ts = el('span', 'ts', time.slice(0, 8)); ts.appendChild(el('i', null, time.slice(8))); line.appendChild(ts);
+  line.appendChild(el('span', 'arrow', dir === 'out' ? '→' : '←'));
+  const chipWrap = el('span');
+  const chip = el('span', 'chip fam-' + family(intent) + (extra.model ? ' model' : ''), intent.replace(/^ulp\./, ''));
+  if (extra.sev) chip.appendChild(el('span', 'sev sev-' + extra.sev, '· ' + extra.sev.toUpperCase()));
+  chipWrap.appendChild(chip); line.appendChild(chipWrap);
+  const p = el('span', 'peer', peer || '—'); p.appendChild(el('span', 'via', via)); line.appendChild(p);
+  const v = el('span', 'verdict ' + sev, vtext);
+  if (sev !== 'bad') v.appendChild(el('span', 'kid', ' (' + (dir === 'out' ? 'our key' : ({ 'ocean-blue.example': 'ob', 'cymbal-shoes.example': 'cy', 'north-feeder.example': 'nf', 'mallory.example': 'm' }[peer] || '?') + '-demo-1') + ')'));
+  line.appendChild(v);
+  row.appendChild(line);
+  row.appendChild(el('div', 'summary', summary + (extra.model ? '   ✦ written by a model' : '')));
+
+  const detail = el('div', 'detail');
+  const raw = el('div', 'raw', extra.raw || JWS(intent + time));
+  if (sev === 'bad') {
+    const box = el('div', 'unverified');
+    box.appendChild(el('div', 'tag', 'UNVERIFIED · shown as text, nothing here is proven'));
+    box.appendChild(raw); detail.appendChild(box);
+  } else {
+    const bar = el('div', 'detail-bar');
+    const bPay = el('button', 'on', 'payload'), bRaw = el('button', null, 'raw JWS'), bHdr = el('button', null, 'header');
+    bar.append(bPay, bHdr, bRaw); detail.appendChild(bar);
+    const header = { ulpVersion: '0.3-demo', intent, messageId: '4fb028ff-96d9-4d5d-8930-5a9fe33a069e', correlationId: '9e1c…',
+      sender: dir === 'out' ? views[current].domain : peer, receiver: dir === 'out' ? peer : views[current].domain,
+      sentAt: '2026-10-08T' + time.slice(0, 8) + 'Z', bookingRef: 'OB-BKG-1042',
+      dialect: family(intent) === 'tnt' || family(intent) === 'alert' ? null : intent.includes('confirmation') ? { standard: 'DCSA_OCEAN_CONTAINER', version: '0.0.1' } : null };
+    const views3 = { payload: jsonBlock(body), header: jsonBlock(header), raw };
+    let shown = views3.payload; detail.appendChild(shown);
+    for (const [b, k] of [[bPay, 'payload'], [bHdr, 'header'], [bRaw, 'raw']]) {
+      b.onclick = (e) => { e.stopPropagation(); [bPay, bHdr, bRaw].forEach((x) => x.classList.remove('on')); b.classList.add('on');
+        detail.replaceChild(views3[k], shown); shown = views3[k]; };
+    }
+  }
+  detail.onclick = (e) => e.stopPropagation();
+  row.appendChild(detail);
+  row.onclick = () => row.classList.toggle('open');
+  return row;
+}
+
+let current = 'cymbal', persona = null, msgFilter = 'all', actFilter = 'all', activeSide = null;
+
+function sidesOf() { return persona.roles.map((r) => r === 'operator' ? 'operator' : 'customer'); }
+
+function renderMessages() {
+  const box = document.getElementById('messages'); box.replaceChildren();
+  const sides = sidesOf();
+  for (const [title, msgs, side] of views[current].convos) {
+    if (side && !sides.includes(side)) continue;
+    const list = msgs.filter((m) => msgFilter === 'all' || !['signed', 'verified'].includes(m[5]));
+    if (!list.length) continue;
+    box.appendChild(el('div', 'convo', title + (side && sides.length > 1 ? '  ·  ' + (side === 'operator' ? 'as carrier' : 'as shipper') : '')));
+    list.forEach((m) => box.appendChild(messageRow(m)));
+  }
+}
+
+function renderActivity() {
+  const box = document.getElementById('activity'); box.replaceChildren();
+  const sides = sidesOf();
+  for (const [time, kind, side, data] of activity[current]) {
+    if (!sides.includes(side) || (actFilter !== 'all' && kind !== actFilter)) continue;
+    const e = el('div', 'entry'), head = el('div', 'entry-head');
+    const ts = el('span', 'ts', time.slice(0, 8)); ts.appendChild(el('i', null, time.slice(8)));
+    head.append(ts, el('span', 'kind' + (kind === 'model' ? ' model' : ''), kind.toUpperCase()), el('span', 'side', side));
+    e.append(head, jsonBlock(data, 1)); // nested objects start folded, like an editor's fold-to-level-1
+    box.appendChild(e);
+  }
+}
+
+function renderLeft() {
+  const left = document.getElementById('left'); left.replaceChildren();
+  if (activeSide === 'customer') {
+    left.className = 'panel tall ai';
+    const bar = el('div', 'panel-bar'); bar.append(el('span', 'panel-title', 'Assistant'), el('span', 'dim', 'shipper role · model: fake'));
+    const body = el('div', 'panel-body chat');
+    const you = (t) => { const d = el('div', 'turn you'); d.append(el('div', 'who', 'YOU · 10:14:20'), el('div', 'text', t)); return d; };
+    const ai = (t, tool) => { const d = el('div', 'turn ai'); d.appendChild(el('div', 'who', 'ASSISTANT · 10:14:24'));
+      if (tool) { const c = el('div', 'toolcall', '▸ ' + tool + ' '); c.appendChild(el('span', 'okk', '✓')); d.appendChild(c); }
+      d.appendChild(el('div', 'text', t)); return d; };
+    body.append(you('Book one 40ft high-cube of sneakers for CY-PO-55120, Rotterdam to Newark, departing 2026-10-06, with ocean-blue.example.'),
+      ai('Booked. Reference OB-BKG-1042 on Ocean Blue Aurora, voyage 42W, transport document OB-TD-1042. Planned arrival 2026-10-13, two days before your deadline.', 'draft_booking · confirmed by you'),
+      you('What caused the delay for booking OB-BKG-1042?'),
+      ai('ocean-blue.example answered: estimated arrival Port Newark 2026-10-16 (EV-000005); engine repair, unscheduled call at Halifax (AL-000006). It misses your receiving slot on the 15th.', 'ask_operator'));
+    left.append(bar, body, el('div', 'composer', '▎ Ask about a carrier, book a shipment, or check on one…'));
+  } else {
+    left.className = 'panel tall';
+    const bar = el('div', 'panel-bar'); bar.append(el('span', 'panel-title', 'Bookings'), el('span', 'dim', 'carrier role'));
+    const body = el('div', 'panel-body');
+    body.appendChild(jsonBlock({ bookings: [{ ref: 'OB-BKG-1042', shipper: 'cymbal-shoes.example', status: 'in transit', eta: '2026-10-16T08:00:00Z', events: 5, alerts: 1 }] }));
+    left.append(bar, body);
+  }
+}
+
+function renderRoles() {
+  const nav = document.getElementById('roles'); nav.replaceChildren();
+  const roles = views[current].roles.filter((r) => sidesOf().includes(r.side));
+  if (!roles.some((r) => r.side === activeSide)) activeSide = roles[0].side;
+  roles.forEach((r) => {
+    const g = el('div', 'rolegroup');
+    if (roles.length > 1) g.appendChild(el('span', 'label', r.label));
+    r.tabs.forEach((t, i) => {
+      const b = el('button', 'tab' + (r.side === activeSide && i === 0 ? ' on' : ''), t);
+      if (t === 'Alerts') b.appendChild(el('span', 'n', '1'));
+      b.onclick = () => { activeSide = r.side; renderAll(); };
+      g.appendChild(b);
+    });
+    nav.appendChild(g);
+  });
+}
+
+function renderAll() {
+  const v = views[current];
+  document.getElementById('company').textContent = v.company;
+  document.getElementById('domain').textContent = v.domain;
+  document.getElementById('persona').textContent = persona.name + ', ' + persona.title.split(',')[0];
+  document.getElementById('persona-roles').textContent = '(' + persona.roles.join(' + ') + ')';
+  renderRoles(); renderLeft(); renderMessages(); renderActivity();
+}
+
+function showLogin() {
+  const v = views[current];
+  document.getElementById('login-title').textContent = 'Sign in to ' + v.company + ' · ' + v.domain;
+  const box = document.getElementById('personas'); box.replaceChildren();
+  v.personas.forEach((p) => {
+    const b = el('button', 'persona');
+    b.append(el('span', 'avatar', p.name[0]));
+    const t = el('span'); t.append(el('div', null, p.name + ' · ' + p.title), el('div', 'roles-of', 'acts as: ' + p.roles.join(', ')));
+    b.appendChild(t);
+    b.onclick = () => { persona = p; document.getElementById('login').classList.remove('show'); renderAll(); };
+    box.appendChild(b);
+  });
+  document.getElementById('login').classList.add('show');
+}
+
+document.getElementById('theme').onchange = (e) => { document.body.dataset.theme = e.target.value; };
+document.getElementById('participant').onchange = (e) => { current = e.target.value; persona = views[current].personas.at(-1); activeSide = null; renderAll(); showLogin(); };
+document.getElementById('show-login').onclick = showLogin;
+document.getElementById('signout').onclick = showLogin;
+for (const [id, set] of [['msg-filters', (f) => { msgFilter = f; renderMessages(); }], ['act-filters', (f) => { actFilter = f; renderActivity(); }]]) {
+  document.getElementById(id).onclick = (e) => {
+    if (!e.target.dataset.f) return;
+    document.querySelectorAll('#' + id + ' button').forEach((b) => b.classList.toggle('on', b === e.target));
+    set(e.target.dataset.f);
+  };
+}
+persona = views[current].personas[0];
+renderAll();
+</script>
+</body>
+</html>
