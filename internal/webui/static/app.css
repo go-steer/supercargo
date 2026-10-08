@@ -228,3 +228,23 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
   border-radius: 4px; padding: 4px 7px; width: 100%; }
 .dialog .err { color: var(--red); margin-top: 8px; }
 .dialog .fineprint { color: var(--text-dim); font-size: 11px; margin-top: 8px; }
+
+/* ── delays: loud, but never red (red means a trust failure) ────── */
+.msg.alert-high { border-left-color: var(--orange); }
+.chip.fam-alert.high { background: var(--orange); color: var(--bg-surface); border-color: var(--orange); font-weight: 700; }
+.chip.fam-alert.high .sev { color: var(--bg-surface); }
+@keyframes arrived { 0%, 100% { box-shadow: none; } 15%, 60% { box-shadow: 0 0 0 2px var(--orange), 0 0 18px color-mix(in srgb, var(--orange) 55%, transparent); } }
+.arrived { animation: arrived 4s ease-out 1; }
+.banner { display: flex; gap: 12px; align-items: center; padding: 7px 14px; font-weight: 600;
+  background: color-mix(in srgb, var(--orange) 16%, var(--bg-surface)); border-bottom: 2px solid var(--orange); color: var(--text); }
+.banner.misses { background: color-mix(in srgb, var(--orange) 28%, var(--bg-surface)); }
+.banner.ok { background: var(--bg-elevated); border-bottom-color: var(--border-soft); font-weight: 400; }
+.banner .icon { color: var(--orange); font-size: 15px; }
+.banner .impact { color: var(--orange); }
+.banner.ok .impact, .banner.ok .icon { color: var(--text-dim); }
+.banner .spacer { flex: 1; }
+.banner button { padding: 1px 8px; }
+.delayed-badge { font-size: 10px; font-weight: 700; letter-spacing: .1em; padding: 1px 6px; border-radius: 3px;
+  background: var(--orange); color: var(--bg-surface); }
+.was { text-decoration: line-through; color: var(--text-dim); }
+.booking.delayed { border-color: var(--orange); }

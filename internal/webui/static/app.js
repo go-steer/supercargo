@@ -25,6 +25,7 @@ const state = {
   me: null, activeSide: null, tab: {}, msgFilter: 'all', actFilter: 'all',
   messages: [], lastSeq: 0, entries: [], open: new Set(), events: null, loading: false,
   chat: null, thinking: false, poll: null, streamOpen: false,
+  initialSeq: null, alertCounts: {}, summaries: [],
 };
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -148,14 +149,21 @@ function summary(m) {
 function messageRow(m) {
   const [sev, vtext] = verdict(m);
   const alertSev = m.intent === 'ulp.tnt.alert' && m.body ? m.body.severity : null;
-  const row = el('div', 'msg ' + (alertSev === 'high' && sev === 'ok' ? 'warn' : sev));
+  const row = el('div', 'msg ' + (alertSev === 'high' && sev === 'ok' ? 'alert-high' : sev));
+  row.id = 'msg-' + m.seq;
+  // A delay that arrives while you watch catches the eye, once.
+  if (alertSev && state.initialSeq !== null && m.seq > state.initialSeq && !state.glowed?.has(m.seq)) {
+    row.classList.add('arrived');
+    (state.glowed ??= new Set()).add(m.seq);
+  }
   if (state.open.has(m.seq)) row.classList.add('open');
   const line = el('div', 'line');
   line.appendChild(stamp(m.time));
   line.appendChild(el('span', 'arrow', m.dir === 'out' ? '→' : '←'));
   const chipWrap = el('span');
   const model = m.intent === 'ulp.tnt.inquiry.response';
-  const chip = el('span', 'chip fam-' + family(m.intent) + (model ? ' model' : ''), m.intent ? m.intent.replace(/^ulp\./, '') : '(unreadable)');
+  const chip = el('span', 'chip fam-' + family(m.intent) + (model ? ' model' : '') + (alertSev === 'high' ? ' high' : ''),
+    m.intent ? m.intent.replace(/^ulp\./, '') : '(unreadable)');
   if (alertSev) chip.appendChild(el('span', 'sev sev-' + alertSev, '· ' + String(alertSev).toUpperCase()));
   chipWrap.appendChild(chip);
   line.appendChild(chipWrap);
@@ -248,6 +256,7 @@ async function loadMessages() {
   state.loading = true;
   try {
     const r = await api('messages?' + new URLSearchParams(state.lastSeq ? { since: state.lastSeq } : { limit: 300 }));
+    const first = state.initialSeq === null;
     if (r.messages.length) {
       state.messages.push(...r.messages);
       state.messages = state.messages.slice(-500);
@@ -256,6 +265,8 @@ async function loadMessages() {
     } else if (!state.messages.length) {
       renderMessages();
     }
+    if (first) state.initialSeq = state.lastSeq;
+    renderBanner();
   } catch (e) { setStatus('bad', e.message); }
   finally { state.loading = false; }
 }
@@ -298,6 +309,7 @@ function renderActivity() {
 }
 
 function addEntry(e) {
+  if (e.kind === 'summary' && e.summary) { state.summaries.push(e.summary); renderBanner(); }
   state.entries.push(e);
   if (state.entries.length > 300) state.entries.shift();
   if (state.actFilter === 'all' || e.kind === state.actFilter) {
@@ -343,6 +355,51 @@ function connectEvents() {
   es.addEventListener('gap', () => setStatus('warn', 'some activity was missed'));
 }
 
+// day is an ISO time as people say it: "Tue 13 Oct".
+const day = (iso) => {
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+};
+
+// ── the delay banner: the latest alert, with what it means for us ────
+const IMPACT = { misses: 'misses your deadline', tight: 'your deadline is now tight', ok: 'still in time', unknown: 'impact unknown' };
+function dismissed() {
+  try { return new Set(JSON.parse(sessionStorage.getItem('ulp-dismissed') || '[]')); } catch { return new Set(); }
+}
+function renderBanner() {
+  const b = $('banner');
+  const gone = dismissed();
+  const s = [...state.summaries].reverse().find((x) => x.alertId && !gone.has(x.alertId));
+  if (!s || !state.me || !state.me.sides.includes('customer')) { b.hidden = true; return; }
+  const alert = state.messages.find((m) => m.intent === 'ulp.tnt.alert' && m.body && m.body.alert_id === s.alertId);
+  const a = alert ? alert.body : {};
+  b.className = 'banner ' + (s.impact || '');
+  const parts = [el('span', 'icon', '⚠'), el('span', null, `${(a.kind || 'alert').toUpperCase()} · ${s.booking}`)];
+  if (a.previous_eta && a.new_eta) parts.push(el('span', null, `ETA ${day(a.previous_eta)} → ${day(a.new_eta)}`));
+  parts.push(el('span', 'impact', IMPACT[s.impact] || ''), el('span', 'spacer'));
+  if (alert) {
+    const view = el('button', null, 'view');
+    view.onclick = () => {
+      state.msgFilter = 'all';
+      state.open.add(alert.seq);
+      renderMessages();
+      $('msg-' + alert.seq)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    };
+    parts.push(view);
+  }
+  const close = el('button', null, '×');
+  close.dataset.tip = 'Dismiss: the alert stays in the messages panel.';
+  close.onclick = () => {
+    gone.add(s.alertId);
+    try { sessionStorage.setItem('ulp-dismissed', JSON.stringify([...gone])); } catch { /* private mode */ }
+    renderBanner();
+  };
+  parts.push(close);
+  b.replaceChildren(...parts);
+  b.title = s.text || '';
+  b.hidden = false;
+}
+
 // ── left panel: what the active role tab shows ───────────────────────
 const VIEWS = {
   customer: { label: 'As shipper', tabs: [['Assistant', 'assistant'], ['Shipments', 'shipments']] },
@@ -372,8 +429,21 @@ async function loadLeft() {
       card.appendChild(top);
       const route = `${s.origin?.unLocode || ''} ${s.origin?.name || ''} → ${s.destination?.unLocode || ''} ${s.destination?.name || ''}`;
       card.appendChild(el('div', 'summary-line', route));
-      const facts = [s.vessel && `${s.vessel} ${s.voyage}`, s.transportDocumentReference, s.eta && `ETA ${s.eta}`].filter(Boolean).join(' · ');
-      card.appendChild(el('div', 'summary-line dim', facts));
+      const delayed = s.alerts > 0 && s.plannedArrival && s.eta && s.eta > s.plannedArrival;
+      if (delayed) {
+        card.classList.add('delayed');
+        top.querySelector('.chip').before(el('span', 'delayed-badge', 'DELAYED'));
+      }
+      const facts = el('div', 'summary-line dim', [s.vessel && `${s.vessel} ${s.voyage}`, s.transportDocumentReference].filter(Boolean).join(' · '));
+      if (s.eta) {
+        facts.append(' · ETA ');
+        if (delayed) { facts.append(el('span', 'was', day(s.plannedArrival)), ' → '); }
+        facts.append(el('b', null, day(s.eta)));
+      }
+      card.appendChild(facts);
+      const key = `${s.operator}/${s.bookingRef}`;
+      if (state.alertCounts[key] !== undefined && s.alerts > state.alertCounts[key]) card.classList.add('arrived');
+      state.alertCounts[key] = s.alerts;
       const counts = el('div', 'summary-line dim', `${s.events} events · ${s.alerts} alerts${s.lastEvent ? ' · last: ' + s.lastEvent : ''}`);
       if (s.alerts) counts.classList.add('has-alert');
       card.appendChild(counts);
@@ -597,6 +667,7 @@ async function signIn(id) {
 async function start() {
   state.me = await api('me');
   state.messages = []; state.lastSeq = 0; state.entries = []; state.open.clear(); state.chat = null; state.tab = {}; state.shownDrafts = new Set();
+  state.initialSeq = null; state.alertCounts = {}; state.summaries = []; $('banner').hidden = true;
   const { me } = state;
   $('company').textContent = me.company;
   $('domain').textContent = me.domain;
