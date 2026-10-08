@@ -1,4 +1,4 @@
-18:00:05 node starting  domain=cymbal-shoes.example  role=shipper  listen=127.0.0.1:8442
+18:00:05 node starting  domain=cymbal-shoes.example  roles=shipper,receiver  listen=127.0.0.1:8442
 18:00:05 WARN INSECURE DEVELOPMENT MODE: no TLS.
 18:00:05 alert summarizer  model=fake
 18:00:05 → ulp.ocean.booking.request      ocean-blue.example     rest signed (kid cy-demo-1)

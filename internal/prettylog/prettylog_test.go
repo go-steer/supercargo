@@ -44,7 +44,7 @@ func (f fixed) Handle(ctx context.Context, r slog.Record) error {
 
 // story is the demo's log, as the activity stream writes it.
 func story(l *slog.Logger) {
-	l.Info("node starting", "domain", "cymbal-shoes.example", "role", "shipper", "listen", "127.0.0.1:8442")
+	l.Info("node starting", "domain", "cymbal-shoes.example", "roles", []string{"shipper", "receiver"}, "listen", "127.0.0.1:8442")
 	l.Warn("INSECURE DEVELOPMENT MODE: no TLS.")
 	l.Info("alert summarizer", "model", "fake") // not an alert
 	sink := activity.SlogSink(l)
