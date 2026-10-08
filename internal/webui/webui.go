@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/activity"
+	"github.com/go-steer/supercargo/internal/assistant"
 	"github.com/go-steer/supercargo/internal/control"
 )
 
@@ -93,7 +94,11 @@ type Config struct {
 	// them, so a web page that rebinds its own name to this machine can't
 	// reach the UI.
 	Hosts []string
-	Now   func() time.Time
+	// NewAssistant makes the shipper role's assistant for one session (nil:
+	// the UI has no assistant). Each session gets its own, with its own
+	// conversation and drafts.
+	NewAssistant func() (*assistant.Assistant, error)
+	Now          func() time.Time
 }
 
 // Session limits: a session lasts SessionTTL; at most MaxSessions are
@@ -113,6 +118,7 @@ type session struct {
 	persona Persona
 	expires time.Time
 	streams int
+	chat    *chat // the session's assistant, made on first use
 }
 
 type server struct {
@@ -151,6 +157,13 @@ func Handler(cfg Config) http.Handler {
 	mux.HandleFunc("GET /ui/api/shipments/{operator}/{ref}/events", s.authed(s.forward("/shipments/{operator}/{ref}/events", shipper)))
 	mux.HandleFunc("GET /ui/api/bookings", s.authed(s.forward("/bookings", []string{RoleOperator})))
 	mux.HandleFunc("GET /ui/api/bookings/{ref}/events", s.authed(s.forward("/bookings/{ref}/events", []string{RoleOperator})))
+	// The assistant is the shipper role's (a receiver's comes later, #75).
+	asShipper := []string{RoleShipper}
+	mux.HandleFunc("GET /ui/api/assistant", s.authed(s.role(asShipper, s.assistantState)))
+	mux.HandleFunc("POST /ui/api/assistant/turn", s.authed(s.role(asShipper, s.assistantTurn)))
+	mux.HandleFunc("POST /ui/api/assistant/send", s.authed(s.role(asShipper, s.assistantSend)))
+	mux.HandleFunc("POST /ui/api/assistant/discard", s.authed(s.role(asShipper, s.assistantDiscard)))
+	mux.HandleFunc("POST /ui/api/disrupt", s.authed(s.role([]string{RoleOperator}, s.disrupt)))
 	return s.hostCheck(headers(mux))
 }
 
@@ -219,10 +232,11 @@ func (s *server) personas(w http.ResponseWriter, _ *http.Request) {
 }
 
 // sameOrigin rejects a state-changing request another site could have
-// sent: it must be JSON, and an Origin header, if any, must be a host the
-// UI is served as, over http or https. Not necessarily this request's
-// Host: a proxy may forward the page's https://<proxy name> as
-// http://localhost:port. (The session cookie is SameSite=Strict too.)
+// sent: it must be JSON, and an Origin header, if any, must be this
+// request's host and port exactly (another port on localhost is another
+// site, such as the other node's UI), or one of web.hosts with no port: a
+// proxy forwards the page's https://<proxy name> as http://localhost:port.
+// (The session cookie is SameSite=Strict too.)
 func (s *server) sameOrigin(r *http.Request) bool {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		return false
@@ -232,7 +246,10 @@ func (s *server) sameOrigin(r *http.Request) bool {
 		return true
 	}
 	u, err := url.Parse(o)
-	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && s.allowedHost(u.Host)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host) || (u.Port() == "" && slices.Contains(s.cfg.Hosts, strings.ToLower(u.Hostname())))
 }
 
 func (s *server) login(w http.ResponseWriter, r *http.Request) {
@@ -393,17 +410,30 @@ func (s *server) authed(h func(http.ResponseWriter, *http.Request, Persona)) htt
 	}
 }
 
+// role lets h run only for a persona with one of roles.
+func (s *server) role(roles []string, h func(http.ResponseWriter, *http.Request, Persona)) func(http.ResponseWriter, *http.Request, Persona) {
+	return func(w http.ResponseWriter, r *http.Request, p Persona) {
+		if !slices.ContainsFunc(p.Roles, func(role string) bool { return slices.Contains(roles, role) }) {
+			control.Answer(w, http.StatusForbidden, errorBody("your roles don't include this"))
+			return
+		}
+		h(w, r, p)
+	}
+}
+
 // MeResponse is the signed-in persona and what it sees.
 type MeResponse struct {
-	Company string   `json:"company"`
-	Domain  string   `json:"domain"`
-	Persona Persona  `json:"persona"`
-	Sides   []string `json:"sides"`
-	Demo    bool     `json:"demo"`
+	Company   string   `json:"company"`
+	Domain    string   `json:"domain"`
+	Persona   Persona  `json:"persona"`
+	Sides     []string `json:"sides"`
+	Demo      bool     `json:"demo"`
+	Assistant bool     `json:"assistant"` // the persona has the shipper's assistant
 }
 
 func (s *server) me(w http.ResponseWriter, _ *http.Request, p Persona) {
-	control.Answer(w, http.StatusOK, MeResponse{Company: s.cfg.Company, Domain: s.cfg.Domain, Persona: p, Sides: p.Sides(), Demo: true})
+	control.Answer(w, http.StatusOK, MeResponse{Company: s.cfg.Company, Domain: s.cfg.Domain, Persona: p, Sides: p.Sides(), Demo: true,
+		Assistant: s.cfg.NewAssistant != nil && slices.Contains(p.Roles, RoleShipper)})
 }
 
 // forward passes the request to the control API's path (its {wildcards}

@@ -196,3 +196,55 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
 .summary-line { font-size: 12px; margin-top: 2px; }
 .has-alert { color: var(--yellow); }
 .login-card .persona { cursor: pointer; }
+
+/* ── assistant panel ────────────────────────────────────────────── */
+.chat { flex: 1; overflow: auto; }
+.turn.note .text { color: var(--text-dim); font-size: 12px; font-style: italic; }
+.turn .text { white-space: pre-wrap; word-wrap: break-word; }
+.toolcall .bad { color: var(--red); }
+.draftlink { margin-top: 6px; }
+.thinking { margin: 8px 14px; font-size: 12px; background: var(--aurora); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.composer { display: flex; gap: 8px; align-items: flex-end; }
+.composer textarea { flex: 1; resize: none; min-height: 38px; max-height: 140px; font: inherit; color: var(--text);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 7px 9px; }
+.composer textarea:focus { outline: none; border-color: var(--blue); }
+.composer .err { color: var(--red); font-size: 11px; }
+.booking .actions { margin-top: 6px; }
+
+/* ── dialogs: a person's explicit yes ───────────────────────────── */
+.modal { position: fixed; inset: 0; display: grid; place-items: center; z-index: 6;
+  background: color-mix(in srgb, var(--bg) 80%, transparent); }
+.dialog { width: min(640px, 92vw); max-height: 88vh; overflow: auto; background: var(--bg-surface);
+  border: 1px solid var(--blue); border-radius: 8px; padding: 16px 20px; box-shadow: 0 10px 50px rgb(0 0 0 / 40%); }
+.dialog h2 { font-size: 13px; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 10px; color: var(--blue); }
+.dialog .row { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 3px 0; }
+.dialog .row .k { color: var(--text-dim); }
+.dialog .row.notsent .k, .dialog .row.notsent .v { color: var(--green); }
+.dialog .q { margin-top: 14px; font-weight: 700; }
+.dialog .buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.dialog button.primary { border-color: var(--blue); color: var(--blue); }
+.dialog button.primary:disabled { opacity: .5; cursor: default; }
+.dialog input, .dialog select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 7px; width: 100%; }
+.dialog .err { color: var(--red); margin-top: 8px; }
+.dialog .fineprint { color: var(--text-dim); font-size: 11px; margin-top: 8px; }
+
+/* ── delays: loud, but never red (red means a trust failure) ────── */
+.msg.alert-high { border-left-color: var(--orange); }
+.chip.fam-alert.high { background: var(--orange); color: var(--bg-surface); border-color: var(--orange); font-weight: 700; }
+.chip.fam-alert.high .sev { color: var(--bg-surface); }
+@keyframes arrived { 0%, 100% { box-shadow: none; } 15%, 60% { box-shadow: 0 0 0 2px var(--orange), 0 0 18px color-mix(in srgb, var(--orange) 55%, transparent); } }
+.arrived { animation: arrived 4s ease-out 1; }
+.banner { display: flex; gap: 12px; align-items: center; padding: 7px 14px; font-weight: 600;
+  background: color-mix(in srgb, var(--orange) 16%, var(--bg-surface)); border-bottom: 2px solid var(--orange); color: var(--text); }
+.banner.misses { background: color-mix(in srgb, var(--orange) 28%, var(--bg-surface)); }
+.banner.ok { background: var(--bg-elevated); border-bottom-color: var(--border-soft); font-weight: 400; }
+.banner .icon { color: var(--orange); font-size: 15px; }
+.banner .impact { color: var(--orange); }
+.banner.ok .impact, .banner.ok .icon { color: var(--text-dim); }
+.banner .spacer { flex: 1; }
+.banner button { padding: 1px 8px; }
+.delayed-badge { font-size: 10px; font-weight: 700; letter-spacing: .1em; padding: 1px 6px; border-radius: 3px;
+  background: var(--orange); color: var(--bg-surface); }
+.was { text-decoration: line-through; color: var(--text-dim); }
+.booking.delayed { border-color: var(--orange); }

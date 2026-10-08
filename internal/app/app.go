@@ -39,6 +39,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/go-steer/supercargo/internal/activity"
+	"github.com/go-steer/supercargo/internal/assistant"
 	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
@@ -304,7 +305,12 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 		personas[i] = webui.Persona{ID: p.ID, Name: p.Name, Title: p.Title, Roles: p.Roles}
 	}
 	mux := http.NewServeMux()
-	mux.Handle(webui.Prefix, webui.Handler(webui.Config{Company: a.Config.Name, Domain: a.Config.Domain, Personas: personas,
+	var newAssistant func() (*assistant.Assistant, error)
+	if a.Config.Has(config.RoleShipper) && a.Config.LLM != nil {
+		node := assistant.ControlNode{Client: control.InProcess(a.controlAPI, 2*time.Minute)}
+		newAssistant = func() (*assistant.Assistant, error) { return ShipperAssistant(a.Config, node) }
+	}
+	mux.Handle(webui.Prefix, webui.Handler(webui.Config{Company: a.Config.Name, Domain: a.Config.Domain, Personas: personas, NewAssistant: newAssistant,
 		Control: a.controlAPI, Secure: a.Config.TLS.Mode != config.TLSInsecureDev, Hosts: append(listenHosts(a.Config.Listen), w.Hosts...)}))
 	mux.Handle("/", protocol)
 	return mux

@@ -29,6 +29,7 @@ import (
 
 	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/store"
+	"github.com/go-steer/supercargo/internal/webui"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/sig"
@@ -335,5 +336,48 @@ web:
 	p.operator.Server.Handler.ServeHTTP(rec, r)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("a node without a web section served /ui/: HTTP %d", rec.Code)
+	}
+}
+
+// TestWebAssistantBooks: through the node's own listener, the browser's
+// assistant drafts, and a person's confirmation books with the operator
+// over the real protocol: the booking is the operator's and the shipper's.
+func TestWebAssistantBooks(t *testing.T) {
+	webui.ArmDelay = 0
+	defer func() { webui.ArmDelay = 1500 * time.Millisecond }()
+	p := startPairWith(t, "", `role: shipper
+llm: { provider: fake }
+web:
+  auth: demo
+  personas:
+    - { id: alex, name: Alex, roles: [shipper] }`)
+	srv := p.shipper.Server.Handler
+	call := func(path, body string, c *http.Cookie) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		r.Host = "cymbal-shoes.localhost"
+		r.Header.Set("Content-Type", "application/json")
+		if c != nil {
+			r.AddCookie(c)
+		}
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, r)
+		return rec
+	}
+	rec := call("/ui/api/login", `{"persona":"alex"}`, nil)
+	c := rec.Result().Cookies()[0]
+	var st webui.AssistantResponse
+	rec = call("/ui/api/assistant/turn", `{"text":"Book one 40ft high-cube of sneakers for CY-PO-1, Rotterdam to Newark, departing 2026-10-06, with ocean-blue.example."}`, c)
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &st) != nil || len(st.Drafts) != 1 {
+		t.Fatalf("turn: HTTP %d %s", rec.Code, rec.Body)
+	}
+	if p.operator.Carrier.Bookings.Len() != 0 {
+		t.Fatal("a draft reached the operator")
+	}
+	rec = call("/ui/api/assistant/send", `{"draftId":"`+st.Drafts[0].DraftID+`"}`, c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("send: HTTP %d %s", rec.Code, rec.Body)
+	}
+	if p.operator.Carrier.Bookings.Len() != 1 || p.shipper.Customer.Bookings.Len() != 1 {
+		t.Errorf("bookings: operator %d, shipper %d", p.operator.Carrier.Bookings.Len(), p.shipper.Customer.Bookings.Len())
 	}
 }

@@ -157,7 +157,9 @@ func TestLogin(t *testing.T) {
 		"Origin", "https://8441-ws.cloudworkstations.dev"); rec.Code != http.StatusOK {
 		t.Errorf("through the workstation proxy: HTTP %d", rec.Code)
 	}
-	for name, origin := range map[string]string{"another scheme": "file://ocean-blue.localhost", "null": "null", "another port's host": "https://evil.example:8441"} {
+	for name, origin := range map[string]string{"another scheme": "file://ocean-blue.localhost", "null": "null", "another port's host": "https://evil.example:8441",
+		"the other node's UI": "http://cymbal-shoes.localhost:8442", "this host, another port": "http://ocean-blue.localhost:9999",
+		"the proxy name with a port": "https://8441-ws.cloudworkstations.dev:8443"} {
 		if rec := do(h, http.MethodPost, "/ui/api/login", `{"persona":"sam"}`, nil, "Origin", origin); rec.Code != http.StatusForbidden {
 			t.Errorf("%s: HTTP %d", name, rec.Code)
 		}

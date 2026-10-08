@@ -115,8 +115,8 @@ cat <<EOF
 Hello ULP is set up in $dir. Open four terminals:
 
   Each company's browser UI, once its node runs (sign in as its persona):
-       Ocean Blue:   $ob_ui
-       Cymbal Shoes: $cy_ui
+       Ocean Blue:   $ob_ui   (Sam: bookings, Disrupt voyage…)
+       Cymbal Shoes: $cy_ui   (Alex: the assistant; book and confirm there)
 
   1. Ocean Blue's node (the operator):
        $operator

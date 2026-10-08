@@ -35,11 +35,9 @@ import (
 
 	"github.com/go-steer/supercargo/internal/app"
 	"github.com/go-steer/supercargo/internal/assistant"
-	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/chatui"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
-	"github.com/go-steer/supercargo/internal/skills"
 	"github.com/go-steer/supercargo/internal/telemetry"
 	"github.com/go-steer/supercargo/internal/ui/theme"
 )
@@ -96,7 +94,8 @@ func run(args []string, stderr io.Writer, start func(tea.Model) error) error {
 	return start(chatui.New(chatui.Options{Assistant: a, Theme: *themeName, Node: cfg.Control.Socket}))
 }
 
-// newAssistant builds the assistant for a shipper node's configuration.
+// newAssistant builds the assistant for a shipper node's configuration,
+// talking to the running node over its control socket.
 func newAssistant(cfg *config.Config) (*assistant.Assistant, error) {
 	if !cfg.Has(config.RoleShipper) {
 		return nil, fmt.Errorf("%s has roles %v; ulpchat is the shipper's chat so far, and needs the shipper role (#75)", cfg.Domain, cfg.Roles)
@@ -104,32 +103,5 @@ func newAssistant(cfg *config.Config) (*assistant.Assistant, error) {
 	if cfg.Control == nil {
 		return nil, errors.New("the configuration has no control socket, which ulpchat talks to the node through")
 	}
-	if cfg.LLM == nil {
-		return nil, errors.New("the configuration has no llm section: the assistant needs a model (provider: fake needs no key)")
-	}
-	model, err := app.NewModel(cfg.LLM, assistant.FakeModel(time.Now))
-	if err != nil {
-		return nil, err
-	}
-	agentSkills := assistant.BuiltinSkills()
-	if cfg.Skills != nil {
-		company, err := skills.LoadDir(cfg.Skills.Dir)
-		if err != nil {
-			return nil, err
-		}
-		agentSkills = append(agentSkills, company...)
-	}
-	a := &assistant.Assistant{Model: model, Node: assistant.ControlNode{Client: control.Client(cfg.Control.Socket, 2*time.Minute)},
-		Drafts: &assistant.Drafts{}, Skills: agentSkills,
-		Self: assistant.Self{Domain: cfg.Domain, Name: cfg.Name, Endpoint: app.RESTURL(cfg)}}
-	if cfg.Business != nil {
-		// The node refuses to start with a broken file, so this one loads;
-		// its dates and notes are what questions to carriers must not carry.
-		biz, err := business.Load(cfg.Business.File)
-		if err != nil {
-			return nil, err
-		}
-		a.Private = biz.Private()
-	}
-	return a, nil
+	return app.ShipperAssistant(cfg, assistant.ControlNode{Client: control.Client(cfg.Control.Socket, 2*time.Minute)})
 }

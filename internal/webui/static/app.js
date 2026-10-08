@@ -22,8 +22,10 @@
 
 const API = 'api/';
 const state = {
-  me: null, activeSide: null, msgFilter: 'all', actFilter: 'all',
+  me: null, activeSide: null, tab: {}, msgFilter: 'all', actFilter: 'all',
   messages: [], lastSeq: 0, entries: [], open: new Set(), events: null, loading: false,
+  chat: null, thinking: false, poll: null, streamOpen: false,
+  initialSeq: null, alertCounts: {}, summaries: [],
 };
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -147,14 +149,21 @@ function summary(m) {
 function messageRow(m) {
   const [sev, vtext] = verdict(m);
   const alertSev = m.intent === 'ulp.tnt.alert' && m.body ? m.body.severity : null;
-  const row = el('div', 'msg ' + (alertSev === 'high' && sev === 'ok' ? 'warn' : sev));
+  const row = el('div', 'msg ' + (alertSev === 'high' && sev === 'ok' ? 'alert-high' : sev));
+  row.id = 'msg-' + m.seq;
+  // A delay that arrives while you watch catches the eye, once.
+  if (alertSev && state.initialSeq !== null && m.seq > state.initialSeq && !state.glowed?.has(m.seq)) {
+    row.classList.add('arrived');
+    (state.glowed ??= new Set()).add(m.seq);
+  }
   if (state.open.has(m.seq)) row.classList.add('open');
   const line = el('div', 'line');
   line.appendChild(stamp(m.time));
   line.appendChild(el('span', 'arrow', m.dir === 'out' ? '→' : '←'));
   const chipWrap = el('span');
   const model = m.intent === 'ulp.tnt.inquiry.response';
-  const chip = el('span', 'chip fam-' + family(m.intent) + (model ? ' model' : ''), m.intent ? m.intent.replace(/^ulp\./, '') : '(unreadable)');
+  const chip = el('span', 'chip fam-' + family(m.intent) + (model ? ' model' : '') + (alertSev === 'high' ? ' high' : ''),
+    m.intent ? m.intent.replace(/^ulp\./, '') : '(unreadable)');
   if (alertSev) chip.appendChild(el('span', 'sev sev-' + alertSev, '· ' + String(alertSev).toUpperCase()));
   chipWrap.appendChild(chip);
   line.appendChild(chipWrap);
@@ -247,6 +256,7 @@ async function loadMessages() {
   state.loading = true;
   try {
     const r = await api('messages?' + new URLSearchParams(state.lastSeq ? { since: state.lastSeq } : { limit: 300 }));
+    const first = state.initialSeq === null;
     if (r.messages.length) {
       state.messages.push(...r.messages);
       state.messages = state.messages.slice(-500);
@@ -255,6 +265,8 @@ async function loadMessages() {
     } else if (!state.messages.length) {
       renderMessages();
     }
+    if (first) state.initialSeq = state.lastSeq;
+    renderBanner();
   } catch (e) { setStatus('bad', e.message); }
   finally { state.loading = false; }
 }
@@ -297,6 +309,7 @@ function renderActivity() {
 }
 
 function addEntry(e) {
+  if (e.kind === 'summary' && e.summary) { state.summaries.push(e.summary); renderBanner(); }
   state.entries.push(e);
   if (state.entries.length > 300) state.entries.shift();
   if (state.actFilter === 'all' || e.kind === state.actFilter) {
@@ -307,12 +320,19 @@ function addEntry(e) {
   }
   // A message in or out: the messages panel catches up.
   if (e.kind === 'envelope') loadMessages();
-  if (e.kind === 'record' || e.kind === 'voyage') loadLeft();
+  if ((e.kind === 'record' || e.kind === 'voyage') && currentTab() !== 'assistant') loadLeft();
 }
 
 function setStatus(sev, text) {
   $('dot').className = 'dot' + (sev === 'ok' ? '' : ' ' + sev);
   $('status-text').textContent = text;
+}
+
+// If the stream is down (a proxy that buffers it, say), poll for new
+// messages instead, until it's back.
+function setPolling(on) {
+  if (on && !state.poll) state.poll = setInterval(() => { loadMessages(); loadLeft(); }, 5000);
+  if (!on && state.poll) { clearInterval(state.poll); state.poll = null; }
 }
 
 function connectEvents() {
@@ -321,24 +341,79 @@ function connectEvents() {
   // with Last-Event-ID by itself.
   const es = new EventSource(API + 'events');
   state.events = es;
-  es.onopen = () => setStatus('ok', 'node connected');
-  es.onerror = () => setStatus('warn', 'reconnecting…');
+  state.streamOpen = false;
+  const fallback = setTimeout(() => { if (!state.streamOpen) { setStatus('warn', 'polling (no live stream)'); setPolling(true); } }, 8000);
+  es.onopen = () => { state.streamOpen = true; clearTimeout(fallback); setPolling(false); setStatus('ok', 'node connected'); };
+  es.onerror = () => {
+    state.streamOpen = false;
+    setStatus('warn', 'reconnecting…');
+    setTimeout(() => { if (!state.streamOpen) setPolling(true); }, 8000);
+  };
   for (const kind of Object.keys(KIND_TIPS)) {
     es.addEventListener(kind, (ev) => { try { addEntry(JSON.parse(ev.data)); } catch { /* a bad frame is skipped */ } });
   }
   es.addEventListener('gap', () => setStatus('warn', 'some activity was missed'));
 }
 
+// day is an ISO time as people say it: "Tue 13 Oct".
+const day = (iso) => {
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+};
+
+// ── the delay banner: the latest alert, with what it means for us ────
+const IMPACT = { misses: 'misses your deadline', tight: 'your deadline is now tight', ok: 'still in time', unknown: 'impact unknown' };
+function dismissed() {
+  try { return new Set(JSON.parse(sessionStorage.getItem('ulp-dismissed') || '[]')); } catch { return new Set(); }
+}
+function renderBanner() {
+  const b = $('banner');
+  const gone = dismissed();
+  const s = [...state.summaries].reverse().find((x) => x.alertId && !gone.has(x.alertId));
+  if (!s || !state.me || !state.me.sides.includes('customer')) { b.hidden = true; return; }
+  const alert = state.messages.find((m) => m.intent === 'ulp.tnt.alert' && m.body && m.body.alert_id === s.alertId);
+  const a = alert ? alert.body : {};
+  b.className = 'banner ' + (s.impact || '');
+  const parts = [el('span', 'icon', '⚠'), el('span', null, `${(a.kind || 'alert').toUpperCase()} · ${s.booking}`)];
+  if (a.previous_eta && a.new_eta) parts.push(el('span', null, `ETA ${day(a.previous_eta)} → ${day(a.new_eta)}`));
+  parts.push(el('span', 'impact', IMPACT[s.impact] || ''), el('span', 'spacer'));
+  if (alert) {
+    const view = el('button', null, 'view');
+    view.onclick = () => {
+      state.msgFilter = 'all';
+      state.open.add(alert.seq);
+      renderMessages();
+      $('msg-' + alert.seq)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    };
+    parts.push(view);
+  }
+  const close = el('button', null, '×');
+  close.dataset.tip = 'Dismiss: the alert stays in the messages panel.';
+  close.onclick = () => {
+    gone.add(s.alertId);
+    try { sessionStorage.setItem('ulp-dismissed', JSON.stringify([...gone])); } catch { /* private mode */ }
+    renderBanner();
+  };
+  parts.push(close);
+  b.replaceChildren(...parts);
+  b.title = s.text || '';
+  b.hidden = false;
+}
+
 // ── left panel: what the active role tab shows ───────────────────────
 const VIEWS = {
-  customer: { label: 'As shipper', tabs: [['Shipments', 'shipments', 'shipments']] },
-  operator: { label: 'As carrier', tabs: [['Bookings', 'bookings', 'bookings']] },
+  customer: { label: 'As shipper', tabs: [['Assistant', 'assistant'], ['Shipments', 'shipments']] },
+  operator: { label: 'As carrier', tabs: [['Bookings', 'bookings']] },
 };
+const tabsFor = (side) => VIEWS[side].tabs.filter(([, k]) => k !== 'assistant' || state.me.assistant);
+const currentTab = () => state.tab[state.activeSide] || tabsFor(state.activeSide)[0][1];
 
 async function loadLeft() {
   const view = VIEWS[state.activeSide];
   if (!view) return;
-  const [title, path, key] = view.tabs[0];
+  if (currentTab() === 'assistant') { if (!state.chat) await loadChat(); return; }
+  const [title, path] = tabsFor(state.activeSide).find(([, k]) => k === currentTab());
+  const key = path;
   const left = $('left');
   try {
     const r = await api(path);
@@ -354,16 +429,190 @@ async function loadLeft() {
       card.appendChild(top);
       const route = `${s.origin?.unLocode || ''} ${s.origin?.name || ''} → ${s.destination?.unLocode || ''} ${s.destination?.name || ''}`;
       card.appendChild(el('div', 'summary-line', route));
-      const facts = [s.vessel && `${s.vessel} ${s.voyage}`, s.transportDocumentReference, s.eta && `ETA ${s.eta}`].filter(Boolean).join(' · ');
-      card.appendChild(el('div', 'summary-line dim', facts));
+      const delayed = s.alerts > 0 && s.plannedArrival && s.eta && s.eta > s.plannedArrival;
+      if (delayed) {
+        card.classList.add('delayed');
+        top.querySelector('.chip').before(el('span', 'delayed-badge', 'DELAYED'));
+      }
+      const facts = el('div', 'summary-line dim', [s.vessel && `${s.vessel} ${s.voyage}`, s.transportDocumentReference].filter(Boolean).join(' · '));
+      if (s.eta) {
+        facts.append(' · ETA ');
+        if (delayed) { facts.append(el('span', 'was', day(s.plannedArrival)), ' → '); }
+        facts.append(el('b', null, day(s.eta)));
+      }
+      card.appendChild(facts);
+      const key = `${s.operator}/${s.bookingRef}`;
+      if (state.alertCounts[key] !== undefined && s.alerts > state.alertCounts[key]) card.classList.add('arrived');
+      state.alertCounts[key] = s.alerts;
       const counts = el('div', 'summary-line dim', `${s.events} events · ${s.alerts} alerts${s.lastEvent ? ' · last: ' + s.lastEvent : ''}`);
       if (s.alerts) counts.classList.add('has-alert');
       card.appendChild(counts);
+      if (state.activeSide === 'operator') {
+        const act = el('div', 'actions');
+        const b = el('button', null, 'Disrupt voyage…');
+        b.dataset.tip = 'Delay this voyage: the customer gets a signed delay alert. You confirm first.';
+        b.onclick = () => disruptDialog(s);
+        act.appendChild(b);
+        card.appendChild(act);
+      }
       body.appendChild(card);
     }
     left.className = 'panel tall';
     left.replaceChildren(bar, body);
   } catch (e) { setStatus('bad', e.message); }
+}
+
+function renderLeftNow() {
+  if (currentTab() === 'assistant') { state.chat ? renderChat() : loadChat(); } else { loadLeft(); }
+}
+
+// ── the assistant ────────────────────────────────────────────────────
+async function loadChat() {
+  try { state.chat = await api('assistant'); renderChat(); } catch (e) { setStatus('bad', e.message); }
+}
+
+function renderChat() {
+  if (currentTab() !== 'assistant') return;
+  const left = $('left');
+  const keep = left.querySelector('textarea')?.value || '';
+  left.className = 'panel tall ai';
+  const bar = el('div', 'panel-bar');
+  bar.append(el('span', 'panel-title', 'Assistant'), el('span', 'hint', 'shipper role · it drafts; you decide'));
+  const body = el('div', 'panel-body chat');
+  const lines = state.chat.lines || [];
+  if (!lines.length) body.appendChild(el('div', 'empty', 'Ask about a carrier by its domain, book a shipment, or check on one.'));
+  for (const l of lines) {
+    const t = el('div', 'turn ' + (l.who === 'you' ? 'you' : l.who === 'note' ? 'note' : 'ai'));
+    if (l.who !== 'note') t.appendChild(el('div', 'who', (l.who === 'you' ? 'YOU' : 'ASSISTANT') + ' · ' + clock(l.time)[0]));
+    for (const tool of l.tools || []) {
+      const c = el('div', 'toolcall', '▸ ' + tool.name + ' ');
+      c.appendChild(el('span', tool.error ? 'bad' : 'okk', tool.error ? '✗ ' + tool.error : '✓'));
+      t.appendChild(c);
+    }
+    t.appendChild(el('div', 'text', l.text));
+    for (const d of l.drafts || []) {
+      if (!(state.chat.drafts || []).some((x) => x.draftId === d.draftId)) continue;
+      const b = el('button', 'draftlink', `Review draft ${d.draftId}…`);
+      b.onclick = () => bookingDialog(d);
+      t.appendChild(b);
+    }
+    body.appendChild(t);
+  }
+  if (state.thinking) body.appendChild(el('div', 'thinking', '✦ thinking…'));
+  const comp = el('div', 'composer');
+  const ta = el('textarea');
+  ta.placeholder = 'Ask about a carrier, book a shipment, or check on one…  (Enter sends, Shift+Enter: new line)';
+  ta.value = keep;
+  ta.disabled = state.thinking;
+  ta.maxLength = 4000;
+  const send = el('button', null, 'Send');
+  send.disabled = state.thinking;
+  const go = () => { const v = ta.value.trim(); if (v) { ta.value = ''; chatTurn(v); } };
+  send.onclick = go;
+  ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); } };
+  comp.append(ta, send);
+  left.replaceChildren(bar, body, comp);
+  body.scrollTop = body.scrollHeight;
+  if (!state.thinking) ta.focus();
+}
+
+async function chatTurn(text) {
+  state.thinking = true;
+  state.chat.lines = [...(state.chat.lines || []), { who: 'you', text, time: new Date().toISOString() }];
+  renderChat();
+  try {
+    state.chat = await api('assistant/turn', { method: 'POST', body: JSON.stringify({ text }) });
+  } catch (e) {
+    state.chat.lines.push({ who: 'note', text: e.message, time: new Date().toISOString() });
+  } finally {
+    state.thinking = false;
+    renderChat();
+  }
+  // A new draft opens its dialog, as in ulpchat.
+  const newest = (state.chat.drafts || []).at(-1);
+  if (newest && !state.shownDrafts?.has(newest.draftId)) { (state.shownDrafts ??= new Set()).add(newest.draftId); bookingDialog(newest); }
+}
+
+// modal shows a dialog whose confirm button arms after a delay: a click
+// (or a stray Enter) can't confirm what was never on screen.
+function modal(title, rows, question, confirmText, onConfirm, extra = []) {
+  const back = el('div', 'modal');
+  const d = el('div', 'dialog');
+  d.setAttribute('role', 'dialog');
+  d.appendChild(el('h2', null, title));
+  for (const [k, v, cls] of rows) {
+    const row = el('div', 'row' + (cls ? ' ' + cls : ''));
+    row.append(el('span', 'k', k), el('span', 'v', v));
+    d.appendChild(row);
+  }
+  extra.forEach((x) => d.appendChild(x));
+  d.appendChild(el('div', 'q', question));
+  const err = el('div', 'err');
+  const buttons = el('div', 'buttons');
+  const cancel = el('button', null, 'Cancel');
+  const ok = el('button', 'primary', confirmText);
+  ok.disabled = true;
+  const armed = setTimeout(() => { ok.disabled = false; }, 1600);
+  const close = () => { clearTimeout(armed); back.remove(); document.removeEventListener('keydown', esc); };
+  const esc = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', esc);
+  cancel.onclick = close;
+  ok.onclick = async () => {
+    ok.disabled = true; cancel.disabled = true; err.textContent = 'sending…';
+    try { await onConfirm(); close(); } catch (e) { err.textContent = e.message; cancel.disabled = false; }
+  };
+  buttons.append(cancel, ok);
+  d.append(err, buttons);
+  back.appendChild(d);
+  back.onclick = (e) => { if (e.target === back) close(); };
+  document.body.appendChild(back);
+  cancel.focus();
+  return { close };
+}
+
+function bookingDialog(d) {
+  const q = d.request || {};
+  const eq = (q.containers || []).map((c) => `${c.count} × ${c.equipment_size_type}, ${c.gross_weight_kg} kg each`).join('; ');
+  const rows = [
+    ['Operator:', d.to], ['Shipper:', q.shipper_name || ''],
+    ['Route:', `${q.port_of_loading} → ${q.port_of_discharge}`], ['Equipment:', eq],
+    ['Cargo:', `${q.cargo?.description || ''}, HS ${q.cargo?.hs_code || ''}`], ['Departure:', 'on/after ' + (q.earliest_departure || '')],
+    ['Reference:', q.shipper_reference || ''],
+  ];
+  if (q.service_contract_number) rows.push(['Contract:', q.service_contract_number]);
+  if (q.consignee) rows.push(['Consignee:', `${q.consignee.name} (${q.consignee.domain})`]);
+  if (q.subscription) rows.push(['Updates:', `${(q.subscription.intents || []).join(', ')} → ${q.subscription.endpoint}`]);
+  for (const [k, v] of Object.entries(d.notSent || {})) rows.push(['Not sent:', `your ${k === 'requiredBy' ? 'deadline' : k}, ${v} (it stays with us)`, 'notsent']);
+  const discard = el('div', 'fineprint');
+  const link = el('button', null, 'Discard this draft');
+  link.onclick = async () => {
+    try { state.chat = await api('assistant/discard', { method: 'POST', body: JSON.stringify({ draftId: d.draftId }) }); renderChat(); dlg.close(); }
+    catch (e) { discard.lastChild.textContent = e.message; }
+  };
+  discard.append(link, el('span'));
+  const dlg = modal(`Booking draft ${d.draftId}`, rows, 'Send this booking request? It is signed by your node and sent to ' + d.to + '.',
+    'Send booking request', async () => {
+      try {
+        state.chat = await api('assistant/send', { method: 'POST', body: JSON.stringify({ draftId: d.draftId }) });
+      } finally { await loadChat(); }
+    }, [discard]);
+}
+
+function disruptDialog(s) {
+  const delay = el('select');
+  for (const h of ['12h', '24h', '48h', '72h']) { const o = el('option', null, h); o.value = h; delay.appendChild(o); }
+  delay.value = '72h';
+  const reason = el('input');
+  reason.maxLength = 280;
+  reason.value = 'Engine repair, unscheduled call at Halifax.';
+  const fields = el('div');
+  const r1 = el('div', 'row'); r1.append(el('span', 'k', 'Delay:'), delay);
+  const r2 = el('div', 'row'); r2.append(el('span', 'k', 'Reason:'), reason);
+  fields.append(r1, r2, el('div', 'fineprint', `${s.shipper} gets a signed delay alert with this reason, and the arrival estimate moves.`));
+  modal(`Disrupt voyage · ${s.bookingRef}`, [['Booking:', s.bookingRef], ['Customer:', s.shipper], ['Vessel:', `${s.vessel || ''} ${s.voyage || ''}`]],
+    'Publish this delay?', 'Publish delay', async () => {
+      await api('disrupt', { method: 'POST', body: JSON.stringify({ bookingRef: s.bookingRef, delay: delay.value, reason: reason.value.trim() }) });
+    }, [fields]);
 }
 
 function renderRoles() {
@@ -374,9 +623,10 @@ function renderRoles() {
   for (const side of sides) {
     const g = el('div', 'rolegroup');
     if (sides.length > 1) g.appendChild(el('span', 'label', VIEWS[side].label));
-    for (const [title] of VIEWS[side].tabs) {
-      const b = el('button', 'tab' + (side === state.activeSide ? ' on' : ''), title);
-      b.onclick = () => { state.activeSide = side; renderRoles(); loadLeft(); };
+    for (const [title, key] of tabsFor(side)) {
+      const on = side === state.activeSide && key === currentTab();
+      const b = el('button', 'tab' + (on ? ' on' : ''), title);
+      b.onclick = () => { state.activeSide = side; state.tab[side] = key; renderRoles(); renderLeftNow(); };
       g.appendChild(b);
     }
     nav.appendChild(g);
@@ -386,6 +636,7 @@ function renderRoles() {
 // ── sign-in ──────────────────────────────────────────────────────────
 async function showLogin() {
   state.events?.close();
+  setPolling(false);
   $('login').classList.add('show');
   try {
     const res = await fetch(API + 'personas', { credentials: 'same-origin' });
@@ -415,7 +666,8 @@ async function signIn(id) {
 
 async function start() {
   state.me = await api('me');
-  state.messages = []; state.lastSeq = 0; state.entries = []; state.open.clear();
+  state.messages = []; state.lastSeq = 0; state.entries = []; state.open.clear(); state.chat = null; state.tab = {}; state.shownDrafts = new Set();
+  state.initialSeq = null; state.alertCounts = {}; state.summaries = []; $('banner').hidden = true;
   const { me } = state;
   $('company').textContent = me.company;
   $('domain').textContent = me.domain;
@@ -426,6 +678,7 @@ async function start() {
   renderRoles();
   renderActivity();
   await Promise.all([loadLeft(), loadMessages()]);
+  if (currentTab() === 'assistant') renderChat();
   connectEvents();
 }
 
