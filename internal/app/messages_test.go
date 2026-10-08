@@ -191,3 +191,77 @@ operator: { refPrefix: CY-BKG, containerPrefix: CYMU, vessel: Sneaker, voyage: 1
 		t.Errorf("/messages/1?side=nobody: HTTP %d", code)
 	}
 }
+
+// TestSideOf: every intent and direction lands on the side of the role
+// that took part, and a side the node doesn't have is the whole node's.
+func TestSideOf(t *testing.T) {
+	both := &App{Carrier: newRecords(), Customer: newRecords()}
+	carrier := &App{Carrier: newRecords()}
+	shipper := &App{Customer: newRecords()}
+	const op, cu = activity.SideOperator, activity.SideCustomer
+	for _, tc := range []struct {
+		a          *App
+		opener     string
+		openedHere bool
+		want       string
+	}{
+		// A request we sent, and its reply (or ulp.error): customer.
+		{both, intents.BookingRequest, true, cu},
+		{both, intents.TnTInquiry, true, cu},
+		{both, intents.OceanTnTRequest, true, cu},
+		// A request we received, and our reply: operator.
+		{both, intents.BookingRequest, false, op},
+		{both, intents.TnTInquiry, false, op},
+		{both, intents.OceanTnTRequest, false, op},
+		// A push we sent: operator; one we received: customer.
+		{both, intents.TnTEvent, true, op},
+		{both, intents.TnTAlert, true, op},
+		{both, intents.TnTEvent, false, cu},
+		{both, intents.TnTAlert, false, cu},
+		// Nothing to go on: the whole node.
+		{both, "", false, ""},
+		{both, "ulp.unknown", false, ""},
+		{both, intents.Error, false, ""},
+		// A side the node doesn't have: the whole node.
+		{shipper, intents.BookingRequest, false, ""},
+		{shipper, intents.TnTEvent, true, ""},
+		{carrier, intents.BookingRequest, true, ""},
+		{carrier, intents.TnTEvent, false, ""},
+		{carrier, intents.BookingRequest, false, op},
+		{shipper, intents.TnTEvent, false, cu},
+	} {
+		if got := tc.a.sideOf(tc.opener, tc.openedHere); got != tc.want {
+			t.Errorf("carrier %v, customer %v: sideOf(%q, here %v) = %q, want %q",
+				tc.a.Carrier != nil, tc.a.Customer != nil, tc.opener, tc.openedHere, got, tc.want)
+		}
+	}
+}
+
+// TestMessageLogReplay: a message refused after its signature verified (a
+// replay) is logged as verified, with its body, beside the signed
+// ulp.error that answered it; both nodes put the exchange on its side.
+func TestMessageLogReplay(t *testing.T) {
+	p := startPair(t, "")
+	h := intents.HeaderFor(intents.BookingRequest, "cymbal-shoes.example", "ocean-blue.example", time.Now())
+	if _, err := p.shipper.Node.Exchange(context.Background(), h, request(), intents.BookingConfirmation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.shipper.Node.Exchange(context.Background(), h, request(), intents.BookingConfirmation); err == nil {
+		t.Fatal("the replay was accepted")
+	}
+	ob := p.operator.Messages.List(store.MessageFilter{Since: 2})
+	if len(ob) != 2 {
+		t.Fatalf("operator kept %d messages for the replay: %+v", len(ob), ob)
+	}
+	if m := ob[0]; m.Direction != "in" || m.Outcome != "rejected" || m.Code != intents.CodeReplay || !m.Verified || m.Body == nil ||
+		m.Side != activity.SideOperator {
+		t.Errorf("the replay: %+v", m)
+	}
+	if m := ob[1]; m.Direction != "out" || m.Intent != intents.Error || m.Side != activity.SideOperator || m.Conversation != h.CorrelationID {
+		t.Errorf("the ulp.error: %+v", m)
+	}
+	cy := p.shipper.Messages.List(store.MessageFilter{Since: 2})
+	if m := find(cy, "in", intents.Error); m == nil || !m.Verified || m.Side != activity.SideCustomer || m.Wire != ob[1].Wire {
+		t.Errorf("the shipper's copy of the ulp.error: %+v", m)
+	}
+}

@@ -112,3 +112,61 @@ func TestMessagesSanitized(t *testing.T) {
 		t.Errorf("the log shares the caller's memory: %s %s", *got.Header.BookingRef, got.Body)
 	}
 }
+
+// TestMessagesFlood: unverified messages, which anyone can post, have a
+// fifth of the log; a flood of them never pushes out what partners sent,
+// and their wire is cut short.
+func TestMessagesFlood(t *testing.T) {
+	l := NewMessages(100, 0)
+	for range 10 {
+		l.Add(Message{Direction: "in", Verified: true, Wire: "real"})
+	}
+	for range 500 {
+		l.Add(Message{Direction: "in", Outcome: "malformed", Wire: strings.Repeat("j", 100<<10)})
+	}
+	var real, junk int
+	for _, m := range l.List(MessageFilter{}) {
+		switch {
+		case m.Verified:
+			real++
+		case len(m.Wire) == MaxUnverifiedWire && m.Truncated:
+			junk++
+		default:
+			t.Errorf("junk kept whole: %d bytes, truncated %v", len(m.Wire), m.Truncated)
+		}
+	}
+	if real != 10 || junk != 20 {
+		t.Errorf("after the flood: %d real, %d junk; want 10, 20", real, junk)
+	}
+	// By bytes too: a budget of 100,000 gives junk 20,000, four of them.
+	l = NewMessages(100, 100_000)
+	l.Add(Message{Direction: "out", Verified: true, Wire: "real"})
+	for range 50 {
+		l.Add(Message{Direction: "in", Wire: strings.Repeat("j", 8<<10)})
+	}
+	if ms := l.List(MessageFilter{}); len(ms) != 5 || !ms[0].Verified {
+		t.Errorf("by bytes: %d kept, first verified %v", len(ms), ms[0].Verified)
+	}
+	// Invalid UTF-8 is replaced before the cut, so the cap holds.
+	m := l.Add(Message{Direction: "out", Verified: true, Wire: strings.Repeat("\xffa", envelope.MaxSize/2)}) // each pair grows to 4 bytes
+	if len(m.Wire) > envelope.MaxSize || !m.Truncated {
+		t.Errorf("replaced wire is %d bytes, truncated %v", len(m.Wire), m.Truncated)
+	}
+}
+
+// TestMessagesCopies: what List and Get return shares nothing with the log.
+func TestMessagesCopies(t *testing.T) {
+	l := NewMessages(0, 0)
+	ref := "OB-1"
+	l.Add(Message{Direction: "out", Verified: true, Header: &envelope.Header{BookingRef: &ref}, Body: json.RawMessage(`{"a":1}`)})
+	got := l.List(MessageFilter{})[0]
+	*got.Header.BookingRef, got.Body[1] = "XX", 'z'
+	again, _ := l.Get(1, nil)
+	if *again.Header.BookingRef != "OB-1" || string(again.Body) != `{"a":1}` {
+		t.Errorf("a reader changed the log: %s %s", *again.Header.BookingRef, again.Body)
+	}
+	*again.Header.BookingRef = "YY"
+	if m := l.List(MessageFilter{})[0]; *m.Header.BookingRef != "OB-1" {
+		t.Error("Get shares the log's header")
+	}
+}

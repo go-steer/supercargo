@@ -55,22 +55,48 @@ type Message struct {
 	Header       *envelope.Header `json:"header,omitempty"`
 	Body         json.RawMessage  `json:"body,omitempty"`
 	// Wire is the exact bytes, as text (invalid UTF-8 replaced), at most
-	// envelope.MaxSize of them.
-	Wire string `json:"wire"`
+	// envelope.MaxSize of them, or MaxUnverifiedWire for a message whose
+	// signature didn't verify (Truncated says it was cut).
+	Wire      string `json:"wire"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 // size is what a message costs the log's byte budget.
-func (m *Message) size() int { return len(m.Wire) + len(m.Body) + 512 }
+func (m *Message) size() int { return len(m.Wire) + len(m.Body) + len(m.Reason) + 512 }
+
+// unverified is a message nobody proved they sent: anyone can post those,
+// so they have a quota of their own and can't push out the rest.
+func (m *Message) unverified() bool { return m.Direction == "in" && !m.Verified }
+
+// MaxUnverifiedWire is the most wire text kept for an unverified message.
+const MaxUnverifiedWire = 4 << 10
+
+// copyMessage is m with nothing shared: the body and the header's
+// pointers are copied.
+func copyMessage(m Message) Message {
+	m.Body = slices.Clone(m.Body)
+	if m.Header != nil {
+		h := *m.Header
+		h.InReplyTo, h.BookingRef = cloneString(h.InReplyTo), cloneString(h.BookingRef)
+		if h.Dialect != nil {
+			d := *h.Dialect
+			h.Dialect = &d
+		}
+		m.Header = &h
+	}
+	return m
+}
 
 // Messages is the node's message log: the last messages it sent and
 // received, bounded by count and by bytes, oldest dropped first.
 type Messages struct {
 	keep, budget int
 
-	mu    sync.Mutex
-	seq   uint64
-	bytes int
-	list  []Message // oldest first
+	mu         sync.Mutex
+	seq        uint64
+	bytes      int
+	unverified int       // how many of list are unverified
+	list       []Message // oldest first
 }
 
 // NewMessages keeps at most keep messages (1,000 if keep <= 0) and budget
@@ -85,42 +111,61 @@ func NewMessages(keep, budget int) *Messages {
 	return &Messages{keep: keep, budget: budget}
 }
 
-// Add records m, assigning its sequence number, and returns it. Wire is
-// cut to envelope.MaxSize and made valid UTF-8; a body that isn't valid
-// JSON is dropped (it would break every reader).
+// Add records m, assigning its sequence number, and returns a copy. Wire
+// is made valid UTF-8 and cut to its limit; a body that isn't valid JSON
+// is dropped (it would break every reader). Unverified messages may fill
+// at most a fifth of the log, by count and by bytes: past that, the oldest
+// unverified one goes, so a flood of junk can't wipe out the record of
+// what partners actually sent.
 func (l *Messages) Add(m Message) Message {
-	if len(m.Wire) > envelope.MaxSize {
-		m.Wire = m.Wire[:envelope.MaxSize]
+	limit := envelope.MaxSize
+	if m.unverified() {
+		m.Body = nil // unverified bytes are shown as wire text only
+		limit = MaxUnverifiedWire
 	}
 	m.Wire = strings.ToValidUTF8(m.Wire, "�")
-	if !m.Verified && m.Direction == "in" {
-		m.Body = nil // unverified bytes are shown as wire text only
+	if len(m.Wire) > limit {
+		m.Wire, m.Truncated = strings.ToValidUTF8(m.Wire[:limit], ""), true
 	}
 	if m.Body != nil && !json.Valid(m.Body) {
 		m.Body = nil
 	}
-	m.Body = slices.Clone(m.Body)
-	if m.Header != nil {
-		h := *m.Header
-		h.InReplyTo, h.BookingRef = cloneString(h.InReplyTo), cloneString(h.BookingRef)
-		if h.Dialect != nil {
-			d := *h.Dialect
-			h.Dialect = &d
-		}
-		m.Header = &h
-	}
+	m = copyMessage(m)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.seq++
 	m.Seq = l.seq
 	l.list = append(l.list, m)
 	l.bytes += m.size()
-	for len(l.list) > 1 && (len(l.list) > l.keep || l.bytes > l.budget) {
-		l.bytes -= l.list[0].size()
-		l.list[0] = Message{}
-		l.list = l.list[1:]
+	if m.unverified() {
+		l.unverified++
+		for l.unverified > max(1, l.keep/5) || l.unverifiedBytes() > l.budget/5 {
+			l.drop(slices.IndexFunc(l.list, func(m Message) bool { return m.unverified() }))
+		}
 	}
-	return m
+	for len(l.list) > 1 && (len(l.list) > l.keep || l.bytes > l.budget) {
+		l.drop(0)
+	}
+	return copyMessage(m)
+}
+
+// drop removes message i.
+func (l *Messages) drop(i int) {
+	l.bytes -= l.list[i].size()
+	if l.list[i].unverified() {
+		l.unverified--
+	}
+	l.list = slices.Delete(l.list, i, i+1)
+}
+
+func (l *Messages) unverifiedBytes() int {
+	n := 0
+	for i := range l.list {
+		if l.list[i].unverified() {
+			n += l.list[i].size()
+		}
+	}
+	return n
 }
 
 // MessageFilter selects messages. Zero values select everything.
@@ -142,14 +187,15 @@ func (f MessageFilter) match(m *Message) bool {
 		(f.Conversation == "" || m.Conversation == f.Conversation)
 }
 
-// List returns the messages f selects, oldest first. Each is a copy.
+// List returns the messages f selects, oldest first, sharing nothing with
+// the log.
 func (l *Messages) List(f MessageFilter) []Message {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	out := []Message{}
 	for i := range l.list {
 		if f.match(&l.list[i]) {
-			out = append(out, l.list[i])
+			out = append(out, copyMessage(l.list[i]))
 		}
 	}
 	if f.Limit > 0 && len(out) > f.Limit {
@@ -165,7 +211,10 @@ func (l *Messages) Get(seq uint64, sides []string) (Message, bool) {
 	f := MessageFilter{Sides: sides}
 	for i := range l.list {
 		if l.list[i].Seq == seq {
-			return l.list[i], f.match(&l.list[i])
+			if !f.match(&l.list[i]) {
+				return Message{}, false
+			}
+			return copyMessage(l.list[i]), true
 		}
 	}
 	return Message{}, false

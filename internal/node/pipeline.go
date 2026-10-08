@@ -109,6 +109,9 @@ func (n *Node) Process(ctx context.Context, msg []byte) (res rest.Result) {
 	}
 	ev.Outcome, ev.Time = "accepted", n.cfg.Now()
 	n.observe(ctx, ev)
+	// The message is in the log now: a later outcome for it (a reply that
+	// can't be sealed, or a panic doing so) is an event, not a second copy.
+	ev.Wire, ev.Header, ev.Body = nil, nil, nil
 	if reply == nil || reply.Body == nil {
 		return rest.Result{}
 	}
