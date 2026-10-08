@@ -41,6 +41,14 @@ demo_ports() {
 # demo_setup DIR HOURS_PER_SECOND: keys, configs and a booking request in
 # DIR, using OP_PORT and SH_PORT. DIR is made owner-only: the signing keys
 # and the control sockets (DIR/ob.sock, DIR/cy.sock) live there.
+# web_hosts PORT prints the web section's hosts line for the Cloud
+# Workstations proxy's name for PORT, when running on a workstation
+# ($WEB_HOST is set there); nothing otherwise.
+web_hosts() {
+  [[ -n "${WEB_HOST:-}" ]] && printf '\n  hosts: ["%s-%s"]   # the Cloud Workstations proxy' "$1" "$WEB_HOST"
+  return 0
+}
+
 demo_setup() {
   local dir=$1 hps=$2 root llm
   root="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
@@ -100,6 +108,10 @@ skills:
   dir: "$root/dev/demo/skills/ocean-blue"   # Ocean Blue's own agent skills
 control:
   socket: $dir/ob.sock
+web:                     # the browser UI at http://ocean-blue.localhost:$OP_PORT/ui/
+  auth: demo             # no password: local demos only
+  personas:
+    - { id: sam, name: Sam, title: "Ops desk", roles: [operator] }$(web_hosts $OP_PORT)
 $telemetry
 EOF
 
@@ -121,6 +133,10 @@ business:
   file: $dir/business.yaml   # private: never in an envelope
 llm:
   $llm
+web:                     # the browser UI at http://cymbal-shoes.localhost:$SH_PORT/ui/
+  auth: demo             # no password: local demos only
+  personas:
+    - { id: alex, name: Alex, title: "Logistics", roles: [shipper] }$(web_hosts $SH_PORT)
 $telemetry
 EOF
 

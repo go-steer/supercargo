@@ -25,9 +25,11 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -48,6 +50,7 @@ import (
 	"github.com/go-steer/supercargo/internal/skills"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/internal/telemetry"
+	"github.com/go-steer/supercargo/internal/webui"
 	"github.com/go-steer/supercargo/pkg/discovery"
 	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/sig"
@@ -85,6 +88,10 @@ type App struct {
 	Activity *activity.Bus
 	// Summarizer writes the shipper's alert notifications.
 	Summarizer *shipper.Summarizer
+
+	// controlAPI is the control API's handler: served on the socket, and
+	// behind the browser UI's sign-in.
+	controlAPI http.Handler
 
 	metrics *telemetry.Metrics
 	gauges  metric.Registration
@@ -225,9 +232,10 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		a.Shipper = &shipper.Shipper{Node: n, Bookings: a.Customer.Bookings, Events: a.Customer.Events, Now: time.Now,
 			NoBooking: !cfg.Has(config.RoleShipper)}
 	}
-	if cfg.Control != nil {
+	{
 		// One control API for every role; startup fails on a route two
-		// roles both claim.
+		// roles both claim. The socket serves it to the CLIs; the browser
+		// UI reaches it only through its own sign-in and side filters.
 		mux := http.NewServeMux()
 		mux.Handle("GET /events", activity.Handler(a.Activity))
 		mux.Handle("GET /messages", a.messagesHandler())
@@ -242,11 +250,14 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		if err := registerRoutes(mux, roles...); err != nil {
 			return nil, err
 		}
-		a.Control = control.Server(mux, slog.NewLogLogger(logger.Handler(), slog.LevelInfo))
+		a.controlAPI = mux
+		if cfg.Control != nil {
+			a.Control = control.Server(mux, slog.NewLogLogger(logger.Handler(), slog.LevelInfo))
+		}
 	}
 	a.Server = &http.Server{
 		Addr:    cfg.Listen,
-		Handler: extractTrace(n.Handler()),
+		Handler: a.publicHandler(n),
 		// Every timeout set: a client that trickles bytes must not hold a
 		// connection (and its goroutine) open indefinitely.
 		ReadHeaderTimeout: 5 * time.Second,
@@ -277,6 +288,35 @@ func customerGuard(g func([]byte) error) func(string, []byte) error {
 		}
 		return g(body)
 	}
+}
+
+// publicHandler is what the node's listener serves: the protocol
+// endpoints, and the browser UI under /ui/ if the config has a web
+// section. One listener, as a Cloud Run service has one port.
+func (a *App) publicHandler(n *node.Node) http.Handler {
+	protocol := extractTrace(n.Handler())
+	w := a.Config.Web
+	if w == nil {
+		return protocol
+	}
+	personas := make([]webui.Persona, len(w.Personas))
+	for i, p := range w.Personas {
+		personas[i] = webui.Persona{ID: p.ID, Name: p.Name, Title: p.Title, Roles: p.Roles}
+	}
+	mux := http.NewServeMux()
+	mux.Handle(webui.Prefix, webui.Handler(webui.Config{Company: a.Config.Name, Domain: a.Config.Domain, Personas: personas,
+		Control: a.controlAPI, Secure: a.Config.TLS.Mode != config.TLSInsecureDev, Hosts: append(listenHosts(a.Config.Listen), w.Hosts...)}))
+	mux.Handle("/", protocol)
+	return mux
+}
+
+// listenHosts is the listen address's host, if it names one, for the UI's
+// host check.
+func listenHosts(listen string) []string {
+	if h, _, err := net.SplitHostPort(listen); err == nil && h != "" {
+		return []string{strings.ToLower(h)}
+	}
+	return nil
 }
 
 // registerRoutes adds each role's control routes to mux. ServeMux panics

@@ -69,6 +69,7 @@ github.com/go-steer/supercargo/internal/assistant       94.5  # 95.7
 github.com/go-steer/supercargo/internal/ui/theme       100.0
 github.com/go-steer/supercargo/internal/prettylog       98.0  # 99.1
 github.com/go-steer/supercargo/internal/chatui          97.0  # 98.2
+github.com/go-steer/supercargo/internal/webui           95.5  # 96.8: the browser UI's sign-in and side filters
 github.com/go-steer/supercargo/pkg/transport/rest       90.0  # 91.8
 github.com/go-steer/supercargo/pkg/transport/a2a        95.0  # 96.2
 

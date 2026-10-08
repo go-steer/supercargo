@@ -900,6 +900,10 @@ simulator:                       # operator role only
   hoursPerSecond: 1              # default 1, at most 3600
 control:
   socket: /run/ulp/ocean-blue.sock   # the control socket for ulpnode book / ulpctl; its directory must be owner-only
+web:                             # the browser UI at /ui/ on the node's listener (optional)
+  auth: demo                     # personas as buttons, no password: local deployments only (hosted: IAP, #81)
+  personas:
+    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }   # roles: which of the node's roles this person acts in
 security:
   maxSkew: 5m
   replayRetention: 15m            # must exceed 2 × maxSkew
@@ -915,6 +919,13 @@ Loading is strict: an unknown or misspelled key is an error, because a security 
 - `ulpctl disrupt --config operator.yaml --booking … --delay 72h --reason "…"` delays a voyage on the running operator node.
 
 Both CLIs reach their node through its **control socket**: HTTP over a Unix socket in a directory only the node's user can enter. Nothing on it is signed or authorized beyond that; whoever can reach the socket is the node's operator, the same person who can read its signing key. A Unix socket rather than a loopback port keeps out other users on the host and web pages in a local browser. The node refuses to start if the directory is open to group or others, and replaces only a stale socket at the path, never another file.
+
+**The browser UI** (#30, MVP1 #81) is served by each node to its own people, under `/ui/` on the node's listener. It's one listener because a Cloud Run service has one port; the protocol endpoints (`/ulp`, `/a2a`, `/.well-known/…`) are beside it, unchanged.
+- **Sign-in** is as a **persona** from the node's `web` section: a name and the roles it acts in. In `demo` mode the personas are buttons with no password, so the config requires the node to **listen on loopback only** (`127.0.0.1`, `::1` or `localhost`); the hosted deployment signs people in through IAP and maps their Google identity to a persona. A session is a random 256-bit ID in an `HttpOnly`, `SameSite=Strict` cookie named per node (local nodes share a host, and browsers share cookies across ports), for 12 hours; signing in again replaces it, and at most 1,000 are kept (expired ones go first). A live stream ends with its session, and a session has at most 4.
+- **Host check.** Every `/ui/` request must name a host the UI is served as: `localhost`, `127.0.0.1`, `::1`, any `*.localhost` name, the listen address, or one of the `web.hosts` (a proxy's name, such as a Cloud Workstations port, `8441-<workstation>.cloudworkstations.dev`). Sign-in and sign-out also need an `Origin`, if any, naming one of those hosts. Without this, a web page could rebind its own name to the demo machine and use the password-less sign-in; a loopback listener alone doesn't stop that.
+- **The UI's API** forwards to the control API, but only after checking the session and the persona's roles. Every read is cut to the persona's sides before the control API sees it, whatever the page asked for, so a shipper-only persona on a node that is also a carrier never receives carrier-side messages or activity. Views of a role (shipments, bookings, profiles) need that role. Sign-in and sign-out must be JSON from the same origin.
+- **The page** is plain JavaScript embedded in the binary, with no build step (mast-web's approach), under a strict Content Security Policy: no inline script or style, no framing by other origins. Everything a partner wrote is rendered as text, never as HTML. The messages panel follows the activity stream: each `envelope` entry fetches the new messages.
+- **Locally**, each node's UI is at its own `*.localhost` name, for example `http://ocean-blue.localhost:8441/ui/` (browsers resolve `*.localhost` to the machine itself). **On a Cloud Workstation** (`$WEB_HOST` is set), it's the workstation's proxy, `https://8441-$WEB_HOST/ui/`; `hello-ulp` adds that name to `web.hosts` and prints the right addresses.
 
 **What the control API serves.** It is the node API that the CLIs, the TUI (M5) and the browser UI (M9) all use; remote access is #33's IAP and OAuth.
 

@@ -265,3 +265,75 @@ func TestMessageLogReplay(t *testing.T) {
 		t.Errorf("the shipper's copy of the ulp.error: %+v", m)
 	}
 }
+
+// TestWebUISides: on a node that is carrier and shipper, each persona
+// sees only its roles' messages through the UI, the protocol endpoints
+// share the listener, and a node without a web section serves no UI.
+func TestWebUISides(t *testing.T) {
+	p := startPairWith(t, "", `roles: [shipper, operator]
+control: { socket: "`+sockDir(t)+`/cy.sock" }
+operator: { refPrefix: CY-BKG, containerPrefix: CYMU, vessel: Sneaker, voyage: 1E, departureHour: 6, transit: 48h }
+web:
+  auth: demo
+  personas:
+    - { id: priya, name: Priya, title: Procurement, roles: [shipper] }
+    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }`)
+	if _, err := p.shipper.Shipper.Book(context.Background(), "ocean-blue.example", request()); err != nil {
+		t.Fatal(err)
+	}
+	h := intents.HeaderFor(intents.BookingRequest, "ocean-blue.example", "cymbal-shoes.example", time.Now())
+	req := request()
+	req.ShipperName = "Ocean Blue"
+	if _, err := p.operator.Node.Exchange(context.Background(), h, req, intents.BookingConfirmation); err != nil {
+		t.Fatal(err)
+	}
+	srv := p.shipper.Server.Handler
+	call := func(method, path, body string, c *http.Cookie) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Host = "cymbal-shoes.localhost"
+		if body != "" {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		if c != nil {
+			r.AddCookie(c)
+		}
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, r)
+		return rec
+	}
+	signIn := func(id string) *http.Cookie {
+		rec := call(http.MethodPost, "/ui/api/login", `{"persona":"`+id+`"}`, nil)
+		if rec.Code != http.StatusOK || len(rec.Result().Cookies()) != 1 {
+			t.Fatalf("login %s: HTTP %d", id, rec.Code)
+		}
+		return rec.Result().Cookies()[0]
+	}
+	for id, side := range map[string]string{"priya": activity.SideCustomer, "sam": activity.SideOperator} {
+		var r MessagesResponse
+		rec := call(http.MethodGet, "/ui/api/messages?side=customer&side=operator", "", signIn(id))
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &r) != nil || len(r.Messages) < 2 {
+			t.Fatalf("%s: HTTP %d %s", id, rec.Code, rec.Body)
+		}
+		for _, m := range r.Messages {
+			if m.Side != side && m.Side != "" {
+				t.Errorf("%s saw a %s-side message: %s %s", id, m.Side, m.Direction, m.Intent)
+			}
+		}
+	}
+	if rec := call(http.MethodGet, "/ui/api/messages", "", nil); rec.Code != http.StatusUnauthorized {
+		t.Errorf("messages without a session: HTTP %d", rec.Code)
+	}
+	if rec := call(http.MethodGet, "/.well-known/ulp", "", nil); rec.Code != http.StatusOK {
+		t.Errorf("the profile beside the UI: HTTP %d", rec.Code)
+	}
+	if rec := call(http.MethodGet, "/ui/", "", nil); rec.Code != http.StatusOK {
+		t.Errorf("the UI: HTTP %d", rec.Code)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/ui/", nil)
+	r.Host = "ocean-blue.localhost"
+	rec := httptest.NewRecorder()
+	p.operator.Server.Handler.ServeHTTP(rec, r)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("a node without a web section served /ui/: HTTP %d", rec.Code)
+	}
+}

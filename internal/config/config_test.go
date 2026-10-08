@@ -266,6 +266,48 @@ func TestRoles(t *testing.T) {
 	}
 }
 
+// TestWeb: the UI's personas act in the node's roles, and demo sign-in
+// (no password) is for local deployments only.
+func TestWeb(t *testing.T) {
+	web := "web:\n  auth: demo\n  personas:\n    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }\n"
+	local := strings.Replace(operatorYAML, `listen: ":8443"`, `listen: "127.0.0.1:8443"`, 1)
+	c, err := Parse([]byte(local + web))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Web == nil || len(c.Web.Personas) != 1 || c.Web.Personas[0].Roles[0] != RoleOperator {
+		t.Errorf("web %+v", c.Web)
+	}
+	if _, err := Parse([]byte(strings.Replace(local, "127.0.0.1:8443", "localhost:8443", 1) + web)); err != nil {
+		t.Errorf("demo sign-in on localhost: %v", err)
+	}
+	// Demo sign-in has no password: the node must listen on loopback only.
+	for _, listen := range []string{`":8443"`, `"0.0.0.0:8443"`, `"10.0.0.5:8443"`, `"[::]:8443"`} {
+		if _, err := Parse([]byte(strings.Replace(operatorYAML, `listen: ":8443"`, "listen: "+listen, 1) + web)); err == nil {
+			t.Errorf("demo sign-in on %s: accepted", listen)
+		}
+	}
+	for name, edit := range map[string][2]string{
+		"no auth":                 {"auth: demo\n", ""},
+		"hosted auth, not yet":    {"auth: demo", "auth: iap"},
+		"no personas":             {"  personas:\n    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }\n", "  personas: []\n"},
+		"a bad id":                {"id: sam", "id: Sam!"},
+		"a role the node lacks":   {"roles: [operator]", "roles: [shipper]"},
+		"no role":                 {"roles: [operator]", "roles: []"},
+		"an empty name":           {"name: Sam", `name: ""`},
+		"a control char in title": {"title: Ops desk", `title: "Ops\u0007desk"`},
+		"an uppercase host":       {"  auth: demo\n", "  auth: demo\n  hosts: [Bad.Example]\n"},
+		"a host with a port":      {"  auth: demo\n", "  auth: demo\n  hosts: [\"8441-ws.example:443\"]\n"},
+		"a duplicate id": {"    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }\n",
+			"    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }\n    - { id: sam, name: Sammy, roles: [operator] }\n"},
+	} {
+		in := local + strings.Replace(web, edit[0], edit[1], 1)
+		if _, err := Parse([]byte(in)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
 func TestLoad(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "node.yaml")
