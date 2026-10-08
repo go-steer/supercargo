@@ -100,6 +100,10 @@ skills:
   dir: "$root/dev/demo/skills/ocean-blue"   # Ocean Blue's own agent skills
 control:
   socket: $dir/ob.sock
+web:                     # the browser UI at http://ocean-blue.localhost:$OP_PORT/ui/
+  auth: demo             # no password: local demos only
+  personas:
+    - { id: sam, name: Sam, title: "Ops desk", roles: [operator] }
 $telemetry
 EOF
 
@@ -121,6 +125,10 @@ business:
   file: $dir/business.yaml   # private: never in an envelope
 llm:
   $llm
+web:                     # the browser UI at http://cymbal-shoes.localhost:$SH_PORT/ui/
+  auth: demo             # no password: local demos only
+  personas:
+    - { id: alex, name: Alex, title: "Logistics", roles: [shipper] }
 $telemetry
 EOF
 

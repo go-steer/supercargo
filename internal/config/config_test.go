@@ -266,6 +266,36 @@ func TestRoles(t *testing.T) {
 	}
 }
 
+// TestWeb: the UI's personas act in the node's roles, and demo sign-in
+// (no password) is for local deployments only.
+func TestWeb(t *testing.T) {
+	web := "web:\n  auth: demo\n  personas:\n    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }\n"
+	c, err := Parse([]byte(operatorYAML + web))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Web == nil || len(c.Web.Personas) != 1 || c.Web.Personas[0].Roles[0] != RoleOperator {
+		t.Errorf("web %+v", c.Web)
+	}
+	for name, edit := range map[string][2]string{
+		"no auth":                 {"auth: demo\n", ""},
+		"hosted auth, not yet":    {"auth: demo", "auth: iap"},
+		"no personas":             {"  personas:\n    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }\n", "  personas: []\n"},
+		"a bad id":                {"id: sam", "id: Sam!"},
+		"a role the node lacks":   {"roles: [operator]", "roles: [shipper]"},
+		"no role":                 {"roles: [operator]", "roles: []"},
+		"an empty name":           {"name: Sam", `name: ""`},
+		"a control char in title": {"title: Ops desk", `title: "Ops\u0007desk"`},
+		"a duplicate id": {"    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }\n",
+			"    - { id: sam, name: Sam, title: Ops desk, roles: [operator] }\n    - { id: sam, name: Sammy, roles: [operator] }\n"},
+	} {
+		in := operatorYAML + strings.Replace(web, edit[0], edit[1], 1)
+		if _, err := Parse([]byte(in)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
 func TestLoad(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "node.yaml")

@@ -36,6 +36,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
 
@@ -87,6 +88,29 @@ type Config struct {
 	// Telemetry exports traces (docs/DESIGN.md, A.16). Absent: nothing is
 	// exported unless the standard OTEL_EXPORTER_OTLP_* variables say so.
 	Telemetry *Telemetry `yaml:"telemetry"`
+
+	// Web serves the browser UI under /ui/ on the node's listener (#30).
+	// Absent: no UI.
+	Web *Web `yaml:"web"`
+}
+
+// Web configures the browser UI.
+type Web struct {
+	// Auth is how people sign in. "demo" (the only mode so far) offers the
+	// personas as buttons, with no password: for local deployments only
+	// (tls: insecure-dev or local-ca). Hosted sign-in (IAP) comes with the
+	// deployment (#81).
+	Auth string `yaml:"auth"`
+	// Personas are who may sign in, and the roles each may act in.
+	Personas []Persona `yaml:"personas"`
+}
+
+// Persona is someone who signs in to the UI.
+type Persona struct {
+	ID    string   `yaml:"id"`    // 1-32 of [a-z0-9-]
+	Name  string   `yaml:"name"`  // shown; 1-64 characters
+	Title string   `yaml:"title"` // shown; at most 64 characters
+	Roles []string `yaml:"roles"` // roles of this node this persona acts in
 }
 
 // Telemetry configures OpenTelemetry export over OTLP.
@@ -435,6 +459,9 @@ func (c *Config) validate() error {
 			c.Simulator.HoursPerSecond = 1
 		}
 	}
+	if err := c.validateWeb(); err != nil {
+		return err
+	}
 	if c.Control != nil {
 		p := c.Control.Socket
 		if !filepath.IsAbs(p) || filepath.Clean(p) != p || len(p) > control.MaxSocketPath {
@@ -467,6 +494,46 @@ func validHostPort(s string, listen bool) bool {
 }
 
 // unsafeRune matches characters that don't belong in a published name.
+var personaID = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+
+func (c *Config) validateWeb() error {
+	w := c.Web
+	if w == nil {
+		return nil
+	}
+	if w.Auth != "demo" {
+		return fmt.Errorf("web: auth %q is not demo (hosted sign-in comes with the deployment)", w.Auth)
+	}
+	// Both TLS modes so far are local; this holds the line for the hosted
+	// one the deployment adds (#81), where sign-in goes through IAP.
+	if c.TLS.Mode != TLSInsecureDev && c.TLS.Mode != TLSLocalCA {
+		return errors.New("web: demo sign-in has no password, so it is for local deployments only (tls insecure-dev or local-ca)")
+	}
+	if len(w.Personas) == 0 || len(w.Personas) > 32 {
+		return errors.New("web: 1-32 personas are required")
+	}
+	seen := map[string]bool{}
+	for _, p := range w.Personas {
+		if !personaID.MatchString(p.ID) || seen[p.ID] {
+			return fmt.Errorf("web: persona id %q must be 1-32 of [a-z0-9-], unique", p.ID)
+		}
+		seen[p.ID] = true
+		if p.Name == "" || utf8.RuneCountInString(p.Name) > 64 || utf8.RuneCountInString(p.Title) > 64 ||
+			strings.ContainsFunc(p.Name+p.Title, unsafeRune) {
+			return fmt.Errorf("web: persona %s needs a name of 1-64 characters and a title of at most 64, without control or format characters", p.ID)
+		}
+		if len(p.Roles) == 0 {
+			return fmt.Errorf("web: persona %s acts in no role", p.ID)
+		}
+		for _, r := range p.Roles {
+			if !c.Has(r) {
+				return fmt.Errorf("web: persona %s acts as %q, which this node isn't", p.ID, r)
+			}
+		}
+	}
+	return nil
+}
+
 func unsafeRune(r rune) bool {
 	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Co, unicode.Cs) || r == 0x2028 || r == 0x2029
 }
