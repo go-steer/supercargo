@@ -16,9 +16,12 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-steer/supercargo/pkg/intents"
 )
@@ -139,7 +142,7 @@ func TestJourneyEdges(t *testing.T) {
 	if last.ToPort.Lat != nil || last.ToPort.Name != "ZZXXX" || last.Arrival.Source != "EV-2" {
 		t.Errorf("an unknown port: %+v", last)
 	}
-	if j.Position.At == nil || j.Position.At.UNLocode != "ZZXXX" || j.Position.Estimated {
+	if j.Position.At == nil || j.Position.At.UNLocode != "ZZXXX" || j.Position.Estimated || j.Position.Since != "EV-4" {
 		t.Errorf("a departure from the last port: %+v", j.Position)
 	}
 	// Two calls off the plan at the same time: by code.
@@ -148,5 +151,61 @@ func TestJourneyEdges(t *testing.T) {
 	}
 	if c := j.Calls[0]; c.Port.UNLocode != "BEANR" || !slices.Equal(c.Kinds, []string{"unscheduled", "load"}) || !slices.Equal(c.Events, []string{"EV-5", "EV-7"}) {
 		t.Errorf("an event with no call kind: %+v", c)
+	}
+}
+
+// TestJourneyHostileEvents: an operator's events can't bloat a journey or
+// redraw its route with mere plans, and an alert's causes are only the
+// events held.
+func TestJourneyHostileEvents(t *testing.T) {
+	b := voyage()
+	var recs []Record
+	for i := range 500 {
+		code := fmt.Sprintf("Z%04d", i)
+		recs = append(recs, ev(fmt.Sprintf("EV-P%d", i), "TRANSPORT", "DEPA", "PLN", "2026-10-08T00:00:00Z", code[:2]+string(rune('A'+i%26))+string(rune('A'+(i/26)%26))+string(rune('A'+(i/676)%26))))
+	}
+	j := BuildJourney(b, recs)
+	if len(j.Legs) != 1 || len(j.Calls) != 0 || j.Truncated {
+		t.Errorf("plans elsewhere redrew the route: %d legs, %d calls", len(j.Legs), len(j.Calls))
+	}
+	recs = nil
+	for i := range 500 {
+		recs = append(recs, ev(fmt.Sprintf("EV-A%d", i), "EQUIPMENT", "LOAD", "ACT", fmt.Sprintf("2026-10-08T%02d:%02d:00Z", i/60%24, i%60),
+			"ZZ"+string(rune('A'+i%26))+string(rune('A'+(i/26)%26))+string(rune('A'+(i/676)%26))))
+	}
+	start := time.Now()
+	j = BuildJourney(b, recs)
+	if len(j.Legs) != MaxExtraPorts+1 || !j.Truncated || len(j.Calls) != MaxExtraPorts || time.Since(start) > time.Second {
+		t.Errorf("500 ports: %d legs, %d calls, truncated %v, %v", len(j.Legs), len(j.Calls), j.Truncated, time.Since(start))
+	}
+	j = BuildJourney(b, []Record{ev("EV-5", "TRANSPORT", "ARRI", "EST", "2026-10-16T08:00:00Z", "USEWR"), al("AL-6", "a", "b")})
+	if len(j.Alerts) != 1 || !slices.Equal(j.Alerts[0].Causes, []string{"EV-5"}) {
+		t.Errorf("held cause: %+v", j.Alerts)
+	}
+	j = BuildJourney(b, []Record{al("AL-6", "a", "b")})
+	if len(j.Alerts) != 1 || j.Alerts[0].Causes != nil {
+		t.Errorf("a cause not held was kept: %+v", j.Alerts)
+	}
+}
+
+// TestJourneyAgreesWithItself: an arrival stamped before the departure
+// still gives a done leg and a position at its end, never "at sea"; a
+// booking with no planned arrival is never "delayed".
+func TestJourneyAgreesWithItself(t *testing.T) {
+	b := voyage()
+	j := BuildJourney(b, []Record{
+		ev("EV-1", "TRANSPORT", "ARRI", "ACT", "2026-10-01T00:00:00Z", "USEWR"),
+		ev("EV-2", "TRANSPORT", "DEPA", "ACT", "2026-10-07T18:00:00Z", "NLRTM"),
+	})
+	if j.Legs[0].Status != LegDone || j.Position.At == nil || j.Position.At.UNLocode != "USEWR" || j.Position.Estimated {
+		t.Errorf("leg %s, position %+v", j.Legs[0].Status, j.Position)
+	}
+	b.Confirmation.PlannedArrival, b.Confirmation.PlannedDeparture = "", ""
+	j = BuildJourney(b, []Record{ev("EV-1", "TRANSPORT", "ARRI", "EST", "2026-10-16T08:00:00Z", "USEWR")})
+	if j.Legs[0].Status == LegDelayed || j.Legs[0].Departure != (Moment{}) {
+		t.Errorf("no plan: %+v", j.Legs[0])
+	}
+	if b, _ := json.Marshal(j.Legs[0]); strings.Contains(string(b), `"departure"`) {
+		t.Errorf("an empty departure was serialized: %s", b)
 	}
 }

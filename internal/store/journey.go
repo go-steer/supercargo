@@ -37,6 +37,8 @@ type Journey struct {
 	Calls    []Call     `json:"calls"`
 	Position Position   `json:"position"`
 	Alerts   []AlertRef `json:"alerts"`
+	// Truncated says some ports off the plan were left out (MaxExtraPorts).
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // Point is a port: its UN/LOCODE, and the name and coordinates this node
@@ -86,8 +88,8 @@ type Leg struct {
 	Mode      string `json:"mode"` // "ocean" (road with the truck leg, #80)
 	Vessel    string `json:"vessel,omitempty"`
 	Voyage    string `json:"voyage,omitempty"`
-	Departure Moment `json:"departure"`
-	Arrival   Moment `json:"arrival"`
+	Departure Moment `json:"departure,omitzero"` // none: no event, and no plan for this leg
+	Arrival   Moment `json:"arrival,omitzero"`
 	Status    string `json:"status"`
 	// Standard is the dialect of the messages that report the leg
 	// ("DCSA_TNT"), for a view to name it.
@@ -126,6 +128,15 @@ type AlertRef struct {
 
 var callKinds = map[string]string{"GTIN": "gate-in", "LOAD": "load", "DEPA": "depart", "ARRI": "arrive", "DISC": "discharge", "GTOT": "gate-out"}
 
+// MaxExtraPorts bounds the ports off the plan a journey draws: the events
+// are an operator's, and a hostile one could report thousands of places.
+const MaxExtraPorts = 16
+
+var (
+	classifierRank = map[string]int{intents.ClassifierPlanned: 1, intents.ClassifierEstimated: 2, intents.ClassifierActual: 3}
+	momentKind     = map[string]string{intents.ClassifierPlanned: MomentPlanned, intents.ClassifierEstimated: MomentEstimated, intents.ClassifierActual: MomentActual}
+)
+
 // BuildJourney derives b's journey from its records (as Summarize does
 // its summary): the plan comes from the booking, everything else from the
 // events and alerts held.
@@ -136,12 +147,14 @@ func BuildJourney(b Booking, recs []Record) Journey {
 
 	var events []intents.TnTEventBody
 	var alerts []intents.TnTAlertBody
+	held := map[string]bool{}
 	for _, r := range recs {
 		switch r.Intent {
 		case intents.TnTEvent:
 			var e intents.TnTEventBody
 			if json.Unmarshal(r.Body, &e) == nil { // the node's own, validated when stored
 				events = append(events, e)
+				held[e.EventID] = true
 			}
 		case intents.TnTAlert:
 			var a intents.TnTAlertBody
@@ -151,12 +164,12 @@ func BuildJourney(b Booking, recs []Record) Journey {
 		}
 	}
 
-	// The ports, in order: loading, any calls off the plan (in the order
-	// their events happened), discharge.
-	route := []string{pol}
-	extra := map[string]string{} // port → its earliest event time
+	// The ports, in order: loading, the ports off the plan where something
+	// actually happened (by when it first did; at most MaxExtraPorts),
+	// discharge. A plan or an estimate elsewhere doesn't redraw the route.
+	extra := map[string]string{} // port → its earliest actual event
 	for _, e := range events {
-		if p := e.UNLocationCode; p != pol && p != pod {
+		if p := e.UNLocationCode; p != pol && p != pod && e.EventClassifierCode == intents.ClassifierActual {
 			if t, ok := extra[p]; !ok || e.EventDateTime < t {
 				extra[p] = e.EventDateTime
 			}
@@ -168,20 +181,41 @@ func BuildJourney(b Booking, recs []Record) Journey {
 	}
 	// By when each was first reported, then by code.
 	slices.SortFunc(mid, func(a, b string) int { return cmp.Or(strings.Compare(extra[a], extra[b]), strings.Compare(a, b)) })
-	route = append(append(route, mid...), pod)
+	if len(mid) > MaxExtraPorts {
+		mid, j.Truncated = mid[:MaxExtraPorts], true
+	}
+	route := append(append([]string{pol}, mid...), pod)
+	onRoute := map[string]bool{}
+	for _, p := range route {
+		onRoute[p] = true
+	}
+
+	// One pass over the events: each port's, and the firmest, latest
+	// moment of each code there.
+	atPort := map[string][]intents.TnTEventBody{}
+	moments := map[[2]string]Moment{}
+	ranks := map[[2]string]int{}
+	for _, e := range events {
+		if !onRoute[e.UNLocationCode] {
+			continue
+		}
+		atPort[e.UNLocationCode] = append(atPort[e.UNLocationCode], e)
+		key := [2]string{e.UNLocationCode, e.EventTypeCode}
+		if r := classifierRank[e.EventClassifierCode]; r > 0 && r >= ranks[key] {
+			moments[key], ranks[key] = Moment{At: e.EventDateTime, Kind: momentKind[e.EventClassifierCode], Source: e.EventID}, r
+		}
+	}
 
 	for _, p := range route {
 		call := Call{Port: point(p), Kinds: []string{}, Events: []string{}}
-		if extra[p] != "" {
+		if _, off := extra[p]; off {
 			call.Kinds = append(call.Kinds, "unscheduled")
 		}
-		for _, e := range events {
-			if e.UNLocationCode == p {
-				if k, ok := callKinds[e.EventTypeCode]; ok && e.EventClassifierCode == intents.ClassifierActual && !slices.Contains(call.Kinds, k) {
-					call.Kinds = append(call.Kinds, k)
-				}
-				call.Events = append(call.Events, e.EventID)
+		for _, e := range atPort[p] {
+			if k, ok := callKinds[e.EventTypeCode]; ok && e.EventClassifierCode == intents.ClassifierActual && !slices.Contains(call.Kinds, k) {
+				call.Kinds = append(call.Kinds, k)
 			}
+			call.Events = append(call.Events, e.EventID)
 		}
 		if len(call.Events) > 0 {
 			j.Calls = append(j.Calls, call)
@@ -192,12 +226,13 @@ func BuildJourney(b Booking, recs []Record) Journey {
 	for i := 0; i+1 < len(route); i++ {
 		from, to := route[i], route[i+1]
 		leg := Leg{FromPort: point(from), ToPort: point(to), Mode: "ocean", Vessel: vessel, Voyage: voyage, Sources: []string{}}
-		leg.Departure = moment(events, from, "DEPA")
-		if leg.Departure.At == "" && i == 0 {
+		leg.Departure = moments[[2]string{from, "DEPA"}]
+		if leg.Departure.At == "" && i == 0 && c.PlannedDeparture != "" {
 			leg.Departure = Moment{At: c.PlannedDeparture, Kind: MomentPlanned}
 		}
-		leg.Arrival = moment(events, to, "ARRI")
-		if leg.Arrival.At == "" && i == len(route)-2 {
+		leg.Arrival = moments[[2]string{to, "ARRI"}]
+		last := i == len(route)-2
+		if leg.Arrival.At == "" && last && c.PlannedArrival != "" {
 			leg.Arrival = Moment{At: c.PlannedArrival, Kind: MomentPlanned}
 		}
 		for _, m := range []Moment{leg.Departure, leg.Arrival} {
@@ -206,10 +241,12 @@ func BuildJourney(b Booking, recs []Record) Journey {
 				leg.Standard = intents.DialectDCSATnT.Standard
 			}
 		}
+		// Done once anything actually happened at its far end (an arrival,
+		// or a load or discharge there).
 		switch {
-		case leg.Arrival.Kind == MomentActual:
+		case leg.Arrival.Kind == MomentActual || lastActual(atPort[to]) != "":
 			leg.Status = LegDone
-		case i == len(route)-2 && leg.Arrival.Kind == MomentEstimated && leg.Arrival.At > c.PlannedArrival:
+		case last && c.PlannedArrival != "" && leg.Arrival.Kind == MomentEstimated && leg.Arrival.At > c.PlannedArrival:
 			leg.Status = LegDelayed
 		case leg.Departure.Kind == MomentActual:
 			leg.Status = LegInProgress
@@ -219,52 +256,45 @@ func BuildJourney(b Booking, recs []Record) Journey {
 		j.Legs = append(j.Legs, leg)
 	}
 
-	j.Position = position(events, route, pol)
+	j.Position = position(j.Legs, atPort)
 	for _, a := range alerts {
-		j.Alerts = append(j.Alerts, AlertRef{ID: a.AlertID, Kind: a.Kind, Severity: a.Severity, PreviousETA: a.PreviousETA,
-			NewETA: a.NewETA, Leg: len(j.Legs) - 1, Causes: a.CauseEventIDs})
+		ref := AlertRef{ID: a.AlertID, Kind: a.Kind, Severity: a.Severity, PreviousETA: a.PreviousETA, NewETA: a.NewETA, Leg: len(j.Legs) - 1}
+		// Only causes this node holds: a view links each one to a message.
+		for _, id := range a.CauseEventIDs {
+			if held[id] {
+				ref.Causes = append(ref.Causes, id)
+			}
+		}
+		j.Alerts = append(j.Alerts, ref)
 	}
 	return j
 }
 
-// moment is the firmest, latest time of a code (DEPA, ARRI) at port: an
-// actual one if any, else the latest estimate (a later one supersedes),
-// else the latest plan.
-func moment(events []intents.TnTEventBody, port, code string) Moment {
-	var best Moment
-	rank := map[string]int{intents.ClassifierPlanned: 1, intents.ClassifierEstimated: 2, intents.ClassifierActual: 3}
-	kinds := map[string]string{intents.ClassifierPlanned: MomentPlanned, intents.ClassifierEstimated: MomentEstimated, intents.ClassifierActual: MomentActual}
-	bestRank := 0
-	for _, e := range events {
-		if e.UNLocationCode != port || e.EventTypeCode != code {
+// position follows the legs, so the two never disagree: at sea on the
+// first leg not done if it actually departed (an estimate), else at its
+// port of departure; at the end if every leg is done.
+func position(legs []Leg, atPort map[string][]intents.TnTEventBody) Position {
+	for _, l := range legs {
+		if l.Status == LegDone {
 			continue
 		}
-		if r := rank[e.EventClassifierCode]; r >= bestRank && r > 0 {
-			best, bestRank = Moment{At: e.EventDateTime, Kind: kinds[e.EventClassifierCode], Source: e.EventID}, r
+		if l.Departure.Kind == MomentActual {
+			return Position{Between: [2]string{l.FromPort.UNLocode, l.ToPort.UNLocode}, Estimated: true, Since: l.Departure.Source}
 		}
+		at := l.FromPort
+		return Position{At: &at, Since: lastActual(atPort[at.UNLocode])}
 	}
-	return best
+	end := legs[len(legs)-1].ToPort
+	return Position{At: &end, Since: lastActual(atPort[end.UNLocode])}
 }
 
-// position follows the latest actual event: a departure puts the shipment
-// at sea toward the next port (estimated); anything else, at its port.
-func position(events []intents.TnTEventBody, route []string, pol string) Position {
-	var last *intents.TnTEventBody
-	for i := range events {
-		e := &events[i]
-		if e.EventClassifierCode == intents.ClassifierActual && (last == nil || e.EventDateTime >= last.EventDateTime) {
-			last = e
+// lastActual is the latest actual event among events, if any.
+func lastActual(events []intents.TnTEventBody) string {
+	id, at := "", ""
+	for _, e := range events {
+		if e.EventClassifierCode == intents.ClassifierActual && e.EventDateTime >= at {
+			id, at = e.EventID, e.EventDateTime
 		}
 	}
-	if last == nil {
-		p := point(pol)
-		return Position{At: &p}
-	}
-	if last.EventTypeCode == "DEPA" {
-		if i := slices.Index(route, last.UNLocationCode); i >= 0 && i+1 < len(route) {
-			return Position{Between: [2]string{route[i], route[i+1]}, Estimated: true, Since: last.EventID}
-		}
-	}
-	p := point(last.UNLocationCode)
-	return Position{At: &p, Since: last.EventID}
+	return id
 }
