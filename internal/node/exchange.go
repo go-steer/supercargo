@@ -136,7 +136,7 @@ func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Bod
 		return nil, err
 	}
 	if n.cfg.OutboundGuard != nil {
-		if err := n.cfg.OutboundGuard(b); err != nil {
+		if err := n.cfg.OutboundGuard(h.Intent, b); err != nil {
 			return nil, fmt.Errorf("node: refused to send %s: %w", h.Intent, err)
 		}
 	}

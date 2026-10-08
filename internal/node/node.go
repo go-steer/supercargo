@@ -104,10 +104,11 @@ type Config struct {
 	// Handlers serve the intents this node accepts. Each must be an intent
 	// the intents package decodes.
 	Handlers map[string]Handler
-	// OutboundGuard, if set, sees every outbound body before it is sealed;
-	// an error refuses the send. The shipper uses it to keep its private
-	// business context out of envelopes.
-	OutboundGuard func(body []byte) error
+	// OutboundGuard, if set, sees every outbound body (requests and
+	// replies) with its intent before it is sealed; an error refuses the
+	// send. The shipper uses it to keep its private business context out
+	// of the envelopes its own role sends.
+	OutboundGuard func(intent string, body []byte) error
 	// Poster sends outbound envelopes (Exchange). Nil means this node
 	// only receives.
 	Poster Poster

@@ -170,12 +170,12 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			return nil, err
 		}
 	}
-	var guard func([]byte) error
+	var guard func(string, []byte) error
 	if cfg.Business != nil {
 		if a.Business, err = business.Load(cfg.Business.File); err != nil {
 			return nil, err
 		}
-		guard = a.Business.Guard()
+		guard = customerGuard(a.Business.Guard())
 	}
 	if cfg.Customer() {
 		role := map[string]node.Handler{}
@@ -225,15 +225,19 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			NoBooking: !cfg.Has(config.RoleShipper)}
 	}
 	if cfg.Control != nil {
-		// One control API for every role; a route two roles both claimed
-		// would panic here, at startup.
+		// One control API for every role; startup fails on a route two
+		// roles both claim.
 		mux := http.NewServeMux()
 		mux.Handle("GET /events", activity.Handler(a.Activity))
+		var roles []func(*http.ServeMux)
 		if a.Carrier != nil {
-			operator.RegisterControl(mux, a.Simulator, a.Carrier.Bookings, a.Carrier.Events)
+			roles = append(roles, func(m *http.ServeMux) { operator.RegisterControl(m, a.Simulator, a.Carrier.Bookings, a.Carrier.Events) })
 		}
 		if a.Shipper != nil {
-			shipper.RegisterControl(mux, a.Shipper, cache)
+			roles = append(roles, func(m *http.ServeMux) { shipper.RegisterControl(m, a.Shipper, cache) })
+		}
+		if err := registerRoutes(mux, roles...); err != nil {
+			return nil, err
 		}
 		a.Control = control.Server(mux, slog.NewLogLogger(logger.Handler(), slog.LevelInfo))
 	}
@@ -253,6 +257,38 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelInfo),
 	}
 	return a, nil
+}
+
+// customerSends are the intents the shipper and receiver roles send.
+var customerSends = map[string]bool{intents.BookingRequest: true, intents.TnTInquiry: true, intents.OceanTnTRequest: true}
+
+// customerGuard applies the business context's guard to what the customer
+// side sends, and only that. Applied to a carrier role's replies, which
+// echo the request (an eBL names the consignee), it would let anyone who
+// can book test guesses at the private context by whether the reply fails
+// (docs/DESIGN.md, A.6, rule 3).
+func customerGuard(g func([]byte) error) func(string, []byte) error {
+	return func(intent string, body []byte) error {
+		if !customerSends[intent] {
+			return nil
+		}
+		return g(body)
+	}
+}
+
+// registerRoutes adds each role's control routes to mux. ServeMux panics
+// on a pattern that conflicts with one already registered; that becomes
+// an error here.
+func registerRoutes(mux *http.ServeMux, roles ...func(*http.ServeMux)) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("app: two roles' control routes collide: %v", r)
+		}
+	}()
+	for _, register := range roles {
+		register(mux)
+	}
+	return nil
 }
 
 // Records are one side's bookings and the events and alerts for them.

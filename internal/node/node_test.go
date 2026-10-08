@@ -276,7 +276,7 @@ func TestOutboundGuard(t *testing.T) {
 	posted := 0
 	c := baseConfig(t, op, staticKeys{}, h)
 	c.Poster = posterFunc(func(context.Context, string, []byte) ([]byte, error) { posted++; return nil, rest.ErrNoResponse })
-	c.OutboundGuard = func(body []byte) error {
+	c.OutboundGuard = func(_ string, body []byte) error {
 		if strings.Contains(string(body), "sneakers") {
 			return errors.New("private")
 		}
@@ -304,7 +304,7 @@ func TestOutboundGuardOnReplies(t *testing.T) {
 		return &node.Reply{Body: confirmationFor("OB-BKG-7"), BookingRef: "OB-BKG-7"}, nil
 	}}
 	c := baseConfig(t, op, staticKeys{shipperDomain + "/cy-2026-1": cy.v}, h)
-	c.OutboundGuard = func(body []byte) error {
+	c.OutboundGuard = func(_ string, body []byte) error {
 		if strings.Contains(string(body), "OB-BKG-7") {
 			return errors.New("private")
 		}

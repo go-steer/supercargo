@@ -22,10 +22,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/internal/store"
@@ -135,5 +137,58 @@ func TestMergeRefusesSharedIntent(t *testing.T) {
 	}
 	if err := merge(into, map[string]node.Handler{intents.TnTAlert: nil}); err != nil || len(into) != 2 {
 		t.Errorf("merge: %v, %v", err, into)
+	}
+}
+
+// TestBusinessGuardOnlyOnCustomerSide: a carrier that also ships keeps a
+// business file, and its guard covers what the customer side sends, not
+// the carrier side's replies. Otherwise a partner could book with a
+// guessed consignee name and learn from a refused reply that the guess
+// is in the private context.
+func TestBusinessGuardOnlyOnCustomerSide(t *testing.T) {
+	dir := sockDir(t)
+	file := filepath.Join(dir, "business.yaml")
+	if err := os.WriteFile(file, []byte(`shipments:
+  - shipperRef: CY-PO-1
+    requiredBy: 2026-10-15
+    receivingSlot: { date: 2026-10-15, window: "08:00-12:00", warehouse: "Newark DC dock 4" }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := startPairWith(t, "", `roles: [shipper, operator]
+business: { file: "`+file+`" }
+operator: { refPrefix: CY-BKG, containerPrefix: CYMU, vessel: Sneaker, voyage: 1E, departureHour: 6, transit: 48h }`)
+
+	// Ocean Blue books with Cymbal's carrier side, naming the secret as
+	// its consignee: an ordinary confirmation comes back.
+	guess := request()
+	guess.ShipperName = "Ocean Blue"
+	guess.Consignee = &intents.Consignee{Name: "Newark DC dock 4", Domain: "ocean-blue.example"}
+	h := intents.HeaderFor(intents.BookingRequest, "ocean-blue.example", "cymbal-shoes.example", time.Now())
+	resp, err := p.operator.Node.Exchange(context.Background(), h, guess, intents.BookingConfirmation)
+	if err != nil {
+		t.Fatalf("the carrier side's reply was refused, which tells the sender the guess is a secret: %v", err)
+	}
+	if c := resp.Body.(*intents.BookingConfirmationBody); c.Status != intents.StatusConfirmed || c.EBL.ConsigneeName != "Newark DC dock 4" {
+		t.Errorf("confirmation %+v", c)
+	}
+
+	// Cymbal's own request carrying it is still refused before sending.
+	leak := request()
+	leak.Consignee = &intents.Consignee{Name: "Newark DC dock 4", Domain: "cymbal-shoes.example"}
+	if _, err := p.shipper.Shipper.Book(context.Background(), "ocean-blue.example", leak); !errors.Is(err, business.ErrLeak) {
+		t.Errorf("the customer side sent its private context: %v", err)
+	}
+}
+
+// TestRouteCollision: two roles' control routes colliding fail startup
+// with an error, not a panic.
+func TestRouteCollision(t *testing.T) {
+	route := func(m *http.ServeMux) { m.HandleFunc("GET /bookings", func(http.ResponseWriter, *http.Request) {}) }
+	if err := registerRoutes(http.NewServeMux(), route, route); err == nil {
+		t.Error("colliding routes were accepted")
+	}
+	if err := registerRoutes(http.NewServeMux(), route); err != nil {
+		t.Errorf("one role's routes: %v", err)
 	}
 }
