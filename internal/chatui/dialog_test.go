@@ -156,7 +156,8 @@ func TestScene2(t *testing.T) {
 	}
 	s = screen(m)
 	for _, want := range []string{"Sending BD-0001 to ocean-blue.example", "Sent BD-0001 to ocean-blue.example, signed. Answer: confirmed OB-BKG-1042.",
-		"Booked. Reference OB-BKG-1042 on vessel Ocean Blue Aurora, voyage 42W", "transport document OB-TD-1", "the day before your deadline of"} {
+		"Booked. Reference OB-BKG-1042 on vessel Ocean Blue Aurora, voyage 42W", "transport document OB-TD-1",
+		"the day before your deadline of" /* the date wraps at this width; TestReport checks it */} {
 		if !strings.Contains(s, want) {
 			t.Errorf("the screen lacks %q:\n%s", want, s)
 		}

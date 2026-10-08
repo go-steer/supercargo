@@ -320,7 +320,7 @@ func (a *Assistant) draft(c *Conversation, raw json.RawMessage) (any, error) {
 	req := intents.BookingRequestBody{
 		ShipperRef: in.ShipperRef, ShipperName: a.shipperName(), PortOfLoading: in.PortOfLoading, PortOfDischarge: in.PortOfDischarge,
 		Equipment:         []intents.Equipment{{ISOType: iso, Count: in.ContainerCount, GrossWeightKg: in.GrossWeightKg}},
-		Cargo:             intents.Cargo{Description: strings.TrimSpace(in.CargoDescription), HSCode: in.HSCode},
+		Cargo:             intents.Cargo{Description: fold(in.CargoDescription), HSCode: in.HSCode},
 		EarliestDeparture: in.EarliestDeparture,
 	}
 	switch {
@@ -328,7 +328,7 @@ func (a *Assistant) draft(c *Conversation, raw json.RawMessage) (any, error) {
 		if err := c.named(in.ConsigneeDomain); err != nil {
 			return nil, err
 		}
-		req.Consignee = &intents.Consignee{Name: in.ConsigneeName, Domain: in.ConsigneeDomain}
+		req.Consignee = &intents.Consignee{Name: fold(in.ConsigneeName), Domain: in.ConsigneeDomain}
 	case in.ConsigneeName != "":
 		return nil, refuse("a consignee needs the domain the user gives for it; ask the user, or leave the consignee out")
 	}
@@ -391,8 +391,13 @@ func (c *Conversation) named(domain string) error {
 
 // shipperName names us in a booking request: our name, else our domain.
 func (a *Assistant) shipperName() string {
-	if a.Self.Name != "" {
-		return a.Self.Name
+	if n := fold(a.Self.Name); n != "" {
+		return n
 	}
 	return a.Self.Domain
 }
+
+// fold collapses each run of whitespace (no-break spaces too) to one
+// space, as the confirmation dialog displays text: what the person sees
+// there is then byte for byte what is sent.
+func fold(s string) string { return strings.Join(strings.Fields(s), " ") }
