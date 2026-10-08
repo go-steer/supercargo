@@ -47,7 +47,10 @@ document.getElementById('flat').onclick = () => document.getElementById('room').
     open.href = p.url;
     open.target = '_blank';
     open.rel = 'noopener';
-    bar.append(el('span', 'name', p.name), open);
+    const legend = el('span', 'legend');
+    legend.append(el('b', null, '→'), ' it sent · ', el('b', null, '←'), ' it received · only its own side');
+    legend.dataset.tip = 'This company sees the messages it sent and the ones sent to it, each verified by its own node. The other panel shows the same exchange from the other end; messages with anyone else never appear here.';
+    bar.append(el('span', 'name', p.name), legend, open);
     const frame = el('iframe');
     frame.src = p.url;
     frame.title = p.name;

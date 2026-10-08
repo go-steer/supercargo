@@ -25,5 +25,7 @@ body.presenter { display: flex; flex-direction: column; }
 .stage:hover { transform: none !important; }
 .stage-bar { display: flex; gap: 10px; align-items: center; padding: 6px 10px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); }
 .stage-bar .name { font-size: 10px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+.stage-bar .legend { font-size: 11px; color: var(--text-dim); }
+.stage-bar .legend b { color: var(--text); }
 .stage-bar a { margin-left: auto; color: var(--blue); font-size: 11px; text-decoration: none; }
 .stage iframe { flex: 1; border: 0; width: 100%; background: var(--bg); }

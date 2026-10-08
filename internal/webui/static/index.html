@@ -44,7 +44,7 @@ limitations under the License.
   <section class="panel">
     <div class="panel-bar">
       <span class="panel-title">Messages</span>
-      <span class="hint">this node's side only</span>
+      <span class="hint" data-tip="Your node's own copy of each message: the ones it sent (→, signed with your key) and the ones sent to it (←, verified with the sender's). A partner sees the same exchange from its end; messages between others never appear here.">your side only · → sent · ← received</span>
       <span class="filters" id="msg-filters">
         <button class="on" data-f="all" data-tip="Every message this node sent or received, for your roles: verified or not.">all</button><button data-f="refused" data-tip="Only the messages this node refused: a bad signature, a replay, a request it may not answer, or something that isn't a message at all.">refused</button>
       </span>
