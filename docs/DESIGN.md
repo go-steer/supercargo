@@ -822,6 +822,8 @@ Each model call logs the agent skills it ran with (name and content hash).
 
 **Rules for both:** the model never sees private keys, never builds or signs envelopes, never picks counterparties beyond what the user named, and every model call is logged (prompt hash, token counts, latency) in the node log.
 
+Every model call is also an entry in the node's activity stream (`model`, on the side whose role made it), naming the **agent** (the inquiry responder, the alert summarizer, or the assistant, with the persona whose browser session it serves) and, for the assistant, the **tools** the reply asked for, by name. Never what was said: the stream is shared by everyone signed in on that side, so a conversation's text and the tools' arguments stay in its own session. (`ulpchat` runs its assistant in its own process; its calls reach its own log, not the node's stream, yet.)
+
 ### A.11 Project layout (Go)
 
 ```

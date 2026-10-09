@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/activity"
+	"github.com/go-steer/supercargo/internal/assistant"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/internal/webui"
 	"github.com/go-steer/supercargo/pkg/envelope"
@@ -372,6 +373,23 @@ web:
 	}
 	if p.operator.Carrier.Bookings.Len() != 0 {
 		t.Fatal("a draft reached the operator")
+	}
+	// The assistant's model calls are in the node's activity, whose and
+	// which tools, but nothing that was said.
+	past, _, _, cancel := p.shipper.Activity.Subscribe(0, 0)
+	cancel()
+	var calls []activity.Model
+	for _, e := range past {
+		if e.Kind == activity.KindModel && e.Side == activity.SideCustomer {
+			calls = append(calls, *e.Model)
+		}
+		if b, _ := json.Marshal(e); bytes.Contains(b, []byte("sneakers")) || bytes.Contains(b, []byte("CY-PO-1")) {
+			t.Errorf("an activity entry carries the chat: %s", b)
+		}
+	}
+	if len(calls) != 2 || calls[0].Agent != "assistant · alex" || len(calls[0].Tools) != 1 || calls[0].Tools[0] != assistant.ToolDraftBooking ||
+		len(calls[1].Tools) != 0 || calls[0].Model != "fake" || calls[0].PromptHash == "" {
+		t.Errorf("the assistant's model calls: %+v", calls)
 	}
 	rec = call("/ui/api/assistant/send", `{"draftId":"`+st.Drafts[0].DraftID+`"}`, c)
 	if rec.Code != http.StatusOK {

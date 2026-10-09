@@ -309,7 +309,22 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 	var newAssistant func() (*assistant.Assistant, error)
 	if a.Config.Has(config.RoleShipper) && a.Config.LLM != nil {
 		node := assistant.ControlNode{Client: control.InProcess(a.controlAPI, 2*time.Minute)}
-		newAssistant = func() (*assistant.Assistant, error) { return ShipperAssistant(a.Config, node) }
+		newAssistant = func() (*assistant.Assistant, error) {
+			as, err := ShipperAssistant(a.Config, node)
+			if err != nil {
+				return nil, err
+			}
+			// Each model call goes to the node's activity, as the other
+			// model roles' do: what was called and how it went, never what
+			// was said (the stream is everyone's on this side).
+			as.OnModelCall = func(m activity.Model) {
+				if m.Agent == "" {
+					m.Agent = "assistant"
+				}
+				a.Activity.Publish(activity.Entry{Side: activity.SideCustomer, Kind: activity.KindModel, Model: &m})
+			}
+			return as, nil
+		}
 	}
 	var panels []webui.Panel
 	if w.Presenter != nil {
@@ -492,7 +507,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	handlers[intents.TnTInquiry] = &operator.InquiryService{Bookings: a.Carrier.Bookings, Log: a.Carrier.Events, Model: model, Name: cfg.Name, Skills: agentSkills,
 		OnModelCall: func(c operator.ModelCall) {
 			a.Activity.Publish(activity.Entry{Side: activity.SideOperator, Kind: activity.KindModel, Model: &activity.Model{
-				Booking: c.Booking, Attempt: c.Attempt, Model: c.Model, PromptHash: c.PromptHash, Skills: c.Skills,
+				Agent: "inquiry responder", Booking: c.Booking, Attempt: c.Attempt, Model: c.Model, PromptHash: c.PromptHash, Skills: c.Skills,
 				InputTokens: c.Usage.InputTokens, OutputTokens: c.Usage.OutputTokens,
 				LatencyMS: c.Latency.Round(time.Millisecond).Milliseconds(), Outcome: c.Outcome, Reason: c.Reason}})
 		},
@@ -532,6 +547,7 @@ func (a *App) shipperRole(handlers map[string]node.Handler) error {
 			a.Activity.Publish(activity.Entry{Side: activity.SideCustomer, Kind: activity.KindSummary, Summary: &s})
 		},
 		OnModelCall: func(m activity.Model) {
+			m.Agent = "alert summarizer"
 			a.Activity.Publish(activity.Entry{Side: activity.SideCustomer, Kind: activity.KindModel, Model: &m})
 		},
 	}

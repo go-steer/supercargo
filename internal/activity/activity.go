@@ -104,6 +104,9 @@ type Record struct {
 
 // Model is one model call.
 type Model struct {
+	// Agent is which model role called: "inquiry responder", "alert
+	// summarizer", or "assistant" (with whose, in the browser).
+	Agent        string   `json:"agent,omitempty"`
 	Booking      string   `json:"booking"`
 	Attempt      int      `json:"attempt"`
 	Model        string   `json:"model"`
@@ -114,6 +117,8 @@ type Model struct {
 	LatencyMS    int64    `json:"latencyMs"`
 	Outcome      string   `json:"outcome"` // ok, invalid or error
 	Reason       string   `json:"reason,omitempty"`
+	// Tools are the tools the reply asked for, by name (the assistant's).
+	Tools []string `json:"tools,omitempty"`
 }
 
 // Voyage is a simulated voyage starting, or failing to.

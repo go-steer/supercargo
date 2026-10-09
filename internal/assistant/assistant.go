@@ -338,6 +338,9 @@ func (a *Assistant) generate(ctx context.Context, c *Conversation, round int) (l
 	if err != nil {
 		m.Outcome, m.Reason = "error", err.Error()
 	}
+	for _, tc := range resp.ToolCalls {
+		m.Tools = append(m.Tools, OneLine(tc.Name, 64))
+	}
 	span.End(resp, m.Outcome)
 	if a.OnModelCall != nil {
 		a.OnModelCall(m)

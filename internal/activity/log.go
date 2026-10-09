@@ -67,12 +67,15 @@ func SlogSink(l *slog.Logger) func(Entry) {
 			if m.Outcome != "ok" {
 				level = slog.LevelWarn
 			}
-			l.LogAttrs(ctx, level, "model call",
-				slog.String("booking", m.Booking), slog.Int("attempt", m.Attempt), slog.String("model", m.Model),
+			attrs := []slog.Attr{slog.String("agent", m.Agent), slog.String("booking", m.Booking), slog.Int("attempt", m.Attempt), slog.String("model", m.Model),
 				slog.String("promptHash", m.PromptHash), slog.Any("skills", m.Skills),
 				slog.Int("inputTokens", m.InputTokens), slog.Int("outputTokens", m.OutputTokens),
-				slog.String("latency", (time.Duration(m.LatencyMS)*time.Millisecond).String()),
-				slog.String("outcome", m.Outcome), slog.String("reason", m.Reason))
+				slog.String("latency", (time.Duration(m.LatencyMS) * time.Millisecond).String()),
+				slog.String("outcome", m.Outcome), slog.String("reason", m.Reason)}
+			if len(m.Tools) > 0 {
+				attrs = append(attrs, slog.Any("tools", m.Tools))
+			}
+			l.LogAttrs(ctx, level, "model call", attrs...)
 		case e.Voyage != nil && e.Voyage.Started:
 			v := e.Voyage
 			l.LogAttrs(ctx, slog.LevelInfo, "voyage started", slog.String("booking", v.Booking),

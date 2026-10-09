@@ -17,6 +17,7 @@ package activity
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -129,7 +130,7 @@ func TestSlogSink(t *testing.T) {
 		{Kind: KindRecord, Record: &Record{Action: ActionRecorded, Booking: "OB-1", Event: ev}},
 		{Kind: KindRecord, Record: &Record{Action: ActionPublished, Booking: "OB-1", Event: dep}},
 		{Kind: KindRecord, Record: &Record{Action: ActionRecorded, Booking: "OB-1", Alert: al}},
-		{Kind: KindModel, Model: &Model{Booking: "OB-1", Attempt: 2, Model: "fake", PromptHash: "abc", Skills: []string{"s@1"}, LatencyMS: 1500, Outcome: "invalid", Reason: "bad"}},
+		{Kind: KindModel, Model: &Model{Agent: "assistant · alex", Tools: []string{"draft_booking"}, Booking: "OB-1", Attempt: 2, Model: "fake", PromptHash: "abc", Skills: []string{"s@1"}, LatencyMS: 1500, Outcome: "invalid", Reason: "bad"}},
 		{Kind: KindVoyage, Voyage: &Voyage{Booking: "OB-1", Started: true, Departure: "d", Arrival: "a", HoursPerSecond: 2}},
 		{Kind: KindVoyage, Voyage: &Voyage{Booking: "OB-2", Error: "too many"}},
 		{Kind: KindPush, Push: &Push{Booking: "OB-1", ID: "EV-3", Problem: "dropped", Error: "refused"}},
@@ -163,6 +164,9 @@ func TestSlogSink(t *testing.T) {
 		if lines[i]["msg"] != w.msg || lines[i]["level"] != w.level || lines[i][w.key] != w.value {
 			t.Errorf("line %d: %v, want msg %q level %s %s=%q", i, lines[i], w.msg, w.level, w.key, w.value)
 		}
+	}
+	if lines[4]["agent"] != "assistant · alex" || fmt.Sprint(lines[4]["tools"]) != "[draft_booking]" {
+		t.Errorf("model line %v", lines[4])
 	}
 	if lines[0]["code"] != "forbidden" || lines[0]["reason"] != "not a party" || lines[0]["verified"] != true {
 		t.Errorf("envelope line %v", lines[0])

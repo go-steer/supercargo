@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/assistant"
 	"github.com/go-steer/supercargo/internal/control"
 )
@@ -152,8 +153,9 @@ func (s *server) chatFor(r *http.Request) (*chat, error) {
 	s.mu.Lock()
 	sess, ok := s.lookup(id)
 	var c *chat
+	var persona string
 	if ok {
-		c = sess.chat
+		c, persona = sess.chat, sess.persona.ID
 	}
 	s.mu.Unlock()
 	if !ok {
@@ -168,6 +170,11 @@ func (s *server) chatFor(r *http.Request) (*chat, error) {
 		return nil, err
 	}
 	c = &chat{a: a, conv: &assistant.Conversation{}, drafts: map[string]assistant.DraftResult{}, shown: map[string]time.Time{}}
+	// The node's activity says whose assistant called a model.
+	if report := a.OnModelCall; report != nil {
+		who := "assistant · " + persona
+		a.OnModelCall = func(m activity.Model) { m.Agent = who; report(m) }
+	}
 	a.OnTool = func(ev assistant.ToolEvent) {
 		c.mu.Lock()
 		c.tools = append(c.tools, ToolLine{Name: ev.Name, Error: assistant.OneLine(ev.Error, 200)})
