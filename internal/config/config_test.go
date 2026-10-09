@@ -546,3 +546,67 @@ func TestGoogle(t *testing.T) {
 		t.Error("an unused google section: accepted")
 	}
 }
+
+// TestSigningKeyEnv: a key from the environment, which is then removed.
+func TestSigningKeyEnv(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "key.pem")
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	if err := WriteSigningKey(p, priv); err != nil {
+		t.Fatal(err)
+	}
+	pemData, _ := os.ReadFile(p)
+	t.Setenv("SUPERCARGO_TEST_KEY", string(pemData))
+	got, err := LoadSigningKeyEnv("SUPERCARGO_TEST_KEY")
+	if err != nil || !got.Equal(priv) {
+		t.Fatalf("LoadSigningKeyEnv = %v", err)
+	}
+	if _, ok := os.LookupEnv("SUPERCARGO_TEST_KEY"); ok {
+		t.Error("the key stayed in the environment")
+	}
+	if _, err := LoadSigningKeyEnv("SUPERCARGO_TEST_KEY"); err == nil {
+		t.Error("an unset key loaded")
+	}
+	for name, v := range map[string]string{"empty": "", "not PEM": "key", "two blocks": string(pemData) + string(pemData)} {
+		t.Setenv("SUPERCARGO_TEST_KEY", v)
+		if _, err := LoadSigningKeyEnv("SUPERCARGO_TEST_KEY"); err == nil {
+			t.Errorf("%s: loaded", name)
+		}
+	}
+}
+
+// TestProxyAndKeyEnv: behind a proxy that serves https (Cloud Run), with
+// the key from the environment.
+func TestProxyAndKeyEnv(t *testing.T) {
+	base := strings.NewReplacer(
+		"tls: { mode: local-ca, certFile: /certs/ob.pem, keyFile: /certs/ob-key.pem, caFile: /certs/ca.pem }", "tls: { mode: proxy }",
+		"privateKeyFile: /keys/ob-2026-1.pem", "privateKeyEnv: ULP_SIGNING_KEY").Replace(operatorYAML)
+	c, err := Parse([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.TLS.Mode != TLSProxy || c.Keys[0].PrivateKeyEnv != "ULP_SIGNING_KEY" {
+		t.Errorf("parsed %+v %+v", c.TLS, c.Keys)
+	}
+	for name, edit := range map[string][2]string{
+		"proxy with a certificate": {"tls: { mode: proxy }", "tls: { mode: proxy, certFile: /c.pem, keyFile: /k.pem }"},
+		"a key from both":          {"privateKeyEnv: ULP_SIGNING_KEY", "privateKeyEnv: ULP_SIGNING_KEY\n    privateKeyFile: /k.pem"},
+		"a key from neither":       {"privateKeyEnv: ULP_SIGNING_KEY", ""},
+		"a key env not a name":     {"privateKeyEnv: ULP_SIGNING_KEY", "privateKeyEnv: 'a b'"},
+		"an unknown TLS mode":      {"tls: { mode: proxy }", "tls: { mode: offload }"},
+	} {
+		in := strings.Replace(base, edit[0], edit[1], 1)
+		if in == base {
+			t.Fatalf("%s: the edit didn't apply", name)
+		}
+		if _, err := Parse([]byte(in)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// Demo sign-in has no password: never behind a proxy that publishes it.
+	demo := strings.Replace(base, `listen: ":8443"`, `listen: "127.0.0.1:8443"`, 1) +
+		"web:\n  auth: demo\n  personas:\n    - { id: sam, name: Sam, roles: [operator] }\n"
+	if _, err := Parse([]byte(demo)); err == nil {
+		t.Error("demo sign-in behind a proxy: accepted")
+	}
+}

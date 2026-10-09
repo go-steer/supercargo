@@ -120,7 +120,15 @@ type App struct {
 
 // New builds an App from cfg.
 func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
-	priv, err := config.LoadSigningKey(cfg.Keys[0].PrivateKeyFile)
+	var (
+		priv ed25519.PrivateKey
+		err  error
+	)
+	if env := cfg.Keys[0].PrivateKeyEnv; env != "" {
+		priv, err = config.LoadSigningKeyEnv(env)
+	} else {
+		priv, err = config.LoadSigningKey(cfg.Keys[0].PrivateKeyFile)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -485,6 +493,9 @@ func (a *App) Serve(ctx context.Context) error {
 	a.Logger.Info("node starting", "domain", cfg.Domain, "roles", cfg.Roles, "listen", cfg.Listen, "tls", cfg.TLS.Mode)
 	if cfg.TLS.Mode == config.TLSInsecureDev {
 		a.Logger.Warn("INSECURE DEVELOPMENT MODE: no TLS. Nothing ties a profile, or its keys, to its domain. Never use this outside a local demo.")
+	}
+	if cfg.TLS.Mode == config.TLSProxy {
+		a.Logger.Info("plain HTTP on the listener: the proxy in front must serve https at the domain", "domain", cfg.Domain)
 	}
 	if len(cfg.Peers) > 0 {
 		// The peer map bypasses the outbound address guard for these

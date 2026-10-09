@@ -49,6 +49,10 @@ import (
 const (
 	TLSLocalCA     = "local-ca"     // serve TLS with the given certificate; trust the given CA outbound
 	TLSInsecureDev = "insecure-dev" // plain HTTP everywhere: nothing ties a profile to its domain
+	// TLSProxy serves plain HTTP on the listener, behind a proxy that
+	// serves https at the node's domain (Cloud Run, #38); outbound is https,
+	// verified against the system roots (or caFile).
+	TLSProxy = "proxy"
 )
 
 // Roles. A node may have several: a company can be a carrier and a
@@ -207,10 +211,13 @@ type TLS struct {
 }
 
 // Key is a signing key. Exactly one is supported until key rotation
-// (docs/DESIGN.md, A.15).
+// (docs/DESIGN.md, A.15). It comes from PrivateKeyFile, or from the
+// environment variable PrivateKeyEnv names (a secret manager's, as on
+// Cloud Run): one of the two.
 type Key struct {
 	KID            string `yaml:"kid"`
 	PrivateKeyFile string `yaml:"privateKeyFile"`
+	PrivateKeyEnv  string `yaml:"privateKeyEnv"`
 }
 
 // Discovery configures the key cache.
@@ -430,14 +437,19 @@ func (c *Config) validate() error {
 			return errors.New("tls: local-ca needs certFile and keyFile")
 		}
 	case TLSInsecureDev:
+	case TLSProxy:
+		if c.TLS.CertFile != "" || c.TLS.KeyFile != "" {
+			return errors.New("tls: proxy takes no certFile or keyFile: the proxy in front serves https")
+		}
 	default:
-		return fmt.Errorf("tls.mode %q is not %s or %s", c.TLS.Mode, TLSLocalCA, TLSInsecureDev)
+		return fmt.Errorf("tls.mode %q is not %s, %s or %s", c.TLS.Mode, TLSLocalCA, TLSProxy, TLSInsecureDev)
 	}
 	if len(c.Keys) != 1 {
 		return fmt.Errorf("keys: exactly one signing key is supported, got %d", len(c.Keys))
 	}
-	if !sig.ValidKID(c.Keys[0].KID) || c.Keys[0].PrivateKeyFile == "" {
-		return errors.New("keys: a key needs a valid kid and a privateKeyFile")
+	if k := c.Keys[0]; !sig.ValidKID(k.KID) || (k.PrivateKeyFile == "") == (k.PrivateKeyEnv == "") ||
+		(k.PrivateKeyEnv != "" && !envName.MatchString(k.PrivateKeyEnv)) {
+		return errors.New("keys: a key needs a valid kid, and a privateKeyFile or a privateKeyEnv (an environment variable name), one of the two")
 	}
 	for d, target := range c.Peers {
 		if !envelope.ValidDomain(d) {
@@ -919,17 +931,35 @@ func LoadSigningKey(path string) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: signing key: %w", err)
 	}
+	return ParseSigningKey(data, path)
+}
+
+// LoadSigningKeyEnv reads the node's Ed25519 private key, a PKCS#8 PEM
+// block, from environment variable name, and then removes the variable,
+// so nothing the node starts later inherits it.
+func LoadSigningKeyEnv(name string) (ed25519.PrivateKey, error) {
+	data, ok := os.LookupEnv(name)
+	if !ok || data == "" {
+		return nil, fmt.Errorf("config: signing key: %s is not set", name)
+	}
+	_ = os.Unsetenv(name)
+	return ParseSigningKey([]byte(data), "from "+name)
+}
+
+// ParseSigningKey parses a single PKCS#8 PEM "PRIVATE KEY" block holding
+// an Ed25519 key; where names it in errors.
+func ParseSigningKey(data []byte, where string) (ed25519.PrivateKey, error) {
 	block, rest := pem.Decode(data)
 	if block == nil || block.Type != "PRIVATE KEY" || len(bytes.TrimSpace(rest)) != 0 {
-		return nil, fmt.Errorf("config: signing key %s is not a single PEM \"PRIVATE KEY\" block", path)
+		return nil, fmt.Errorf("config: signing key %s is not a single PEM \"PRIVATE KEY\" block", where)
 	}
 	k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("config: signing key %s: %w", path, err)
+		return nil, fmt.Errorf("config: signing key %s: %w", where, err)
 	}
 	priv, ok := k.(ed25519.PrivateKey)
 	if !ok {
-		return nil, fmt.Errorf("config: signing key %s is %T, not Ed25519", path, k)
+		return nil, fmt.Errorf("config: signing key %s is %T, not Ed25519", where, k)
 	}
 	return priv, nil
 }
