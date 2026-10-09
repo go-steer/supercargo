@@ -14,7 +14,7 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
-- Voyage-wide disruptions: `ulpctl disrupt --voyage 42W [--vessel …]`, the control API's `POST /disrupt` with `voyage`, and a "this booking or the whole voyage" choice in the carrier's Disrupt dialog. One decision delays every booking under way on the voyage, each with its own estimate and signed alert; a booking that can't take the delay is reported and the rest go ahead.
+- Voyage-wide disruptions: `ulpctl disrupt --voyage 42W [--vessel …]`, the control API's `POST /disrupt` with `voyage`, and a "this booking or the whole voyage" choice in the carrier's Disrupt dialog. One decision delays every booking under way on the voyage (arrived ones are left out), each with its own estimate and signed alert; a booking that can't take the delay is reported and the rest go ahead, and one delayed whose alert couldn't be sent is marked `applied`, with a warning not to disrupt again.
 
 - `hello-ulp` on a Cloud Workstation says to open each company's address once before the presenter page (the proxy signs you in per address, and its sign-in page won't load in a frame).
 

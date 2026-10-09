@@ -64,7 +64,9 @@ func fakeNode(t *testing.T, status int, errText string) (cfg string, got *operat
 				PreviousETA: "2026-10-13T08:00:00Z", NewETA: "2026-10-14T08:00:00Z", CauseEventIDs: []string{"EV-000009"}}
 			resp = operator.DisruptResponse{Alerts: []operator.VoyageAlert{{BookingRef: "OB-BKG-1042", Alert: alert}}}
 			if errText != "" {
-				resp.Alerts = append(resp.Alerts, operator.VoyageAlert{BookingRef: "OB-BKG-1043", Error: errText})
+				// "applied: …" is a booking delayed whose alert wasn't sent.
+				applied := strings.HasPrefix(errText, "applied: ")
+				resp.Alerts = append(resp.Alerts, operator.VoyageAlert{BookingRef: "OB-BKG-1043", Error: errText, Applied: applied})
 			}
 		} else if status == http.StatusOK {
 			resp.Alert = &intents.TnTAlertBody{AlertID: "AL-000009", Kind: "delay", Severity: "high", Summary: got.Reason,
@@ -117,8 +119,15 @@ func TestDisruptVoyage(t *testing.T) {
 	cfg, _ = fakeNode(t, http.StatusOK, "already 30 days late")
 	out.Reset()
 	err := run([]string{"disrupt", "--config", cfg, "--voyage", "42W", "--delay", "24h", "--reason", "Strike."}, &out, &out)
-	if err == nil || !strings.Contains(out.String(), "OB-BKG-1043: no alert: already 30 days late") {
+	if err == nil || !strings.Contains(out.String(), "OB-BKG-1043: not delayed: already 30 days late") || strings.Contains(err.Error(), "twice") {
 		t.Errorf("a partial voyage: %v\n%s", err, out.String())
+	}
+	// Delayed, but its alert not sent: said loudly, and no retry.
+	cfg, _ = fakeNode(t, http.StatusOK, "applied: the alert was not sent")
+	out.Reset()
+	err = run([]string{"disrupt", "--config", cfg, "--voyage", "42W", "--delay", "24h", "--reason", "Strike."}, &out, &out)
+	if err == nil || !strings.Contains(err.Error(), "don't run this again") || !strings.Contains(out.String(), "OB-BKG-1043: DELAYED, but no alert sent") {
+		t.Errorf("an applied booking without its alert: %v\n%s", err, out.String())
 	}
 	cfg, _ = fakeNode(t, http.StatusNotFound, "no booking under way on that voyage")
 	if err := run([]string{"disrupt", "--config", cfg, "--voyage", "43E", "--delay", "24h", "--reason", "Strike."}, &out, &out); err == nil {

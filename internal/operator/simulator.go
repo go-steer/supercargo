@@ -342,15 +342,22 @@ func (s *Simulator) Disrupt(ref string, delay time.Duration, reason string) (*in
 }
 
 // VoyageAlert is one booking's outcome in a voyage's disruption: its
-// alert, or why it got none.
+// alert, or why it got none. Applied: the delay took effect (its new
+// estimate is out) even though the alert didn't, so disrupting again
+// would delay it twice.
 type VoyageAlert struct {
 	BookingRef string                `json:"bookingRef"`
 	Alert      *intents.TnTAlertBody `json:"alert,omitempty"`
+	Applied    bool                  `json:"applied,omitempty"`
 	Error      string                `json:"error,omitempty"`
 }
 
 // ErrUnknownVoyage: no booking not yet arrived is on that voyage.
 var ErrUnknownVoyage = errors.New("operator: no booking under way on that voyage")
+
+// ErrAlertNotSent: the delay is applied and its estimate published, but
+// the alert wasn't. Don't disrupt again: that would delay it twice.
+var ErrAlertNotSent = errors.New("operator: the delay is applied, but its alert was not sent (don't disrupt again)")
 
 // DisruptVoyage delays every booking on voyage (of vessel, if not empty)
 // that hasn't arrived, as Disrupt does each: one decision, a signed alert
@@ -363,6 +370,12 @@ func (s *Simulator) DisruptVoyage(vessel, voyage string, delay time.Duration, re
 	}
 	if strings.TrimSpace(voyage) == "" {
 		return nil, errors.New("operator: which voyage?")
+	}
+	// The reason is every alert's: refused once, before anything changes.
+	probe := intents.TnTAlertBody{AlertID: "AL-0", Kind: intents.AlertDelay, Severity: severity(delay), Summary: reason,
+		PreviousETA: "2026-01-01T00:00:00Z", NewETA: "2026-01-02T00:00:00Z", CauseEventIDs: []string{"EV-0"}}
+	if err := probe.Validate(); err != nil {
+		return nil, fmt.Errorf("operator: %w", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -382,7 +395,7 @@ func (s *Simulator) DisruptVoyage(vessel, voyage string, delay time.Duration, re
 		a := VoyageAlert{BookingRef: ref}
 		alert, err := s.disrupt(s.lines[ref], delay, reason)
 		if err != nil {
-			a.Error = err.Error()
+			a.Error, a.Applied = err.Error(), errors.Is(err, ErrAlertNotSent)
 		}
 		a.Alert = alert
 		out = append(out, a)
@@ -421,7 +434,7 @@ func (s *Simulator) disrupt(tl *timeline, delay time.Duration, reason string) (*
 	if err := s.publish(tl, alert); err != nil && !errors.Is(err, ErrNotQueued) {
 		// The new estimate is out, so the delay stands; only the alert is
 		// missing. Retrying would delay the voyage again.
-		return nil, fmt.Errorf("operator: the delay is applied and estimate %s published, but the alert was not: %w", estID, err)
+		return nil, fmt.Errorf("%w: estimate %s published, but not the alert: %w", ErrAlertNotSent, estID, err)
 	}
 	return alert, nil
 }

@@ -64,6 +64,8 @@ func TestControlDisrupt(t *testing.T) {
 		"neither":            {"127.0.0.1:9101", "application/json", `{"delay":"1h","reason":"Late."}`, http.StatusBadRequest},
 		"vessel alone":       {"127.0.0.1:9101", "application/json", `{"bookingRef":"` + ref + `","vessel":"Ocean Blue Aurora","delay":"1h","reason":"Late."}`, http.StatusBadRequest},
 		"unknown voyage":     {"127.0.0.1:9101", "application/json", `{"voyage":"43E","delay":"1h","reason":"Late."}`, http.StatusNotFound},
+		"blank voyage":       {"127.0.0.1:9101", "application/json", `{"voyage":"   ","delay":"1h","reason":"Late."}`, http.StatusBadRequest},
+		"voyage, no reason":  {"127.0.0.1:9101", "application/json", `{"voyage":"42W","delay":"1h","reason":""}`, http.StatusBadRequest},
 		"voyage, bad delay":  {"127.0.0.1:9101", "application/json", `{"voyage":"42W","delay":"0s","reason":"Late."}`, http.StatusBadRequest},
 	} {
 		if code, _ := post(t, h, tc.host, tc.contentType, tc.body); code != tc.want {

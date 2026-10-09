@@ -17,6 +17,7 @@ package operator
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-steer/supercargo/internal/control"
@@ -96,6 +97,7 @@ func RegisterControl(mux *http.ServeMux, sim *Simulator, bookings *store.Booking
 			control.Answer(w, http.StatusBadRequest, DisruptResponse{Error: "delay: " + err.Error()})
 			return
 		}
+		req.Vessel, req.Voyage = strings.TrimSpace(req.Vessel), strings.TrimSpace(req.Voyage)
 		if (req.BookingRef == "") == (req.Voyage == "") || (req.Vessel != "" && req.Voyage == "") {
 			control.Answer(w, http.StatusBadRequest, DisruptResponse{Error: "a booking (bookingRef) or a voyage (voyage, and vessel if needed), not both"})
 			return

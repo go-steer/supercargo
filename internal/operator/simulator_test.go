@@ -239,7 +239,6 @@ func TestDisrupt(t *testing.T) {
 	}
 }
 
-// TestDisruptTotalCapped: delays add up to at most 30 days per voyage.
 // TestDisruptVoyage: one decision delays every booking under way on the
 // voyage, each with its own estimate and alert; an arrived booking is
 // left alone, one that can't take the delay is reported, and a voyage
@@ -247,7 +246,7 @@ func TestDisrupt(t *testing.T) {
 func TestDisruptVoyage(t *testing.T) {
 	s := newSimulated(t)
 	arrived := s.book(t, 1)
-	s.advance(200 * time.Second) // well past its arrival
+	s.advance(170 * time.Second) // arrived, not yet gated out: still a timeline
 	a, b := s.book(t, 1), s.book(t, 1)
 	s.advance(2 * time.Second)
 	if _, err := s.sim.Disrupt(b, 29*24*time.Hour, "Earlier trouble."); err != nil {
@@ -270,7 +269,7 @@ func TestDisruptVoyage(t *testing.T) {
 				t.Errorf("%s: %+v", a, o)
 			}
 		case b:
-			if o.Alert != nil || !strings.Contains(o.Error, "at most") {
+			if o.Alert != nil || o.Applied || !strings.Contains(o.Error, "at most") {
 				t.Errorf("%s (over the cap): %+v", b, o)
 			}
 		}
@@ -278,7 +277,36 @@ func TestDisruptVoyage(t *testing.T) {
 	if got := s.pub.list()[before:]; len(got) != 2 || summary(got[1]) != "alert delay" {
 		t.Errorf("published %d, want one estimate and one alert", len(got))
 	}
-	_ = arrived
+	for _, o := range out {
+		if o.BookingRef == arrived {
+			t.Errorf("an arrived booking was disrupted: %+v", o)
+		}
+	}
+	// A reason no alert can carry is refused once, before anything changes.
+	before = len(s.pub.list())
+	if _, err := s.sim.DisruptVoyage("", "42W", time.Hour, ""); err == nil || errors.Is(err, ErrUnknownVoyage) {
+		t.Errorf("an empty reason: %v", err)
+	}
+	if len(s.pub.list()) != before {
+		t.Error("a refused voyage disruption published something")
+	}
+	// An alert that can't be sent after its estimate went out: the delay
+	// stands, and the outcome says so (applied), so nobody retries it.
+	s.pub.mu.Lock()
+	s.pub.failAlerts = errors.New("queue gone")
+	s.pub.mu.Unlock()
+	out, err = s.sim.DisruptVoyage("", "42W", time.Hour, "Fog.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("outcomes %+v", out)
+	}
+	for _, o := range out { // both had room for an hour more
+		if !o.Applied || o.Alert != nil || !strings.Contains(o.Error, "don't disrupt again") {
+			t.Errorf("an applied delay without its alert: %+v", o)
+		}
+	}
 	for name, call := range map[string]func() error{
 		"another vessel": func() error { _, err := s.sim.DisruptVoyage("Other Ship", "42W", time.Hour, "x"); return err },
 		"another voyage": func() error { _, err := s.sim.DisruptVoyage("", "43E", time.Hour, "x"); return err },
@@ -297,6 +325,7 @@ func TestDisruptVoyage(t *testing.T) {
 	}
 }
 
+// TestDisruptTotalCapped: delays add up to at most 30 days per voyage.
 func TestDisruptTotalCapped(t *testing.T) {
 	s := newSimulated(t)
 	ref := s.book(t, 1)

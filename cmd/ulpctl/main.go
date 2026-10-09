@@ -88,18 +88,26 @@ func disrupt(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("disrupt: HTTP %d: %s", code, dr.Error)
 		}
 		fmt.Fprintf(stdout, "Disrupted voyage %s: %d booking(s) under way.\n", *voyage, len(dr.Alerts))
-		failed := 0
+		failed, applied := 0, 0
 		for _, va := range dr.Alerts {
 			if va.Alert == nil {
 				failed++
-				fmt.Fprintf(stdout, "  %s: no alert: %s\n", va.BookingRef, va.Error)
+				if va.Applied {
+					applied++
+					fmt.Fprintf(stdout, "  %s: DELAYED, but no alert sent: %s\n", va.BookingRef, va.Error)
+				} else {
+					fmt.Fprintf(stdout, "  %s: not delayed: %s\n", va.BookingRef, va.Error)
+				}
 				continue
 			}
 			fmt.Fprintf(stdout, "  %s: %s %s alert %s, ETA %s → %s\n", va.BookingRef, va.Alert.Severity, va.Alert.Kind, va.Alert.AlertID,
 				va.Alert.PreviousETA, va.Alert.NewETA)
 		}
+		if applied > 0 {
+			return fmt.Errorf("disrupt: %d of %d bookings got no alert, %d of them delayed anyway: don't run this again, it would delay them twice", failed, len(dr.Alerts), applied)
+		}
 		if failed > 0 {
-			return fmt.Errorf("disrupt: %d of %d bookings got no alert", failed, len(dr.Alerts))
+			return fmt.Errorf("disrupt: %d of %d bookings got no alert and were not delayed", failed, len(dr.Alerts))
 		}
 		return nil
 	}
