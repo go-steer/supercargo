@@ -775,6 +775,7 @@ function bookingDialog(d) {
   ];
   if (q.service_contract_number) rows.push(['Contract:', q.service_contract_number]);
   if (q.consignee) rows.push(['Consignee:', `${q.consignee.name} (${q.consignee.domain})`]);
+  if (d.newConsignee) rows.push(['', 'A consignee not in your address book. Check the domain: it goes to the carrier.', 'newpartner']);
   if (q.subscription) rows.push(['Updates:', `${(q.subscription.intents || []).join(', ')} → ${q.subscription.endpoint}`]);
   for (const [k, v] of Object.entries(d.notSent || {})) rows.push(['Not sent:', `your ${k === 'requiredBy' ? 'deadline' : k}, ${v} (it stays with us)`, 'notsent']);
   const discard = el('div', 'fineprint');

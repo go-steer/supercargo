@@ -71,7 +71,7 @@ func TestNamedByName(t *testing.T) {
 	// Two partners called Ocean Blue: the name names neither.
 	a, tools, _ := newAssistant(nil, &node{})
 	a.AddressBook = []directory.Entry{oceanBlue, {Domain: "ocean-blue-lines.example", Name: "ocean blue", Roles: []string{directory.RoleCarrier}}}
-	if ev := oneCall(t, a, tools, &Conversation{}, "Ask Ocean Blue", profile("ocean-blue.example")); !strings.Contains(ev.Error, "two partners") {
+	if ev := oneCall(t, a, tools, &Conversation{}, "Ask Ocean Blue", profile("ocean-blue.example")); !strings.Contains(ev.Error, "could mean") {
 		t.Errorf("an ambiguous name: %q", ev.Error)
 	}
 	// The domain itself still works.
@@ -132,7 +132,7 @@ func TestFindPartners(t *testing.T) {
 	n := &node{}
 	a, tools, _ := newAssistant(nil, n)
 	northStar := directory.Entry{Domain: "north-star.example", Name: "North Star Lines", Roles: []string{directory.RoleCarrier},
-		Description: "Weekly\u202e service"}
+		Description: "Weekly service"}
 	us := directory.Entry{Domain: "cymbal-shoes.example", Name: "Cymbal Shoes", Roles: []string{directory.RoleCarrier}}
 	a.Directory = rawDirectory{oceanBlue, northStar, us}
 	a.AddressBook = []directory.Entry{footwear}
@@ -145,7 +145,7 @@ func TestFindPartners(t *testing.T) {
 	var got struct{ Candidates []Candidate }
 	_ = json.Unmarshal([]byte(res), &got)
 	if len(got.Candidates) != 2 || !got.Candidates[0].Verified || !got.Candidates[0].Bookable ||
-		got.Candidates[1].Verified || got.Candidates[1].Why == "" || strings.ContainsRune(got.Candidates[1].Description, '\u202e') {
+		got.Candidates[1].Verified || got.Candidates[1].Why == "" {
 		t.Fatalf("candidates %+v", got.Candidates)
 	}
 	if ev := oneCall(t, a, tools, &c, "Book with Ocean Blue", fake.Call("1", ToolGetProfile, `{"domain":"ocean-blue.example"}`)); ev.Error != "" {
@@ -226,6 +226,135 @@ func TestListPartners(t *testing.T) {
 	res = lastResult(a)
 	if !strings.Contains(res, "cymbal-footwear.example") || strings.Contains(res, "ocean-blue.example") || strings.Contains(res, "anywhere.example") {
 		t.Errorf("consignees only: %s", res)
+	}
+}
+
+// TestFoundNameAttacks: a directory entry is written by whoever listed
+// themselves, and verifying it only proves they hold the domain. So a
+// found partner can't be named by a generic name (a port, a role, words
+// the user types anyway), nor by the message that asked for the search,
+// nor by a name overlapping another known partner's.
+func TestFoundNameAttacks(t *testing.T) {
+	const evil = "evil.verified.example"
+	draftTo := func(d string) llm.ToolCall { return fake.Call("1", ToolDraftBooking, draftJSON(`"operator":"`+d+`"`)) }
+	search := fake.Call("1", ToolFind, `{"from":"NLRTM","to":"USEWR"}`)
+	for _, name := range []string{"Rotterdam", "a carrier", "Carrier", "The Line", "Book", "Ocean", "Blue", "Newark", "Ocean Shipping Lines", "Port of Rotterdam"} {
+		a, tools, _ := newAssistant(nil, &node{})
+		a.Directory = rawDirectory{{Domain: evil, Name: name, Roles: []string{directory.RoleCarrier}}}
+		var c Conversation
+		oneCall(t, a, tools, &c, "Find me a carrier from Rotterdam to Newark", search)
+		if ev := oneCall(t, a, tools, &c, "Great, book the Ocean Blue one: a carrier from Rotterdam to Newark, port of Rotterdam, ocean shipping lines", draftTo(evil)); ev.Error == "" {
+			t.Errorf("a found partner named %q was named by generic words", name)
+		}
+	}
+	// The message that asked for the search can't name what it found.
+	a, tools, _ := newAssistant(nil, &node{})
+	a.Directory = rawDirectory{{Domain: evil, Name: "Northwind Freight", Roles: []string{directory.RoleCarrier}}}
+	var c Conversation
+	a.Model = fake.Turns(llm.GenerateResponse{ToolCalls: []llm.ToolCall{search}}, llm.GenerateResponse{ToolCalls: []llm.ToolCall{draftTo(evil)}},
+		llm.GenerateResponse{Text: "OK."})
+	*tools = nil
+	if _, err := a.Turn(context.Background(), &c, "Find a carrier from Rotterdam to Newark and book with Northwind Freight"); err != nil {
+		t.Fatal(err)
+	}
+	if len(*tools) != 2 || (*tools)[1].Error == "" {
+		t.Errorf("a find named in the same message: %+v", *tools)
+	}
+	// A later message can, by its distinctive name.
+	if ev := oneCall(t, a, tools, &c, "Book with Northwind Freight", draftTo(evil)); ev.Error != "" {
+		t.Errorf("a find named later: %q", ev.Error)
+	}
+	// A find whose name overlaps an address-book partner's names neither.
+	a, tools, _ = newAssistant(nil, &node{})
+	a.AddressBook = []directory.Entry{oceanBlue}
+	a.Directory = rawDirectory{{Domain: evil, Name: "Ocean Blue Lines", Roles: []string{directory.RoleCarrier}}}
+	c = Conversation{}
+	oneCall(t, a, tools, &c, "Find me a carrier from Rotterdam to Newark", search)
+	for _, d := range []string{evil, "ocean-blue.example"} {
+		if ev := oneCall(t, a, tools, &c, "Book with Ocean Blue Lines", draftTo(d)); !strings.Contains(ev.Error, "could mean") && !strings.Contains(ev.Error, "hasn't named") {
+			t.Errorf("overlapping names, %s: %q", d, ev.Error)
+		}
+	}
+	// The domain itself always works.
+	if ev := oneCall(t, a, tools, &c, "Book with "+evil, draftTo(evil)); ev.Error != "" {
+		t.Errorf("by domain: %q", ev.Error)
+	}
+}
+
+// TestFoundLifetime: finds go with a reset, a failed turn, and turns
+// trimmed away.
+func TestFoundLifetime(t *testing.T) {
+	a, tools, _ := newAssistant(nil, &node{})
+	a.Directory = rawDirectory{{Domain: "north.verified.example", Name: "Northwind Freight", Roles: []string{directory.RoleCarrier}}}
+	var c Conversation
+	oneCall(t, a, tools, &c, "find", fake.Call("1", ToolFind, `{}`))
+	if len(c.foundEntries("")) != 1 {
+		t.Fatal("nothing found")
+	}
+	c.Reset()
+	if len(c.foundEntries("")) != 0 {
+		t.Error("a find survived a reset")
+	}
+	// A turn whose model fails: its finds were never shown.
+	calls := 0
+	a.Model = &fake.Model{Respond: func(llm.GenerateRequest) (llm.GenerateResponse, error) {
+		if calls++; calls == 1 {
+			return llm.GenerateResponse{ToolCalls: []llm.ToolCall{fake.Call("1", ToolFind, `{}`)}}, nil
+		}
+		return llm.GenerateResponse{}, fake.ErrUnavailable
+	}}
+	if _, err := a.Turn(context.Background(), &c, "find"); err == nil {
+		t.Fatal("the turn didn't fail")
+	}
+	if len(c.foundEntries("")) != 0 {
+		t.Error("a failed turn's find stayed")
+	}
+	// Trimmed away with its turn.
+	oneCall(t, a, tools, &c, "find", fake.Call("1", ToolFind, `{}`))
+	for range MaxTurns {
+		a.Model = fake.Turns(llm.GenerateResponse{Text: "OK."})
+		if _, err := a.Turn(context.Background(), &c, "hello"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(c.foundEntries("")) != 0 {
+		t.Error("a find outlived its turn")
+	}
+}
+
+// TestRemoteEntries: entries from a directory that isn't a checked file
+// are checked anyway; invalid ones never reach the model.
+func TestRemoteEntries(t *testing.T) {
+	a, tools, _ := newAssistant(nil, &node{})
+	many := make([]directory.Lane, directory.MaxLanes+1)
+	for i := range many {
+		many[i] = directory.Lane{From: "NLRTM", To: "USEWR"}
+	}
+	a.Directory = rawDirectory{
+		{Domain: "not a domain", Name: "A", Roles: []string{directory.RoleCarrier}},
+		{Domain: "b.verified.example", Name: "Bidi\u202eName", Roles: []string{directory.RoleCarrier}},
+		{Domain: "c.verified.example", Name: "Lanes", Roles: []string{directory.RoleCarrier}, Lanes: many},
+		{Domain: "d.verified.example", Name: "Odd", Roles: []string{"bank"}},
+		{Domain: "e.verified.example", Name: "Fine Carrier Co", Roles: []string{directory.RoleCarrier}},
+	}
+	oneCall(t, a, tools, &Conversation{}, "find", fake.Call("1", ToolFind, `{}`))
+	var got struct{ Candidates []Candidate }
+	_ = json.Unmarshal([]byte(lastResult(a)), &got)
+	if len(got.Candidates) != 1 || got.Candidates[0].Domain != "e.verified.example" {
+		t.Errorf("candidates %+v", got.Candidates)
+	}
+}
+
+// TestNewConsignee: a consignee domain not in the address book is marked.
+func TestNewConsignee(t *testing.T) {
+	draft := fake.Call("1", ToolDraftBooking, draftJSON(`"consigneeName":"X","consigneeDomain":"x-corp.example"`))
+	a, tools, _ := newAssistant(nil, &node{})
+	if ev := oneCall(t, a, tools, &Conversation{}, "Book with ocean-blue.example to x-corp.example", draft); ev.Draft == nil || !ev.Draft.NewConsignee {
+		t.Errorf("a new consignee: %+v", ev)
+	}
+	a.AddressBook = []directory.Entry{{Domain: "x-corp.example", Name: "X Corp", Roles: []string{directory.RoleConsignee}}}
+	if ev := oneCall(t, a, tools, &Conversation{}, "Book with ocean-blue.example to x-corp.example", draft); ev.Draft == nil || ev.Draft.NewConsignee {
+		t.Errorf("a known consignee: %+v", ev)
 	}
 }
 

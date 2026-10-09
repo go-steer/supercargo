@@ -35,7 +35,9 @@ type Draft struct {
 	RequiredBy string
 	// NewPartner: a carrier not in the address book, never booked with.
 	NewPartner bool
-	Created    time.Time
+	// NewConsignee: a consignee domain not in the address book.
+	NewConsignee bool
+	Created      time.Time
 }
 
 // Drafts holds a session's drafts. Taking one removes it, so a draft is

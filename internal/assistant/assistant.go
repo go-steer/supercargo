@@ -125,7 +125,7 @@ type Conversation struct {
 	userTexts []string
 	// found are verified partners find_partners turned up: the user may
 	// name one by its name.
-	found []directory.Entry
+	found []found
 	// turns are the indexes in messages where each turn's user message is.
 	turns []int
 }
@@ -150,7 +150,7 @@ func (c *Conversation) Note(text string) error {
 func (c *Conversation) Reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.messages, c.userTexts, c.turns = nil, nil, nil
+	c.messages, c.userTexts, c.turns, c.found = nil, nil, nil, nil
 }
 
 // ErrBusy refuses a turn while another is running.
@@ -248,6 +248,9 @@ func (a *Assistant) turn(ctx context.Context, c *Conversation, text string, user
 	}()
 	c.trim()
 	savedMsgs, savedTexts := len(c.messages), len(c.userTexts)
+	c.mu.Lock()
+	savedFound := len(c.found)
+	c.mu.Unlock()
 	c.turns = append(c.turns, len(c.messages))
 	c.messages = append(c.messages, llm.Message{Role: llm.User, Text: text})
 	if !user {
@@ -257,6 +260,10 @@ func (a *Assistant) turn(ctx context.Context, c *Conversation, text string, user
 	reply, err := a.loop(ctx, c)
 	if err != nil {
 		c.messages, c.userTexts, c.turns = c.messages[:savedMsgs], c.userTexts[:savedTexts], c.turns[:len(c.turns)-1]
+		// What the failed turn found was never shown: it names nothing.
+		c.mu.Lock()
+		c.found = c.found[:savedFound]
+		c.mu.Unlock()
 		return Reply{Drafts: reply.Drafts}, err
 	}
 	return reply, nil
@@ -273,6 +280,16 @@ func (c *Conversation) trim() {
 		cut := c.turns[drop]
 		c.messages = slices.Clone(c.messages[cut:])
 		c.userTexts = slices.Clone(c.userTexts[drop:])
+		// Finds from dropped turns go with them; the rest keep their place.
+		c.mu.Lock()
+		kept := c.found[:0]
+		for _, f := range c.found {
+			if f.after -= drop; f.after > 0 {
+				kept = append(kept, f)
+			}
+		}
+		c.found = kept
+		c.mu.Unlock()
 		turns := make([]int, 0, len(c.turns)-drop)
 		for _, t := range c.turns[drop:] {
 			turns = append(turns, t-cut)

@@ -175,6 +175,9 @@ func (m *Model) dialogView() string {
 	}
 	if c := r.Consignee; c != nil {
 		lines = append(lines, line("Consignee:", c.Name+" ("+c.Domain+")"))
+		if d.NewConsignee {
+			lines = append(lines, fmt.Sprintf("%-11s", "")+m.st.pending.Render("A consignee not in your address book. Check the domain: it goes to the carrier."))
+		}
 	}
 	if s := r.Subscription; s != nil {
 		lines = append(lines, line("Updates:", strings.Join(s.Intents, ", ")+" → "+s.Endpoint))

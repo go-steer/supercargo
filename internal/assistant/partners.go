@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/directory"
+	"github.com/go-steer/supercargo/internal/ports"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
@@ -119,18 +120,17 @@ func (a *Assistant) findPartners(ctx context.Context, c *Conversation, input jso
 			return nil, refuse("%q is not a UN/LOCODE", p)
 		}
 	}
-	entries, err := a.Directory.Search(ctx, directory.Query{Role: in.Role, Mode: in.Mode, From: in.From, To: in.To, Text: in.Text})
+	all, err := a.Directory.Search(ctx, directory.Query{Role: in.Role, Mode: in.Mode, From: in.From, To: in.To, Text: in.Text})
 	if err != nil {
 		return nil, err
 	}
-	var self []int
-	for i, e := range entries {
-		if e.Domain == a.Self.Domain {
-			self = append(self, i)
+	// A remote directory's entries are checked like a file's: one that
+	// isn't valid is dropped, and so are we.
+	var entries []directory.Entry
+	for _, e := range all {
+		if e.Validate() == nil && e.Domain != a.Self.Domain {
+			entries = append(entries, e)
 		}
-	}
-	for i := len(self) - 1; i >= 0; i-- {
-		entries = slices.Delete(entries, self[i], self[i]+1)
 	}
 	more := len(entries) > MaxVerify
 	if more {
@@ -178,13 +178,21 @@ func (a *Assistant) inAddressBook(domain string) bool {
 	return slices.ContainsFunc(a.AddressBook, func(e directory.Entry) bool { return e.Domain == domain })
 }
 
-// addFound remembers a verified candidate for this conversation: the user
-// may name it by its name from now on.
+// found is a verified candidate find_partners turned up. after is the
+// index in userTexts from which the user's words can name it: the turns
+// after the one that found it, so a request can't name what it hasn't
+// seen yet.
+type found struct {
+	directory.Entry
+	after int
+}
+
+// addFound remembers a verified candidate for this conversation.
 func (c *Conversation) addFound(e directory.Entry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !slices.ContainsFunc(c.found, func(f directory.Entry) bool { return f.Domain == e.Domain }) {
-		c.found = append(c.found, e)
+	if !slices.ContainsFunc(c.found, func(f found) bool { return f.Domain == e.Domain }) {
+		c.found = append(c.found, found{e, len(c.userTexts)})
 	}
 }
 
@@ -194,44 +202,89 @@ func (c *Conversation) foundEntries(role string) []directory.Entry {
 	var out []directory.Entry
 	for _, e := range c.found {
 		if role == "" || slices.Contains(e.Roles, role) {
-			out = append(out, e)
+			out = append(out, e.Entry)
 		}
 	}
 	return out
 }
 
+// genericWords name no company on their own: a found partner whose name
+// is only these (and port names) must be named by its domain.
+var genericWords = func() map[string]bool {
+	m := map[string]bool{}
+	for _, w := range strings.Fields(`a an the and of for to from in on at by with our your their this that one it its
+		book booking ship shipping shipment shipments carrier carriers line lines liner shipper consignee receiver
+		ocean sea road rail air truck trucking freight cargo container containers logistics transport transatlantic
+		express global international group company co inc ltd llc gmbh bv sa ag corp services service port ports`) {
+		m[w] = true
+	}
+	for _, n := range ports.Names() {
+		for _, w := range strings.Fields(directory.NameKey(n)) {
+			m[w] = true
+		}
+	}
+	return m
+}()
+
+// distinctive: a found partner's name the user can name it by, at least
+// two words or six letters, not all of them generic.
+func distinctive(key string) bool {
+	words := strings.Fields(key)
+	if len(words) < 2 && len([]rune(key)) < 6 {
+		return false
+	}
+	return slices.ContainsFunc(words, func(w string) bool { return !genericWords[w] })
+}
+
+// overlaps: one name's words are a run of the other's ("Blue" and "Ocean
+// Blue"), so saying the longer says the shorter too.
+func overlaps(a, b string) bool {
+	return a == b || strings.Contains(" "+a+" ", " "+b+" ") || strings.Contains(" "+b+" ", " "+a+" ")
+}
+
 // named is the counterparty rule: the user wrote domain in this
 // conversation (Conversation.named), or wrote the name of a partner whose
-// domain it is: one in our address book, or a verified one found in this
-// conversation. The name is matched as whole words, case folded; two
-// partners of that name with different domains name neither. The user's
-// words decide, never the model's.
+// domain it is. Names are matched as whole words, case folded:
+//   - a partner in our address book, by a name of at least 3 characters;
+//   - a verified partner find_partners turned up, only in messages after
+//     the one that found it, and only by a distinctive name.
+//
+// A name that overlaps another known partner's (the same, or one inside
+// the other) names neither: the assistant asks. The user's words decide,
+// never the model's or a tool result's.
 func (a *Assistant) named(c *Conversation, domain string) error {
 	if err := c.named(domain); err == nil || !envelope.ValidDomain(domain) {
 		return err // typed, or not even a domain
 	}
 	c.mu.Lock()
 	texts := slices.Clone(c.userTexts)
-	known := append(slices.Clone(a.AddressBook), c.found...)
-	c.mu.Unlock()
-	var said []string
-	for _, t := range texts {
-		said = append(said, " "+directory.NameKey(t)+" ")
+	known := make([]found, 0, len(a.AddressBook)+len(c.found))
+	for _, e := range a.AddressBook {
+		known = append(known, found{e, -1})
 	}
-	saidName := func(key string) bool {
-		if len([]rune(key)) < minNameKey {
-			return false
+	known = append(known, c.found...)
+	c.mu.Unlock()
+	said := make([]string, len(texts))
+	for i, t := range texts {
+		said[i] = " " + directory.NameKey(t) + " "
+	}
+	saidName := func(key string, from int) bool {
+		for _, s := range said[max(from, 0):] {
+			if strings.Contains(s, " "+key+" ") {
+				return true
+			}
 		}
-		return slices.ContainsFunc(said, func(s string) bool { return strings.Contains(s, " "+key+" ") })
+		return false
 	}
 	for _, e := range known {
 		key := directory.NameKey(e.Name)
-		if e.Domain != domain || !saidName(key) {
+		if e.Domain != domain || len([]rune(key)) < minNameKey || (e.after >= 0 && !distinctive(key)) || !saidName(key, e.after) {
 			continue
 		}
 		for _, o := range known {
-			if o.Domain != domain && directory.NameKey(o.Name) == key {
-				return refuse("two partners are called %q (%s and %s); ask the user which domain they mean", OneLine(e.Name, 64), domain, o.Domain)
+			if o.Domain != domain && overlaps(key, directory.NameKey(o.Name)) {
+				return refuse("%q could mean %s or %s (%q); ask the user which domain they mean",
+					OneLine(e.Name, 64), domain, o.Domain, OneLine(o.Name, 64))
 			}
 		}
 		return nil

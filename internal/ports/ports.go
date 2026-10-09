@@ -43,6 +43,15 @@ func Coords(code string) (lat, lng float64, ok bool) {
 }
 
 // Name is the port's name, or its code if it has no known name.
+// Names are the table's port names.
+func Names() []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, n)
+	}
+	return out
+}
+
 func Name(code string) string {
 	if n, ok := names[code]; ok {
 		return n
