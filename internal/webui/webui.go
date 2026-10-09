@@ -103,7 +103,10 @@ type Config struct {
 	// the UI has no assistant). Each session gets its own, with its own
 	// conversation and drafts.
 	NewAssistant func() (*assistant.Assistant, error)
-	Now          func() time.Time
+	// Inbox, if set, holds the drafts the company's outside agents made
+	// over MCP; the shipper role's personas confirm them here.
+	Inbox *assistant.Assistant
+	Now   func() time.Time
 }
 
 // Panel is one UI on the presenter page.
@@ -140,6 +143,8 @@ type server struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 	order    []string // session IDs, oldest first
+	// inboxShown is when the node first handed each inbox draft to a page.
+	inboxShown map[string]time.Time
 }
 
 // Handler serves the UI under Prefix.
@@ -179,6 +184,9 @@ func Handler(cfg Config) http.Handler {
 	mux.HandleFunc("POST /ui/api/assistant/turn", s.authed(s.role(asShipper, s.assistantTurn)))
 	mux.HandleFunc("POST /ui/api/assistant/send", s.authed(s.role(asShipper, s.assistantSend)))
 	mux.HandleFunc("POST /ui/api/assistant/discard", s.authed(s.role(asShipper, s.assistantDiscard)))
+	mux.HandleFunc("GET /ui/api/inbox", s.authed(s.role(asShipper, s.inbox)))
+	mux.HandleFunc("POST /ui/api/inbox/send", s.authed(s.role(asShipper, s.inboxSend)))
+	mux.HandleFunc("POST /ui/api/inbox/discard", s.authed(s.role(asShipper, s.inboxDiscard)))
 	mux.HandleFunc("POST /ui/api/disrupt", s.authed(s.role([]string{RoleOperator}, s.disrupt)))
 	return s.hostCheck(s.headers(mux))
 }

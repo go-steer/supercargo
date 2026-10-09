@@ -253,6 +253,11 @@ func overlaps(a, b string) bool {
 // the other) names neither: the assistant asks. The user's words decide,
 // never the model's or a tool result's.
 func (a *Assistant) named(c *Conversation, domain string) error {
+	if c.external && envelope.ValidDomain(domain) {
+		// An outside agent's session: no user's words to check; every
+		// effect still waits for a person in the node's UI (external.go).
+		return nil
+	}
 	if err := c.named(domain); err == nil || !envelope.ValidDomain(domain) {
 		return err // typed, or not even a domain
 	}

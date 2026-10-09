@@ -123,6 +123,9 @@ type Conversation struct {
 	busy      bool
 	messages  []llm.Message
 	userTexts []string
+	// external: an outside agent's session (external.go), where the
+	// counterparty rule gives way to the person's confirmation.
+	external bool
 	// found are verified partners find_partners turned up: the user may
 	// name one by its name.
 	found []found

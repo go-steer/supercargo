@@ -46,6 +46,7 @@ import (
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/llm/anthropic"
 	"github.com/go-steer/supercargo/internal/llm/gemini"
+	"github.com/go-steer/supercargo/internal/mcpserver"
 	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/operator"
 	"github.com/go-steer/supercargo/internal/shipper"
@@ -54,6 +55,7 @@ import (
 	"github.com/go-steer/supercargo/internal/telemetry"
 	"github.com/go-steer/supercargo/internal/webui"
 	"github.com/go-steer/supercargo/pkg/discovery"
+	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/sig"
 	"github.com/go-steer/supercargo/pkg/transport/a2a"
@@ -94,6 +96,10 @@ type App struct {
 	// controlAPI is the control API's handler: served on the socket, and
 	// behind the browser UI's sign-in.
 	controlAPI http.Handler
+	// mcp is the MCP endpoint, if configured, and inbox the tools behind
+	// it, whose drafts people confirm in the browser UI.
+	mcp   http.Handler
+	inbox *assistant.Assistant
 
 	metrics *telemetry.Metrics
 	gauges  metric.Registration
@@ -262,6 +268,9 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			a.Control = control.Server(mux, slog.NewLogLogger(logger.Handler(), slog.LevelInfo))
 		}
 	}
+	if err := a.mcpServer(); err != nil {
+		return nil, err
+	}
 	a.Server = &http.Server{
 		Addr:    cfg.Listen,
 		Handler: a.publicHandler(n),
@@ -302,15 +311,19 @@ func customerGuard(g func([]byte) error) func(string, []byte) error {
 // section. One listener, as a Cloud Run service has one port.
 func (a *App) publicHandler(n *node.Node) http.Handler {
 	protocol := extractTrace(n.Handler())
+	mux := http.NewServeMux()
+	if a.mcp != nil {
+		mux.Handle(mcpserver.Path, a.mcp)
+	}
+	mux.Handle("/", protocol)
 	w := a.Config.Web
 	if w == nil {
-		return protocol
+		return mux
 	}
 	personas := make([]webui.Persona, len(w.Personas))
 	for i, p := range w.Personas {
 		personas[i] = webui.Persona{ID: p.ID, Name: p.Name, Title: p.Title, Roles: p.Roles}
 	}
-	mux := http.NewServeMux()
 	var newAssistant func() (*assistant.Assistant, error)
 	if a.Config.Has(config.RoleShipper) && a.Config.LLM != nil {
 		node := assistant.ControlNode{Client: control.InProcess(a.controlAPI, 2*time.Minute)}
@@ -338,10 +351,58 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 		}
 	}
 	mux.Handle(webui.Prefix, webui.Handler(webui.Config{Company: a.Config.Name, Domain: a.Config.Domain, Personas: personas, NewAssistant: newAssistant,
-		FrameAncestors: w.FrameAncestors, Panels: panels,
+		FrameAncestors: w.FrameAncestors, Panels: panels, Inbox: a.inbox,
 		Control: a.controlAPI, Secure: a.Config.TLS.Mode != config.TLSInsecureDev, Hosts: append(listenHosts(a.Config.Listen), w.Hosts...)}))
-	mux.Handle("/", protocol)
 	return mux
+}
+
+// mcpServer builds the MCP endpoint, if configured: the shipper's tools for
+// the company's own agents, whose drafts wait in the inbox for a person to
+// confirm in the browser UI. A missing or short token stops the node.
+func (a *App) mcpServer() error {
+	if a.Config.MCP == nil || a.Config.MCP.Server == nil {
+		return nil
+	}
+	ms := a.Config.MCP.Server
+	inbox, err := ToolAssistant(a.Config, assistant.ControlNode{Client: control.InProcess(a.controlAPI, 2*time.Minute)})
+	if err != nil {
+		return err
+	}
+	inbox.Drafts.Prefix = "MD"
+	token, from, err := mcpToken(ms)
+	if err != nil {
+		return err
+	}
+	h, err := mcpserver.Handler(mcpserver.Config{Assistant: inbox, Token: token, Name: a.Config.Domain, Version: envelope.Version,
+		UIURL: ms.UIURL,
+		OnCall: func(t activity.Tool) {
+			a.Activity.Publish(activity.Entry{Side: activity.SideCustomer, Kind: activity.KindTool, Tool: &t})
+		}})
+	if err != nil {
+		return fmt.Errorf("mcp: server (token from %s): %w", from, err)
+	}
+	a.mcp, a.inbox = h, inbox
+	return nil
+}
+
+// mcpToken reads the MCP endpoint's token from its environment variable or
+// its file, which must be its owner's alone.
+func mcpToken(ms *config.MCPServer) (token, from string, err error) {
+	if ms.TokenEnv != "" {
+		return os.Getenv(ms.TokenEnv), ms.TokenEnv, nil
+	}
+	fi, err := os.Stat(ms.TokenFile)
+	if err != nil {
+		return "", "", fmt.Errorf("mcp: server: %w", err)
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		return "", "", fmt.Errorf("mcp: server: %s is readable by others (mode %v); chmod 600 it", ms.TokenFile, fi.Mode().Perm())
+	}
+	b, err := os.ReadFile(ms.TokenFile) //nolint:gosec // G304: the operator's own configured file
+	if err != nil {
+		return "", "", fmt.Errorf("mcp: server: %w", err)
+	}
+	return strings.TrimSpace(string(b)), ms.TokenFile, nil
 }
 
 // listenHosts is the listen address's host, if it names one, for the UI's

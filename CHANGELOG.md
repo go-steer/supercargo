@@ -16,6 +16,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 - The browser UI's activity marks each envelope entry with the binding it went over: an `A2A` badge (questions to the carrier) or `REST` (everything else), with a tooltip saying the signed envelope is the same either way.
 
+- MCP for the company's own agents (#40): Cymbal's node serves its assistant tools over MCP (streamable HTTP at `/mcp`, `mcp.server` with a bearer token from `tokenEnv` or `tokenFile`), through the same checks on the exact argument bytes. Tools only draft: drafts wait in the node's inbox, which the browser UI shows ("From your agents"), and a person confirms each in the usual dialog; the tool's answer links to it. Questions to carriers are limited per session, every call is in the activity log (`tool via mcp`), and `hello-ulp` sets up a Gemini CLI project for it. OAuth for Gemini Enterprise is next (#39).
+
 - Voyage-wide disruptions: `ulpctl disrupt --voyage 42W [--vessel …]`, the control API's `POST /disrupt` with `voyage`, and a "this booking or the whole voyage" choice in the carrier's Disrupt dialog. One decision delays every booking under way on the voyage (arrived ones are left out), each with its own estimate and signed alert; a booking that can't take the delay is reported and the rest go ahead, and one delayed whose alert couldn't be sent is marked `applied`, with a warning not to disrupt again.
 
 - `hello-ulp` on a Cloud Workstation says to open each company's address once before the presenter page (the proxy signs you in per address, and its sign-in page won't load in a frame).

@@ -36,6 +36,7 @@ const (
 	KindVoyage   = "voyage"
 	KindPush     = "push"
 	KindSummary  = "summary"
+	KindTool     = "tool"
 )
 
 // Entry is one thing the node did. Exactly one of the kind-specific fields
@@ -53,6 +54,18 @@ type Entry struct {
 	Voyage   *Voyage   `json:"voyage,omitempty"`
 	Push     *Push     `json:"push,omitempty"`
 	Summary  *Summary  `json:"summary,omitempty"`
+	Tool     *Tool     `json:"tool,omitempty"`
+}
+
+// Tool is a tool call an outside agent made on this node (over MCP): which
+// tool, and how it went. Never its arguments or its result, which may
+// carry the company's data; the stream is everyone's on the side.
+type Tool struct {
+	Via     string `json:"via"`              // "mcp"
+	Name    string `json:"name"`             // the tool's name, as declared
+	Outcome string `json:"outcome"`          // ok, refused, or drafted
+	Reason  string `json:"reason,omitempty"` // why refused, one capped line
+	Draft   string `json:"draft,omitempty"`  // the draft it made, if any
 }
 
 // Envelope is a message in or out and what the node decided about it

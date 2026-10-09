@@ -159,6 +159,10 @@ control:
   socket: $dir/cy.sock
 business:
   file: $dir/business.yaml   # private: never in an envelope
+mcp:
+  server:                  # Cymbal's tools for its own agents (Gemini CLI, Gemini Enterprise) at /mcp
+    tokenFile: $dir/mcp-token
+    uiURL: "$(web_origin "$SH_PORT")/ui/"   # where a person confirms an agent's drafts
 addressBook:
   file: $dir/address-book.yaml   # the partners Cymbal knows
 directory:
@@ -170,6 +174,25 @@ web:                     # the browser UI at http://cymbal-shoes.localhost:$SH_P
     - { id: alex, name: Alex, title: "Logistics", roles: [shipper] }$(web_hosts $SH_PORT)$(web_frame_ancestors)
 $telemetry
 EOF
+
+  # The MCP endpoint's bearer token (kept between runs), and a Gemini CLI
+  # project that uses it: cd "$dir/gemini" && gemini.
+  if [[ ! -s "$dir/mcp-token" ]]; then
+    (umask 077 && head -c 36 /dev/urandom | base64 | tr -d '/+=\n' >"$dir/mcp-token")
+  fi
+  chmod 600 "$dir/mcp-token"
+  mkdir -p "$dir/gemini/.gemini"
+  cat >"$dir/gemini/.gemini/settings.json" <<EOF
+{
+  "mcpServers": {
+    "cymbal-shoes": {
+      "httpUrl": "http://127.0.0.1:$SH_PORT/mcp",
+      "headers": { "Authorization": "Bearer $(cat "$dir/mcp-token")" }
+    }
+  }
+}
+EOF
+  chmod 600 "$dir/gemini/.gemini/settings.json"
 
   # Cymbal's private business context: what the delay will mean to it.
   cat >"$dir/business.yaml" <<'EOF'

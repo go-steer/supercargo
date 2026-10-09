@@ -110,6 +110,25 @@ keys: [{kid: cy-1, privateKeyFile: k.pem}]}`
 	if _, err := Parse([]byte(operatorYAML + "business: { file: /etc/ulp/business.yaml }\n")); err == nil {
 		t.Error("an operator with a business file was accepted")
 	}
+	// The MCP endpoint: the shipper's, with its token from one place.
+	c, err = Parse([]byte(strings.TrimSuffix(minimal, "}") + `, mcp: {server: {tokenFile: /etc/ulp/mcp-token, uiURL: "https://cymbal-shoes.example/ui/"}}}`))
+	if err != nil || c.MCP.Server.TokenFile != "/etc/ulp/mcp-token" {
+		t.Errorf("mcp server: %+v, %v", c, err)
+	}
+	for _, bad := range []string{
+		", mcp: {server: {}}}",
+		", mcp: {server: {tokenEnv: T, tokenFile: /x}}}",
+		", mcp: {server: {tokenEnv: 'not a name'}}}",
+		", mcp: {server: {tokenFile: relative/token}}}",
+		", mcp: {server: {tokenEnv: T, uiURL: 'ftp://x'}}}",
+	} {
+		if _, err := Parse([]byte(strings.TrimSuffix(minimal, "}") + bad)); err == nil {
+			t.Errorf("a config with %s was accepted", bad)
+		}
+	}
+	if _, err := Parse([]byte(operatorYAML + "mcp: { server: { tokenEnv: T } }\n")); err == nil {
+		t.Error("an operator-only node with the shipper's MCP tools was accepted")
+	}
 	// The address book and the directory: files at absolute paths.
 	c, err = Parse([]byte(strings.TrimSuffix(minimal, "}") + ", addressBook: {file: /etc/ulp/partners.yaml}, directory: {file: /etc/ulp/directory.yaml}}"))
 	if err != nil || c.AddressBook.File != "/etc/ulp/partners.yaml" || c.Directory.File != "/etc/ulp/directory.yaml" {

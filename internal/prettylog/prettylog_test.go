@@ -67,6 +67,9 @@ func story(l *slog.Logger) {
 		{Envelope: &activity.Envelope{Direction: "in", Outcome: "malformed", Reason: "not a JWS"}},
 		{Model: &activity.Model{Booking: "OB-BKG-1042", Attempt: 2, Model: "anthropic:claude", LatencyMS: 1500, Outcome: "invalid", Reason: "cites EV-9"}},
 		{Model: &activity.Model{Agent: "assistant · alex", Tools: []string{"find_partners", "list_partners"}, Attempt: 2, Model: "anthropic:claude", Outcome: "error", Reason: "timeout"}},
+		{Tool: &activity.Tool{Via: "mcp", Name: "list_shipments", Outcome: "ok"}},
+		{Tool: &activity.Tool{Via: "mcp", Name: "draft_booking", Outcome: "drafted", Draft: "MD-0001"}},
+		{Tool: &activity.Tool{Via: "mcp", Name: "ask_operator", Outcome: "refused", Reason: "at most 10 questions"}},
 		{Summary: &activity.Summary{Booking: "OB-BKG-1", Impact: "unknown", GeneratedBy: "template", Text: "Customs hold.\u001b[2J\nNext",
 			UnheldCauses: []string{"EV-404"}}},
 		// Refused after verifying, but not by authorization: REFUSED.
