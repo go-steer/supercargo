@@ -92,26 +92,23 @@ func (a *App) webGoogle() *webui.Google {
 }
 
 // mcpGoogle checks MCP callers' own Google tokens (mcp.server.auth:
-// google): issued to the company's client, for a verified email that a
-// persona acting as shipper has among its members. The tools are the
-// shipper role's, so no other role's members may call them.
+// google): issued to the company's client, for an account that signs in
+// as a persona acting as shipper. The persona is chosen as the UI chooses
+// it, the first whose members include the account; the tools are the
+// shipper role's, so it must act as shipper.
 func (a *App) mcpGoogle() (func(context.Context, string) (string, time.Time, error), *mcpserver.Metadata) {
 	if a.google == nil || a.Config.MCP.Server.Auth != config.AuthGoogle {
 		return nil, nil
 	}
-	var members []string
-	for _, p := range a.Config.Web.Personas {
-		if slices.Contains(p.Roles, config.RoleShipper) {
-			members = append(members, p.Members...)
-		}
-	}
+	personas := a.Config.Web.Personas
 	verify := func(ctx context.Context, token string) (string, time.Time, error) {
 		id, err := a.google.AccessToken(ctx, token)
 		if err != nil {
 			return "", time.Time{}, err
 		}
-		if !googleauth.Member(id.Email, members) {
-			return "", time.Time{}, errors.New("not a member of a persona acting as shipper")
+		i := slices.IndexFunc(personas, func(p config.Persona) bool { return id.Member(p.Members) })
+		if i < 0 || !slices.Contains(personas[i].Roles, config.RoleShipper) {
+			return "", time.Time{}, errors.New("not signed in as a persona acting as shipper")
 		}
 		return id.Email, time.Now().Add(googleauth.MaxTTL), nil
 	}

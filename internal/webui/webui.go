@@ -148,7 +148,9 @@ type server struct {
 	cfg          Config
 	cookie       string
 	signInCookie string
-	files        http.Handler
+	// cookiePath and signInPath are the cookies' paths.
+	cookiePath, signInPath string
+	files                  http.Handler
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -168,7 +170,14 @@ func Handler(cfg Config) http.Handler {
 	// local demo runs every node on 127.0.0.1.
 	suffix := strings.NewReplacer(".", "_", "-", "_").Replace(cfg.Domain)
 	s := &server{cfg: cfg, sessions: map[string]*session{}, files: http.StripPrefix(Prefix+"static/", http.FileServerFS(sub)),
-		cookie: "ulp_session_" + suffix, signInCookie: "ulp_signin_" + suffix}
+		cookie: "ulp_session_" + suffix, signInCookie: "ulp_signin_" + suffix, signInPath: Prefix + "auth/", cookiePath: Prefix}
+	if cfg.Secure {
+		// Over https, cookies only this exact host can set (no sibling
+		// subdomain can plant a session or a sign-in), which the __Host-
+		// prefix requires to have Path=/.
+		s.cookie, s.signInCookie = "__Host-"+s.cookie, "__Host-"+s.signInCookie
+		s.cookiePath, s.signInPath = "/", "/"
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ui/{$}", s.index)
 	mux.HandleFunc("GET /ui/presenter", s.presenter)
@@ -385,7 +394,7 @@ func (s *server) startSession(w http.ResponseWriter, r *http.Request, p Persona)
 	}
 	s.mu.Unlock()
 	//nolint:gosec // G124: Secure whenever the node serves TLS; insecure-dev is plain HTTP, local demos only
-	http.SetCookie(w, &http.Cookie{Name: s.cookie, Value: id, Path: Prefix, HttpOnly: true, Secure: s.cfg.Secure,
+	http.SetCookie(w, &http.Cookie{Name: s.cookie, Value: id, Path: s.cookiePath, HttpOnly: true, Secure: s.cfg.Secure,
 		SameSite: http.SameSiteStrictMode, MaxAge: int(SessionTTL / time.Second)})
 }
 
@@ -400,7 +409,7 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 	}
 	//nolint:gosec // G124: as at sign-in
-	http.SetCookie(w, &http.Cookie{Name: s.cookie, Value: "", Path: Prefix, HttpOnly: true, Secure: s.cfg.Secure,
+	http.SetCookie(w, &http.Cookie{Name: s.cookie, Value: "", Path: s.cookiePath, HttpOnly: true, Secure: s.cfg.Secure,
 		SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	control.Answer(w, http.StatusOK, struct{}{})
 }

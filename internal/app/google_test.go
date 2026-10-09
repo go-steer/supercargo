@@ -61,16 +61,24 @@ web:
     - { id: rae, name: Rae, roles: [receiver], members: ["@cymbal-shoes.example"] }`)
 	a := p.shipper
 	exp := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
-	tokeninfo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		email := map[string]string{"alex-token": "alex@cymbal-shoes.example", "rae-token": "rae@cymbal-shoes.example"}[r.FormValue("access_token")]
-		if email == "" {
-			http.Error(w, "{}", http.StatusBadRequest)
-			return
+	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := r.FormValue("access_token")
+		if r.URL.Path == "/userinfo" {
+			tok = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"aud": "123-abc.apps.googleusercontent.com", "email": email, "email_verified": "true", "exp": exp})
+		email := map[string]string{"alex-token": "alex@cymbal-shoes.example", "rae-token": "rae@cymbal-shoes.example"}[tok]
+		switch {
+		case email == "":
+			http.Error(w, "{}", http.StatusBadRequest)
+		case r.URL.Path == "/userinfo":
+			_ = json.NewEncoder(w).Encode(map[string]string{"email": email, "hd": "cymbal-shoes.example"})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]string{"aud": "123-abc.apps.googleusercontent.com", "email": email, "email_verified": "true", "exp": exp,
+				"scope": "openid https://www.googleapis.com/auth/userinfo.email"})
+		}
 	}))
-	defer tokeninfo.Close()
-	a.google.TokenInfo = tokeninfo.URL
+	defer google.Close()
+	a.google.TokenInfo, a.google.UserInfo = google.URL+"/tokeninfo", google.URL+"/userinfo"
 	srv := httptest.NewServer(a.Server.Handler)
 	defer srv.Close()
 
