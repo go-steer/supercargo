@@ -234,6 +234,8 @@ llm: { provider: fake }
 				key += " " + e.Envelope.Direction + " " + e.Envelope.Intent + " via " + e.Envelope.Via
 			case e.Record != nil:
 				key += " " + e.Record.Action
+			case e.Model != nil:
+				key += " " + e.Model.Agent
 			}
 			delete(left, key)
 			if len(left) == 0 {
@@ -248,10 +250,10 @@ llm: { provider: fake }
 		return out
 	}
 	if m := missing(shSock, "envelope in ulp.tnt.event via rest", "record recorded", "envelope out ulp.tnt.inquiry via a2a",
-		"summary", "model"); len(m) != 0 {
+		"summary", "model alert summarizer"); len(m) != 0 {
 		t.Errorf("the shipper's stream lacks %v", m)
 	}
-	if m := missing(opSock, "voyage", "record published", "model", "envelope in ulp.tnt.inquiry via a2a"); len(m) != 0 {
+	if m := missing(opSock, "voyage", "record published", "model inquiry responder", "envelope in ulp.tnt.inquiry via a2a"); len(m) != 0 {
 		t.Errorf("the operator's stream lacks %v", m)
 	}
 

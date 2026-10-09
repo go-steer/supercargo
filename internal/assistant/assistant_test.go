@@ -199,6 +199,38 @@ func TestTrackingAndAsk(t *testing.T) {
 	}
 }
 
+// TestModelCallReport: what a model call reports for the node's shared
+// activity names only declared tools, at most MaxCallsPerRound, and an
+// error as one capped line; a failed call names no tools.
+func TestModelCallReport(t *testing.T) {
+	calls := []llm.ToolCall{fake.Call("1", ToolList, `{}`), fake.Call("2", "our deadline is 2026-10-15, dock 4", `{}`)}
+	for i := range MaxCallsPerRound {
+		calls = append(calls, fake.Call(fmt.Sprint("x", i), ToolList, `{}`))
+	}
+	a, _, reported := newAssistant(fake.Turns(llm.GenerateResponse{ToolCalls: calls}, llm.GenerateResponse{Text: "OK."}), &node{})
+	if _, err := a.Turn(context.Background(), &Conversation{}, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	got := (*reported)[0].Tools
+	if len(got) != MaxCallsPerRound+1 || got[0] != ToolList || got[1] != "(unknown tool)" || got[MaxCallsPerRound] != "+2 more" {
+		t.Errorf("tools %q", got)
+	}
+	for _, n := range got {
+		if strings.Contains(n, "2026") {
+			t.Errorf("a model-made tool name reached the report: %q", n)
+		}
+	}
+	long := errors.New("HTTP 500: " + strings.Repeat("<html>body\n", 100))
+	a, _, reported = newAssistant(&fake.Model{Respond: func(llm.GenerateRequest) (llm.GenerateResponse, error) {
+		return llm.GenerateResponse{ToolCalls: []llm.ToolCall{fake.Call("1", ToolList, `{}`)}}, long
+	}}, &node{})
+	_, _ = a.Turn(context.Background(), &Conversation{}, "hello")
+	m := (*reported)[0]
+	if m.Outcome != "error" || len([]rune(m.Reason)) > 200 || strings.Contains(m.Reason, "\n") || len(m.Tools) != 0 {
+		t.Errorf("a failed call: %+v", m)
+	}
+}
+
 // TestRefusedCalls: every call that breaks a rule is refused before it
 // reaches the node, and the model gets an error result.
 func TestRefusedCalls(t *testing.T) {

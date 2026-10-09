@@ -283,7 +283,19 @@ func (h *Handler) envelope(rec record) string {
 
 // model renders a model call, in the aurora.
 func (h *Handler) model(rec record) string {
-	line := fmt.Sprintf("✦ model %s  %s  %s  %s→%s tokens", rec.get("model"), rec.get("booking"), rec.get("latency"), rec.get("inputTokens"), rec.get("outputTokens"))
+	line := "✦ model "
+	if a := rec.get("agent"); a != "" {
+		line += a + "  "
+	}
+	for _, p := range []string{rec.get("model"), rec.get("booking"), rec.get("latency")} {
+		if p != "" {
+			line += p + "  "
+		}
+	}
+	line += fmt.Sprintf("%s→%s tokens", rec.get("inputTokens"), rec.get("outputTokens"))
+	if t := rec.get("tools"); t != "" && t != "[]" {
+		line += "  tools " + t
+	}
 	if a := rec.get("attempt"); a != "" && a != "1" {
 		line += "  attempt " + a
 	}
