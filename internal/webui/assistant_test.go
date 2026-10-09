@@ -44,9 +44,13 @@ type node struct {
 }
 
 func (n *node) Profile(context.Context, string) (*shipper.Profile, error) {
-	if n.lookup != nil {
-		n.lookup <- struct{}{}
-		<-n.lookup
+	n.mu.Lock()
+	lookup := n.lookup
+	n.lookup = nil // once
+	n.mu.Unlock()
+	if lookup != nil {
+		lookup <- struct{}{}
+		<-lookup
 	}
 	return &shipper.Profile{Domain: "ocean-blue.example", Name: "Ocean Blue", Intents: []string{intents.BookingRequest}}, nil
 }
@@ -181,13 +185,25 @@ func TestProgress(t *testing.T) {
 	if p := progress(alex); p.Working || len(p.Tools) != 0 || p.Running != nil {
 		t.Errorf("idle: %+v", p)
 	}
-	n.lookup = make(chan struct{})
+	lookup := make(chan struct{})
+	n.mu.Lock()
+	n.lookup = lookup
+	n.mu.Unlock()
 	done := make(chan AssistantResponse)
 	go func() {
 		_, st := post(h, "/ui/api/assistant/turn", map[string]string{"text": "We have a new carrier, ocean-blue.example. What can they do?"}, alex)
 		done <- st
 	}()
-	<-n.lookup // the profile lookup has started
+	<-lookup // the profile lookup has started
+	// The progress carries no drafts (or anything but these), so polling
+	// it can never start a draft's ArmDelay.
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(do(h, http.MethodGet, "/ui/api/assistant/progress", "", alex).Body.Bytes(), &raw)
+	for k := range raw {
+		if k != "working" && k != "tools" && k != "running" {
+			t.Errorf("the progress carries %q", k)
+		}
+	}
 	p := progress(alex)
 	if !p.Working || p.Running == nil || p.Running.Name != assistant.ToolGetProfile || p.Running.Detail != "ocean-blue.example" {
 		t.Errorf("mid-turn: %+v", p)
@@ -195,7 +211,7 @@ func TestProgress(t *testing.T) {
 	if p := progress(jo); p.Working || p.Running != nil {
 		t.Errorf("another session saw this one's turn: %+v", p)
 	}
-	close(n.lookup)
+	close(lookup)
 	st := <-done
 	last := st.Lines[len(st.Lines)-1]
 	if len(last.Tools) != 1 || last.Tools[0].Detail != "ocean-blue.example" {
@@ -234,8 +250,13 @@ func TestAssistantGates(t *testing.T) {
 			t.Errorf("%s as the carrier: HTTP %d", path, code)
 		}
 	}
-	if rec := do(h, http.MethodGet, "/ui/api/assistant", "", sam); rec.Code != http.StatusForbidden {
-		t.Errorf("the assistant's state as the carrier: HTTP %d", rec.Code)
+	for _, path := range []string{"/ui/api/assistant", "/ui/api/assistant/progress"} {
+		if rec := do(h, http.MethodGet, path, "", sam); rec.Code != http.StatusForbidden {
+			t.Errorf("GET %s as the carrier: HTTP %d", path, rec.Code)
+		}
+		if rec := do(h, http.MethodGet, path, "", nil); rec.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s with no session: HTTP %d", path, rec.Code)
+		}
 	}
 	if code, _ := post(h, "/ui/api/assistant/turn", map[string]string{"text": "hi"}, alex, "Origin", "https://evil.example"); code != http.StatusForbidden {
 		t.Errorf("a cross-site turn: HTTP %d", code)

@@ -105,6 +105,9 @@ func run(chrome, shipperURL, operatorURL, presenterURL string) error {
 	if err := step("Cymbal Shoes: sign in as Alex", cy, signIn(shipperURL), chromedp.WaitVisible(`.composer textarea`, chromedp.ByQuery)); err != nil {
 		return err
 	}
+	if err := step("Cymbal Shoes: answers render as Markdown, and only as text", cy, checkMarkdown()); err != nil {
+		return err
+	}
 	if err := step("Cymbal Shoes: ask about the carrier", cy, ask("We have a new carrier, ocean-blue.example. What can they do?"),
 		waitText(`.turn.ai`, "ob-demo-1")); err != nil {
 		return err
@@ -192,6 +195,34 @@ func run(chrome, shipperURL, operatorURL, presenterURL string) error {
 				}
 			}
 		}))
+}
+
+// markdownCases are the page's Markdown renderer's input and the HTML it
+// must make: model output, so markup in it stays text.
+var markdownCases = [][2]string{
+	{"Booking **OB-1** is *late*: `EV-7`.", `<div class="md"><p>Booking <strong>OB-1</strong> is <em>late</em>: <code>EV-7</code>.</p></div>`},
+	{`<img src=x onerror=alert(1)> [x](javascript:alert(1))`, `<div class="md"><p>&lt;img src=x onerror=alert(1)&gt; [x](javascript:alert(1))</p></div>`},
+	{"1. Book\n\n2. Confirm\n   - sub\n3. Sail", `<div class="md"><ol><li>Book</li><li>Confirm<ul><li>sub</li></ul></li><li>Sail</li></ol></div>`},
+	{"3. third\n4. fourth", `<div class="md"><ol start="3"><li>third</li><li>fourth</li></ol></div>`},
+	{"**bold *both* more** and 5*3*2", `<div class="md"><p><strong>bold <em>both</em> more</strong> and 5*3*2</p></div>`},
+	{"```json\n{\"a\": \"*x*\"}\n```", `<div class="md"><pre><code>{"a": "*x*"}</code></pre></div>`},
+	{"# Title\nline one\nline two", `<div class="md"><div class="md-h">Title</div><p>line one<br>line two</p></div>`},
+}
+
+// checkMarkdown runs the page's renderer on markdownCases.
+func checkMarkdown() chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		for _, c := range markdownCases {
+			var got string
+			if err := chromedp.Evaluate(fmt.Sprintf(`markdown(%q).outerHTML`, c[0]), &got).Do(ctx); err != nil {
+				return err
+			}
+			if got != c[1] {
+				return fmt.Errorf("markdown(%q) = %s, want %s", c[0], got, c[1])
+			}
+		}
+		return nil
+	})
 }
 
 // holdFirstFetch intercepts the tab's requests matching pattern: the first

@@ -315,9 +315,6 @@ func (s *server) assistantTurn(w http.ResponseWriter, r *http.Request, _ Persona
 	now := s.cfg.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), TurnTimeout)
 	defer cancel()
-	c.mu.Lock()
-	c.tools = nil
-	c.mu.Unlock()
 	reply, err := c.a.Turn(ctx, c.conv, req.Text)
 	if errors.Is(err, assistant.ErrTooLong) || errors.Is(err, assistant.ErrBusy) {
 		code := http.StatusBadRequest
@@ -407,9 +404,6 @@ func (s *server) assistantSend(w http.ResponseWriter, r *http.Request, _ Persona
 	}
 	c.add(Line{Who: "note", Text: strings.TrimSpace("Sent " + req.DraftID + " to " + sent.Draft.Operator + ", signed. Answer: " + status + " " + ref),
 		Time: s.cfg.Now()})
-	c.mu.Lock()
-	c.tools = nil
-	c.mu.Unlock()
 	if reply, err := c.a.Report(ctx, c.conv, sent); err == nil {
 		c.add(Line{Who: "assistant", Text: reply.Text, Time: s.cfg.Now()})
 	} else {

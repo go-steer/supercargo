@@ -550,44 +550,68 @@ function renderLeftNow() {
 
 // ── the assistant ────────────────────────────────────────────────────
 // markdown renders the small Markdown subset models answer in (paragraphs,
-// bullet and numbered lists, headings, **bold**, *italics*, `code`) as
-// elements and text nodes only: the text is model output, so nothing in
-// it ever becomes markup, a link or an attribute.
+// bullet and numbered lists, one level nested, headings, code blocks,
+// **bold**, *italics*, `code`) as elements and text nodes only: the text
+// is model output, so nothing in it ever becomes markup, a link or an
+// attribute. (A numbered list's start is a number the code parsed.)
 function markdown(text) {
   const box = el('div', 'md');
-  let list = null, para = null;
-  const end = () => { list = null; para = null; };
+  let list = null, para = null, fence = null, gap = false;
+  const newList = (kind, n) => { const l = el(kind); if (kind === 'ol' && n > 1) l.start = n; return l; };
   for (const raw of String(text).split('\n')) {
+    if (fence) {
+      if (/^\s*```/.test(raw)) fence = null;
+      else fence.appendChild(document.createTextNode((fence.firstChild ? '\n' : '') + raw));
+      continue;
+    }
     const line = raw.trimEnd();
     let m;
-    if (!line.trim()) { end(); continue; }
-    if ((m = line.match(/^\s*(#{1,4})\s+(.*)$/))) {
-      end();
+    if (/^\s*```/.test(line)) {
+      list = null; para = null;
+      const pre = el('pre');
+      fence = pre.appendChild(el('code'));
+      box.appendChild(pre);
+    } else if (!line.trim()) {
+      // A list survives a blank line (models write loose lists); a
+      // paragraph doesn't.
+      para = null; gap = true;
+    } else if ((m = line.match(/^\s*(#{1,4})\s+(.*)$/))) {
+      list = null; para = null;
       box.appendChild(inline(el('div', 'md-h'), m[2]));
-    } else if ((m = line.match(/^\s*(?:[-*•]|(\d{1,3})[.)])\s+(.*)$/))) {
-      para = null;
-      const kind = m[1] ? 'ol' : 'ul';
-      if (!list || list.tagName.toLowerCase() !== kind) { list = el(kind); box.appendChild(list); }
-      list.appendChild(inline(el('li'), m[2]));
-    } else if (list && /^\s{2,}\S/.test(raw) && list.lastChild) {
+    } else if ((m = line.match(/^(\s*)(?:[-*•]|(\d{1,3})[.)])\s+(.*)$/))) {
+      para = null; gap = false;
+      const kind = m[2] ? 'ol' : 'ul', n = Number(m[2] || 1);
+      if (list && m[1].length >= 2 && list.lastChild) {
+        // Indented under an item: its sub-list.
+        const li = list.lastChild;
+        let sub = li.lastChild;
+        if (!sub || !sub.tagName || sub.tagName.toLowerCase() !== kind) sub = li.appendChild(newList(kind, n));
+        sub.appendChild(inline(el('li'), m[3]));
+      } else {
+        if (!list || list.tagName.toLowerCase() !== kind) list = box.appendChild(newList(kind, n));
+        list.appendChild(inline(el('li'), m[3]));
+      }
+    } else if (list && !gap && /^\s{2,}\S/.test(raw) && list.lastChild) {
       // A list item's continuation line.
       inline(list.lastChild, ' ' + line.trim());
     } else {
-      list = null;
+      list = null; gap = false;
       if (para) para.appendChild(document.createElement('br'));
-      else { para = el('p'); box.appendChild(para); }
+      else para = box.appendChild(el('p'));
       inline(para, line);
     }
   }
   return box;
 }
 
-// inline appends text to node with **bold**, *italics* or _italics_, and
-// `code` as elements; anything else, unmatched markers included, as text.
+// inline appends text to node with **bold**, *italics* and `code` as
+// elements; anything else, unmatched markers included, as text. An
+// asterisk right after a letter or digit (5*3*2) isn't emphasis.
 function inline(node, text) {
-  const re = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^*\s][^*\n]*\*)|((?<![\w])_[^_\s][^_\n]*_(?![\w]))/g;
+  const re = /(`[^`\n]+`)|(\*\*(?:[^*\n]|\*(?!\*))+\*\*)|(\*[^*\s](?:[^*\n]*[^*\s])?\*)/g;
   let at = 0, m;
   while ((m = re.exec(text))) {
+    if (m[3] && m.index > 0 && /[\p{L}\p{N}]/u.test(text[m.index - 1])) { re.lastIndex = m.index + 1; continue; }
     if (m.index > at) node.appendChild(document.createTextNode(text.slice(at, m.index)));
     const t = m[0];
     if (m[1]) node.appendChild(el('code', null, t.slice(1, -1)));
@@ -668,15 +692,17 @@ function renderChat() {
 // redraws the chat when it changes. It stops when the turn is over.
 function watchProgress() {
   state.progress = null;
+  const turn = state.turnSeq = (state.turnSeq || 0) + 1;
+  const live = () => state.thinking && state.turnSeq === turn; // this turn, not a later one
   let last = '';
   const tick = async () => {
-    if (!state.thinking) return;
+    if (!live()) return;
     try {
       const p = await api('assistant/progress');
       const key = JSON.stringify(p);
-      if (state.thinking && p.working && key !== last) { last = key; state.progress = p; renderChat(); }
-    } catch { /* the turn itself reports failures */ }
-    if (state.thinking) setTimeout(tick, 600);
+      if (live() && p.working && key !== last) { last = key; state.progress = p; renderChat(); }
+    } catch { return; /* signed out, say: the turn itself reports failures */ }
+    if (live()) setTimeout(tick, 600);
   };
   setTimeout(tick, 300);
 }

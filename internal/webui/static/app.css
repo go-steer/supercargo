@@ -169,6 +169,9 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
 .md p:last-child, .md ul:last-child, .md ol:last-child { margin-bottom: 0; }
 .md ul, .md ol { margin: 2px 0 6px; padding-left: 20px; }
 .md li { margin: 2px 0; }
+.md pre { margin: 4px 0 6px; padding: 6px 8px; background: var(--bg-elevated); border-radius: 4px; overflow-x: auto; }
+.md pre code { padding: 0; background: none; white-space: pre; }
+.md li > ul, .md li > ol { margin: 2px 0; }
 .md .md-h { font-weight: 700; margin: 6px 0 3px; }
 .md strong { font-weight: 700; }
 .md code { font-size: .95em; padding: 0 4px; border-radius: 3px; background: var(--bg-elevated); color: var(--cyan); }
