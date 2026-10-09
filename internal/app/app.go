@@ -44,6 +44,7 @@ import (
 	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/googleauth"
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/llm/anthropic"
 	"github.com/go-steer/supercargo/internal/llm/gemini"
@@ -101,6 +102,11 @@ type App struct {
 	// it, whose drafts people confirm in the browser UI.
 	mcp   http.Handler
 	inbox *assistant.Assistant
+	// mcpMeta is the MCP endpoint's protected-resource metadata, with
+	// Google sign-in.
+	mcpMeta http.Handler
+	// google is the company's Google OAuth client, if configured.
+	google *googleauth.Client
 
 	metrics *telemetry.Metrics
 	gauges  metric.Registration
@@ -269,6 +275,9 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			a.Control = control.Server(mux, slog.NewLogLogger(logger.Handler(), slog.LevelInfo))
 		}
 	}
+	if a.google, err = googleClient(cfg); err != nil {
+		return nil, err
+	}
 	if err := a.mcpServer(); err != nil {
 		return nil, err
 	}
@@ -317,11 +326,14 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 		// (a ServeMux would clean paths and redirect).
 		next := protocol
 		protocol = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == mcpserver.Path {
+			switch {
+			case r.URL.Path == mcpserver.Path:
 				a.mcp.ServeHTTP(w, r)
-				return
+			case a.mcpMeta != nil && (r.URL.Path == mcpserver.MetadataPath+mcpserver.Path || r.URL.Path == mcpserver.MetadataPath):
+				a.mcpMeta.ServeHTTP(w, r)
+			default:
+				next.ServeHTTP(w, r)
 			}
-			next.ServeHTTP(w, r)
 		})
 	}
 	w := a.Config.Web
@@ -332,7 +344,7 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 	mux.Handle("/", protocol)
 	personas := make([]webui.Persona, len(w.Personas))
 	for i, p := range w.Personas {
-		personas[i] = webui.Persona{ID: p.ID, Name: p.Name, Title: p.Title, Roles: p.Roles}
+		personas[i] = webui.Persona{ID: p.ID, Name: p.Name, Title: p.Title, Roles: p.Roles, Members: p.Members}
 	}
 	var newAssistant func() (*assistant.Assistant, error)
 	if a.Config.Has(config.RoleShipper) && a.Config.LLM != nil {
@@ -361,8 +373,9 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 		}
 	}
 	mux.Handle(webui.Prefix, webui.Handler(webui.Config{Company: a.Config.Name, Domain: a.Config.Domain, Personas: personas, NewAssistant: newAssistant,
-		FrameAncestors: w.FrameAncestors, Panels: panels, Inbox: a.inbox,
-		Control: a.controlAPI, Secure: a.Config.TLS.Mode != config.TLSInsecureDev, Hosts: append(listenHosts(a.Config.Listen), w.Hosts...)}))
+		FrameAncestors: w.FrameAncestors, Panels: panels, Inbox: a.inbox, Google: a.webGoogle(), Control: a.controlAPI,
+		Secure: a.Config.TLS.Mode != config.TLSInsecureDev || strings.HasPrefix(publicURL(a.Config), "https://"),
+		Hosts:  slices.Concat(listenHosts(a.Config.Listen), publicHost(a.Config), w.Hosts)}))
 	return mux
 }
 
@@ -383,12 +396,19 @@ func (a *App) mcpServer() error {
 	var tag [2]byte
 	_, _ = rand.Read(tag[:])
 	inbox.Drafts.Prefix = fmt.Sprintf("MD%X", tag)
-	token, from, err := mcpToken(ms)
-	if err != nil {
-		return err
+	verify, meta := a.mcpGoogle()
+	token, from := "", "Google sign-in"
+	if verify == nil {
+		if token, from, err = mcpToken(ms); err != nil {
+			return err
+		}
 	}
-	h, err := mcpserver.Handler(mcpserver.Config{Assistant: inbox, Token: token, Name: a.Config.Domain, Version: envelope.Version,
-		UIURL: ms.UIURL,
+	uiURL := ms.UIURL
+	if uiURL == "" && a.Config.Web != nil && publicURL(a.Config) != "" {
+		uiURL = publicURL(a.Config) + webui.Prefix
+	}
+	h, err := mcpserver.Handler(mcpserver.Config{Assistant: inbox, Token: token, Verify: verify, Metadata: meta, Name: a.Config.Domain, Version: envelope.Version,
+		UIURL: uiURL,
 		OnCall: func(t activity.Tool) {
 			a.Activity.Publish(activity.Entry{Side: activity.SideCustomer, Kind: activity.KindTool, Tool: &t})
 		}})
@@ -396,27 +416,20 @@ func (a *App) mcpServer() error {
 		return fmt.Errorf("mcp: server (token from %s): %w", from, err)
 	}
 	a.mcp, a.inbox = h, inbox
+	if meta != nil {
+		a.mcpMeta = mcpserver.MetadataHandler(meta)
+	}
 	return nil
 }
 
 // mcpToken reads the MCP endpoint's token from its environment variable or
 // its file, which must be its owner's alone.
 func mcpToken(ms *config.MCPServer) (token, from string, err error) {
-	if ms.TokenEnv != "" {
-		return os.Getenv(ms.TokenEnv), ms.TokenEnv, nil
-	}
-	fi, err := os.Stat(ms.TokenFile)
+	token, from, err = secretFrom(ms.TokenEnv, ms.TokenFile)
 	if err != nil {
 		return "", "", fmt.Errorf("mcp: server: %w", err)
 	}
-	if fi.Mode().Perm()&0o077 != 0 {
-		return "", "", fmt.Errorf("mcp: server: %s is readable by others (mode %v); chmod 600 it", ms.TokenFile, fi.Mode().Perm())
-	}
-	b, err := os.ReadFile(ms.TokenFile) //nolint:gosec // G304: the operator's own configured file
-	if err != nil {
-		return "", "", fmt.Errorf("mcp: server: %w", err)
-	}
-	return strings.TrimSpace(string(b)), ms.TokenFile, nil
+	return token, from, nil
 }
 
 // listenHosts is the listen address's host, if it names one, for the UI's

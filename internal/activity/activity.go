@@ -66,6 +66,9 @@ type Tool struct {
 	Outcome string `json:"outcome"`          // ok, refused, or drafted
 	Reason  string `json:"reason,omitempty"` // why refused, one capped line
 	Draft   string `json:"draft,omitempty"`  // the draft it made, if any
+	// Caller is who the agent acts for, when the node signed them in
+	// (an email, with Google sign-in); empty with a shared token.
+	Caller string `json:"caller,omitempty"`
 }
 
 // Envelope is a message in or out and what the node decided about it

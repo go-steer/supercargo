@@ -482,3 +482,67 @@ func TestLoadSigningKeyRejects(t *testing.T) {
 		t.Error("a key in a missing directory was accepted")
 	}
 }
+
+// TestGoogle: Google sign-in for the UI and for MCP, on a node that isn't
+// on loopback, and everything it refuses.
+func TestGoogle(t *testing.T) {
+	base := strings.Replace(operatorYAML, "role: operator", "roles: [operator, shipper]", 1)
+	google := "google:\n  clientID: 123-abc.apps.googleusercontent.com\n  clientSecretEnv: GOOGLE_CLIENT_SECRET\n  publicURL: https://ocean-blue.example\n"
+	web := "web:\n  auth: google\n  personas:\n" +
+		"    - { id: sam, name: Sam, roles: [operator], members: [sam@ocean-blue.example] }\n" +
+		"    - { id: dana, name: Dana, roles: [shipper], members: [\"@ocean-blue.example\"] }\n"
+	mcp := "mcp: { server: { auth: google } }\n"
+	full := strings.Replace(base, "mcp: { connectors: [{ name: tms, url: \"https://tms.internal.ocean-blue.example/mcp\" }] }\n", "", 1) + google + web + mcp
+	c, err := Parse([]byte(full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Google.ClientID != "123-abc.apps.googleusercontent.com" || c.MCP.Server.Auth != AuthGoogle || c.Web.Personas[1].Members[0] != "@ocean-blue.example" {
+		t.Errorf("parsed %+v %+v", c.Google, c.MCP.Server)
+	}
+	// Localhost may try it out over plain http.
+	if _, err := Parse([]byte(strings.Replace(full, "https://ocean-blue.example", "http://cymbal.localhost:8442", 1))); err != nil {
+		t.Errorf("http on localhost: %v", err)
+	}
+	// The token is still the default for MCP.
+	if c, err := Parse([]byte(strings.Replace(full, "auth: google } }", "tokenEnv: T } }", 1))); err != nil || c.MCP.Server.Auth != AuthToken {
+		t.Errorf("mcp token beside google web sign-in: %v", err)
+	}
+	for name, edit := range map[string][2]string{
+		"no google section":             {google, ""},
+		"a bad client ID":               {"123-abc.apps", "evil.apps"},
+		"no secret":                     {"  clientSecretEnv: GOOGLE_CLIENT_SECRET\n", ""},
+		"two secrets":                   {"  clientSecretEnv: GOOGLE_CLIENT_SECRET\n", "  clientSecretEnv: G\n  clientSecretFile: /s\n"},
+		"a secret env not a name":       {"clientSecretEnv: GOOGLE_CLIENT_SECRET", "clientSecretEnv: 'a b'"},
+		"a relative secret file":        {"clientSecretEnv: GOOGLE_CLIENT_SECRET", "clientSecretFile: secret"},
+		"plain http, not localhost":     {"https://ocean-blue.example", "http://ocean-blue.example"},
+		"a public URL with a path":      {"https://ocean-blue.example", "https://ocean-blue.example/ui"},
+		"no public URL":                 {"  publicURL: https://ocean-blue.example\n", ""},
+		"a persona with no members":     {"members: [sam@ocean-blue.example]", "members: []"},
+		"an uppercase member":           {"sam@ocean-blue.example", "Sam@ocean-blue.example"},
+		"a member with no domain":       {"sam@ocean-blue.example", "sam@"},
+		"a member that is a domain":     {"sam@ocean-blue.example", "ocean-blue.example"},
+		"a member with a space":         {"sam@ocean-blue.example", "\"s m@ocean-blue.example\""},
+		"a bare TLD domain":             {"\"@ocean-blue.example\"", "\"@example\""},
+		"an unknown web auth":           {"  auth: google\n", "  auth: iap\n"},
+		"an unknown mcp auth":           {"auth: google } }", "auth: basic } }"},
+		"mcp google with a token":       {"auth: google } }", "auth: google, tokenEnv: T } }"},
+		"mcp google, no shipper member": {"roles: [shipper], members", "roles: [operator], members"},
+	} {
+		in := strings.Replace(full, edit[0], edit[1], 1)
+		if in == full {
+			t.Fatalf("%s: the edit didn't apply", name)
+		}
+		if _, err := Parse([]byte(in)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// A google section nothing uses is a mistake.
+	demo := strings.NewReplacer("auth: google } }", "tokenEnv: T } }", "  auth: google\n", "  auth: demo\n", `listen: ":8443"`, `listen: "127.0.0.1:8443"`).Replace(full)
+	if _, err := Parse([]byte(strings.Replace(demo, google, "", 1))); err != nil {
+		t.Fatalf("the demo config without google: %v", err)
+	}
+	if _, err := Parse([]byte(demo)); err == nil {
+		t.Error("an unused google section: accepted")
+	}
+}

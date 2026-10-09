@@ -61,6 +61,10 @@ type Persona struct {
 	Name  string   `json:"name"`
 	Title string   `json:"title,omitempty"`
 	Roles []string `json:"roles"`
+	// Members are who signs in as this persona with Google sign-in.
+	Members []string `json:"-"`
+	// Email is who signed in as it, with Google sign-in.
+	Email string `json:"email,omitempty"`
 }
 
 // Sides are the activity and message sides the persona's roles see.
@@ -85,8 +89,13 @@ type Config struct {
 	// Control is the node's control API (trusted): the UI reaches it only
 	// after authorizing each request.
 	Control http.Handler
-	// Secure marks the session cookie Secure (the node serves TLS).
+	// Secure marks the session cookie Secure (the node is reached over
+	// https).
 	Secure bool
+	// Google, if set, signs people in with Google instead of the demo's
+	// persona buttons: each becomes the first persona whose Members
+	// include their email.
+	Google *Google
 	// Hosts are the host names (no port) the UI may be reached as besides
 	// localhost, 127.0.0.1, ::1 and any *.localhost name: the node's
 	// listen address, or a proxy's name for it (a Cloud Workstations port,
@@ -136,9 +145,10 @@ type session struct {
 }
 
 type server struct {
-	cfg    Config
-	cookie string
-	files  http.Handler
+	cfg          Config
+	cookie       string
+	signInCookie string
+	files        http.Handler
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -154,10 +164,11 @@ func Handler(cfg Config) http.Handler {
 		cfg.Now = time.Now
 	}
 	sub, _ := fs.Sub(static, "static") // the embedded directory exists
+	// Per node: browsers share cookies across ports on one host, and the
+	// local demo runs every node on 127.0.0.1.
+	suffix := strings.NewReplacer(".", "_", "-", "_").Replace(cfg.Domain)
 	s := &server{cfg: cfg, sessions: map[string]*session{}, files: http.StripPrefix(Prefix+"static/", http.FileServerFS(sub)),
-		// Per node: browsers share cookies across ports on one host, and
-		// the local demo runs every node on 127.0.0.1.
-		cookie: "ulp_session_" + strings.NewReplacer(".", "_", "-", "_").Replace(cfg.Domain)}
+		cookie: "ulp_session_" + suffix, signInCookie: "ulp_signin_" + suffix}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ui/{$}", s.index)
 	mux.HandleFunc("GET /ui/presenter", s.presenter)
@@ -166,6 +177,10 @@ func Handler(cfg Config) http.Handler {
 	mux.Handle("GET /ui/static/", s.files)
 	mux.HandleFunc("GET /ui/api/personas", s.personas)
 	mux.HandleFunc("POST /ui/api/login", s.login)
+	if cfg.Google != nil {
+		mux.HandleFunc("GET "+LoginPath, s.googleLogin)
+		mux.HandleFunc("GET "+CallbackPath, s.googleCallback)
+	}
 	mux.HandleFunc("POST /ui/api/logout", s.logout)
 	mux.HandleFunc("GET /ui/api/me", s.authed(s.me))
 	mux.HandleFunc("GET /ui/api/messages", s.authed(s.forward("/messages", nil)))
@@ -228,7 +243,7 @@ func (s *server) headers(next http.Handler) http.Handler {
 			"frame-ancestors "+ancestors+"; base-uri 'none'; form-action 'self'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
-		if strings.HasPrefix(r.URL.Path, "/ui/api/") {
+		if strings.HasPrefix(r.URL.Path, "/ui/api/") || strings.HasPrefix(r.URL.Path, "/ui/auth/") {
 			h.Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)
@@ -279,15 +294,22 @@ func (s *server) presenterPanels(w http.ResponseWriter, _ *http.Request) {
 	control.Answer(w, http.StatusOK, PresenterResponse{Panels: append([]Panel{}, s.cfg.Panels...)})
 }
 
-// PersonasResponse is who may sign in, and to which company.
+// PersonasResponse is who may sign in, and to which company: the personas
+// to pick from (demo sign-in), or, with Google sign-in, none, and where
+// to start it.
 type PersonasResponse struct {
 	Company  string    `json:"company"`
 	Domain   string    `json:"domain"`
 	Personas []Persona `json:"personas"`
 	Demo     bool      `json:"demo"`
+	Login    string    `json:"login,omitempty"`
 }
 
 func (s *server) personas(w http.ResponseWriter, _ *http.Request) {
+	if s.cfg.Google != nil {
+		control.Answer(w, http.StatusOK, PersonasResponse{Company: s.cfg.Company, Domain: s.cfg.Domain, Personas: []Persona{}, Login: LoginPath})
+		return
+	}
 	control.Answer(w, http.StatusOK, PersonasResponse{Company: s.cfg.Company, Domain: s.cfg.Domain, Personas: s.cfg.Personas, Demo: true})
 }
 
@@ -317,6 +339,10 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		control.Answer(w, http.StatusForbidden, errorBody("cross-site request refused"))
 		return
 	}
+	if s.cfg.Google != nil {
+		control.Answer(w, http.StatusForbidden, errorBody("sign in with Google"))
+		return
+	}
 	var req struct {
 		Persona string `json:"persona"`
 	}
@@ -329,13 +355,19 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 		control.Answer(w, http.StatusForbidden, errorBody("no such persona"))
 		return
 	}
+	s.startSession(w, r, s.cfg.Personas[i])
+	control.Answer(w, http.StatusOK, s.cfg.Personas[i])
+}
+
+// startSession signs the browser in as p, replacing the session it had.
+func (s *server) startSession(w http.ResponseWriter, r *http.Request, p Persona) {
 	id := newID()
 	s.mu.Lock()
 	// Signing in again replaces the session the browser had.
 	if c, err := r.Cookie(s.cookie); err == nil {
 		s.drop(c.Value)
 	}
-	s.sessions[id] = &session{persona: s.cfg.Personas[i], expires: s.cfg.Now().Add(SessionTTL)}
+	s.sessions[id] = &session{persona: p, expires: s.cfg.Now().Add(SessionTTL)}
 	s.order = append(s.order, id)
 	if len(s.order) > MaxSessions {
 		// Expired sessions go first; past that, the oldest.
@@ -355,7 +387,6 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 	//nolint:gosec // G124: Secure whenever the node serves TLS; insecure-dev is plain HTTP, local demos only
 	http.SetCookie(w, &http.Cookie{Name: s.cookie, Value: id, Path: Prefix, HttpOnly: true, Secure: s.cfg.Secure,
 		SameSite: http.SameSiteStrictMode, MaxAge: int(SessionTTL / time.Second)})
-	control.Answer(w, http.StatusOK, s.cfg.Personas[i])
 }
 
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
@@ -492,7 +523,7 @@ type MeResponse struct {
 }
 
 func (s *server) me(w http.ResponseWriter, _ *http.Request, p Persona) {
-	control.Answer(w, http.StatusOK, MeResponse{Company: s.cfg.Company, Domain: s.cfg.Domain, Persona: p, Sides: p.Sides(), Demo: true,
+	control.Answer(w, http.StatusOK, MeResponse{Company: s.cfg.Company, Domain: s.cfg.Domain, Persona: p, Sides: p.Sides(), Demo: s.cfg.Google == nil,
 		Assistant: s.cfg.NewAssistant != nil && slices.Contains(p.Roles, RoleShipper)})
 }
 
