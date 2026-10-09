@@ -347,6 +347,7 @@ Fetching and validating a profile:
   - **`transports.mcp`** (optional): the MCP endpoint, under the same endpoint rules. Our nodes don't publish one until the MCP binding exists.
   - **What reaches a model.** A partner writes its profile, so the shipper's profile summary (what the assistant's `get_operator_profile` returns) carries at most 32 intents, 8 capabilities and 8 tags per capability.
   - A registry (such as an API hub) may help a deployment find partners, but it is not protocol discovery: the profile at the domain is.
+  - **Partners and the directory** (`internal/directory`, #79). A company keeps an **address book** of the partners it knows (`addressBook.file`: domain, name, roles, modes, lanes, description), part of its own configuration and trusted like it. A **directory** is somewhere to search for partners it doesn't know (`directory.file` for local runs and tests; Google Cloud API hub in a deployment, next). Both use one strict file format, and neither is trust: an entry only names a domain and what it claims. The node fetches and verifies the profile at that domain, as for any partner, and an entry can never vouch for a key or an endpoint (entries carry neither). Directory entries are written by whoever listed themselves, so their text reaches a model only cleaned and capped, and a candidate whose profile doesn't verify is shown as unverified and never used. Roles are `carrier`, `shipper` and `consignee`; modes use the payload schemas' names (`OCEAN`, `ROAD`, `RAIL`, `AIR`).
 - **Strict parsing, room to grow.** Members this version doesn't define are ignored, so profiles can grow. Duplicate members, and members that differ from a defined one only in case, are rejected.
 
 Shipper and receiver nodes publish the same document (with `roles: ["shipper"]` or `["receiver"]` and only the intents they accept, e.g. `ulp.tnt.event` and `ulp.tnt.alert`), so operators can verify *their* signatures and push to them. A node with several roles lists them all, and the intents of each.
@@ -789,15 +790,17 @@ Each model call logs the agent skills it ran with (name and content hash).
 
 | Tool | Effect | Guard |
 |---|---|---|
-| `get_operator_profile(domain)` | Fetch a verified profile through the node | Read-only; the user named the domain |
-| `draft_booking(fields…)` | Create a draft | **No network send**. Returns a draft ID and the exact request; the carrier and consignee domains must be ones the user named; the body must validate. `requiredBy` stays in the draft, never in the request |
+| `get_operator_profile(domain)` | Fetch a verified profile through the node | Read-only; the user named the company |
+| `list_partners(role?)` | The partners we know: the address book, the carriers we booked with (from our records), and partners found in this conversation | Read-only; our own data |
+| `find_partners(role?, mode?, from?, to?, text?)` | Search the directory, then fetch and verify each candidate's profile (at most 5, together, within 15 s) | Read-only; never returns ourselves; entry text is cleaned and capped like profiles; a candidate is usable only if its profile verified, and only once the user names it |
+| `draft_booking(fields…)` | Create a draft | **No network send**. Returns a draft ID and the exact request; the carrier and consignee must be companies the user named; the body must validate. `requiredBy` stays in the draft, never in the request. A carrier neither in the address book nor booked with before is marked as a new partner, and the dialog says so |
 | *(no tool)* send booking | n/a | **Only the confirmation dialog** sends (`POST /book`), after an explicit `y` from the user |
 | `list_shipments()`, `get_events(bookingRef)` | Read the node's store | Read-only; our bookings only; the latest 30 records |
 | `ask_operator(bookingRef, question)` | Send `tnt.inquiry` through the node | The booking must be ours; the question passes the body's rules and mentions no private date or note; at most 2 per turn, one per booking; the node's business guard applies too |
 | `grant_tracking_access(bookingRef, domain)` | Draft a delegation (milestone 7) | Dialog confirmation required |
 
 - **The loop:** each turn sends the conversation, the tools and the system prompt (rules first, then the built-in `freight-booking` and `shipment-tracking` skills and the company's). Every call is checked with `llm.ValidateCall` and the tool's own rules before it runs. A refused or failed call goes back to the model as an error result, so it can explain or ask. At most 8 calls per response and 6 model calls per turn; past that the turn stops with a fixed message. Every model call and tool call is reported (for the log and the UI). A model error leaves the conversation as it was.
-- **The counterparty rule, in code:** a domain counts as named only if it is a whole word of the user's own messages in this conversation (split at spaces and punctuation other than `.`, `-` and `_`; trailing dots dropped). Tool results (a profile, an answer) never count.
+- **The counterparty rule, in code:** a domain counts as named if it is a whole word of the user's own messages in this conversation (split at spaces and punctuation other than `.`, `-` and `_`; trailing dots dropped), or if the user's messages contain the name of a partner whose domain it is: one in the company's address book, or a verified candidate `find_partners` returned in this conversation. Names are compared as whole words, letters and digits only, case folded ("Ocean Blue, Inc." names Ocean Blue); a name shorter than 3 characters names nobody, and a name two partners with different domains share names neither (the assistant asks). The user's words decide; the model's never do, and tool results (a profile, an answer, a directory entry) never name a company by themselves.
 - **Private dates stay home, in code:** a question to a carrier is refused if it mentions an open draft's `requiredBy`, or a date or note the caller marks private (the business context), in the usual forms (`2026-10-15`, `Oct 15`, `15 October`, `the 15th`). The node's guard can't catch dates, so this check does.
 - **History:** at most 30 turns are kept, and tool results older than the two previous turns are replaced by a stub (the model can call the tool again), so a long session stays inside the model's context. Calls with a missing or repeated ID get fresh ones, and an input that isn't an object is refused and kept as `{}`, so the history stays valid for the provider. One turn at a time per conversation. A model error rolls the conversation back, but drafts already made are still reported.
 - **Replies** are shown as text: control and format characters are removed, and they are capped at 6,000 characters. Tool names and errors shown to the UI are cleaned the same way; tool inputs are the model's JSON, for the UI to render escaped.
@@ -898,6 +901,10 @@ llm:
   apiKeyEnv: ANTHROPIC_API_KEY   # api only; default ANTHROPIC_API_KEY or GEMINI_API_KEY; the key itself never goes in this file
   # projectEnv: ANTHROPIC_VERTEX_PROJECT_ID   # vertex only; defaults: ANTHROPIC_VERTEX_PROJECT_ID
   # locationEnv: CLOUD_ML_REGION              # and CLOUD_ML_REGION for Claude, GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION for Gemini
+addressBook:
+  file: /etc/ulp/address-book.yaml  # absolute; the partners we know (optional)
+directory:
+  file: /etc/ulp/directory.yaml  # absolute; where to search for new partners (optional; API hub later)
 skills:
   dir: /etc/ulp/skills           # absolute; company agent skills (optional), after the built-in ones
 mcp:                             # later (A.7)

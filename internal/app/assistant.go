@@ -22,6 +22,7 @@ import (
 	"github.com/go-steer/supercargo/internal/assistant"
 	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/config"
+	"github.com/go-steer/supercargo/internal/directory"
 	"github.com/go-steer/supercargo/internal/skills"
 )
 
@@ -48,8 +49,15 @@ func ShipperAssistant(cfg *config.Config, node assistant.Node) (*assistant.Assis
 		}
 		agentSkills = append(agentSkills, company...)
 	}
+	book, dir, err := Partners(cfg)
+	if err != nil {
+		return nil, err
+	}
 	a := &assistant.Assistant{Model: model, Node: node, Drafts: &assistant.Drafts{}, Skills: agentSkills,
-		Self: assistant.Self{Domain: cfg.Domain, Name: cfg.Name, Endpoint: RESTURL(cfg)}}
+		Self: assistant.Self{Domain: cfg.Domain, Name: cfg.Name, Endpoint: RESTURL(cfg)}, AddressBook: book}
+	if dir != nil {
+		a.Directory = dir
+	}
 	if cfg.Business != nil {
 		// The node refuses to start with a broken file, so this one loads;
 		// its dates and notes are what questions to carriers must not carry.
@@ -60,4 +68,25 @@ func ShipperAssistant(cfg *config.Config, node assistant.Node) (*assistant.Assis
 		a.Private = biz.Private()
 	}
 	return a, nil
+}
+
+// Partners loads the configured address book's entries and the directory
+// to search, either absent if not configured.
+func Partners(cfg *config.Config) ([]directory.Entry, *directory.File, error) {
+	var book []directory.Entry
+	if cfg.AddressBook != nil {
+		f, err := directory.Load(cfg.AddressBook.File)
+		if err != nil {
+			return nil, nil, fmt.Errorf("addressBook: %w", err)
+		}
+		book = f.Entries()
+	}
+	var dir *directory.File
+	if cfg.Directory != nil {
+		var err error
+		if dir, err = directory.Load(cfg.Directory.File); err != nil {
+			return nil, nil, fmt.Errorf("directory: %w", err)
+		}
+	}
+	return book, dir, nil
 }

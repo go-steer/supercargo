@@ -33,6 +33,8 @@ type Draft struct {
 	// RequiredBy (YYYY-MM-DD) is private: shown in the confirmation
 	// dialog as not sent, never in the request.
 	RequiredBy string
+	// NewPartner: a carrier not in the address book, never booked with.
+	NewPartner bool
 	Created    time.Time
 }
 

@@ -60,6 +60,9 @@ func (n *node) called(prefix string) bool {
 
 func (n *node) Profile(_ context.Context, domain string) (*shipper.Profile, error) {
 	n.log("profile " + domain)
+	if domain == "alias.example" { // answers with another domain's profile
+		domain = "ocean-blue.example"
+	}
 	if domain != "ocean-blue.example" {
 		return nil, errors.New("no such host")
 	}
@@ -195,7 +198,7 @@ func TestTrackingAndAsk(t *testing.T) {
 			t.Errorf("%s: %q", q, r.Text)
 		}
 	}
-	if r, _ := a.Turn(context.Background(), &Conversation{}, "Hello"); !strings.Contains(r.Text, "I can look up a carrier") {
+	if r, _ := a.Turn(context.Background(), &Conversation{}, "Hello"); !strings.Contains(r.Text, "look up a carrier") {
 		t.Errorf("hello: %q", r.Text)
 	}
 }

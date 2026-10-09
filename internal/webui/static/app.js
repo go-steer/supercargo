@@ -767,7 +767,8 @@ function bookingDialog(d) {
   const q = d.request || {};
   const eq = (q.containers || []).map((c) => `${c.count} × ${c.equipment_size_type}, ${c.gross_weight_kg} kg each`).join('; ');
   const rows = [
-    ['Operator:', d.to], ['Shipper:', q.shipper_name || ''],
+    ['Operator:', d.to], ...(d.newPartner ? [['', 'A new partner: not in your address book, and never booked with before. Check the domain.', 'newpartner']] : []),
+    ['Shipper:', q.shipper_name || ''],
     ['Route:', `${q.port_of_loading} → ${q.port_of_discharge}`], ['Equipment:', eq],
     ['Cargo:', `${q.cargo?.description || ''}, HS ${q.cargo?.hs_code || ''}`], ['Departure:', 'on/after ' + (q.earliest_departure || '')],
     ['Reference:', q.shipper_reference || ''],
