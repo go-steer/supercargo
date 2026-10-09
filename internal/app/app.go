@@ -670,7 +670,7 @@ func NewModel(c *config.LLM, fake llm.Model) (llm.Model, error) {
 			if c.Model == "" {
 				return nil, errors.New("llm: gemini needs a model")
 			}
-			return gemini.New(ctx, gemini.Options{Model: c.Model, Vertex: &gemini.Vertex{Project: project, Location: location}})
+			return gemini.New(ctx, gemini.Options{Model: c.Model, Vertex: &gemini.Vertex{Project: project, Location: location}, ThinkingBudget: c.ThinkingBudget})
 		}
 		creds, err := anthropic.DefaultCredentials()
 		if err != nil {
@@ -687,7 +687,7 @@ func NewModel(c *config.LLM, fake llm.Model) (llm.Model, error) {
 		if c.Model == "" {
 			return nil, errors.New("llm: gemini needs a model")
 		}
-		return gemini.New(context.Background(), gemini.Options{Model: c.Model, APIKey: key})
+		return gemini.New(context.Background(), gemini.Options{Model: c.Model, APIKey: key, ThinkingBudget: c.ThinkingBudget})
 	}
 	return anthropic.New(anthropic.Options{APIKey: key, Model: c.Model, CacheSystem: true})
 }

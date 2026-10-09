@@ -343,6 +343,7 @@ func TestLLMBackends(t *testing.T) {
 			ProjectEnv: "GOOGLE_CLOUD_PROJECT", LocationEnv: "GOOGLE_CLOUD_LOCATION"},
 		"{provider: gemini, backend: vertex, model: g, projectEnv: P, locationEnv: L}": {Provider: "gemini", Backend: "vertex", Model: "g",
 			ProjectEnv: "P", LocationEnv: "L"},
+		"{provider: gemini, model: g, thinkingBudget: -1}": {Provider: "gemini", Backend: "api", Model: "g", APIKeyEnv: "GEMINI_API_KEY", ThinkingBudget: -1},
 	} {
 		c, err := Parse([]byte(strings.Replace(operatorYAML, "llm: { provider: fake, model: m, apiKeyEnv: LLM_API_KEY }", "llm: "+in, 1)))
 		if err != nil || *c.LLM != want {
@@ -351,6 +352,7 @@ func TestLLMBackends(t *testing.T) {
 	}
 	for _, in := range []string{
 		"{provider: openai}",
+		"{provider: anthropic, thinkingBudget: 100}",
 		"{provider: gemini}",
 		"{provider: gemini, backend: vertex}",
 		"{provider: anthropic, model: ../../other}",

@@ -36,6 +36,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Fixed
 
+- Gemini 3 replies with a short limit (the alert summary's) stopped at the token limit before answering, so the template answered instead: Gemini counts its thinking against the output limit. The adapter now gives thinking its own budget (1024 tokens by default) on top of the reply's limit, and counts thought tokens as output in usage.
+
 - The browser UI dropped a refresh asked for while one was in flight, so a delay alert arriving milliseconds after its event could never show (no alert, banner or DELAYED card until the next message), and overlapping refreshes of the left panel could land out of order. Each loader now runs one fetch at a time and fetches again for anything that arrived meanwhile. The browser smoke test holds a fetch across the disruption to check it.
 
 ### Security
