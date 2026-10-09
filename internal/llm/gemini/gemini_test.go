@@ -283,8 +283,25 @@ func TestThinkingBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := f.bodies[0]["generationConfig"].(map[string]any)
-	if cfg["maxOutputTokens"] != float64(500) || cfg["thinkingConfig"].(map[string]any)["thinkingBudget"] != float64(200) {
+	tc := cfg["thinkingConfig"].(map[string]any)
+	if cfg["maxOutputTokens"] != float64(500) || tc["thinkingBudget"] != float64(200) || tc["includeThoughts"] != nil {
 		t.Errorf("config %v", cfg)
+	}
+	// Negative: no thinking settings at all, for a model without them.
+	f2 := &fakeAPI{replies: []string{`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`}}
+	m, _ = New(context.Background(), Options{Model: "g", APIKey: "k", BaseURL: f2.server(t).URL, ThinkingBudget: -1})
+	_, _ = m.Generate(context.Background(), llm.GenerateRequest{Messages: []llm.Message{{Role: llm.User, Text: "?"}}, MaxTokens: 300})
+	cfg = f2.bodies[0]["generationConfig"].(map[string]any)
+	if cfg["maxOutputTokens"] != float64(300) || cfg["thinkingConfig"] != nil {
+		t.Errorf("no thinking: %v", cfg)
+	}
+	// Huge limits are clamped to the models' ceiling, budget included.
+	f3 := &fakeAPI{replies: []string{`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`}}
+	m, _ = New(context.Background(), Options{Model: "g", APIKey: "k", BaseURL: f3.server(t).URL, ThinkingBudget: 1 << 40})
+	_, _ = m.Generate(context.Background(), llm.GenerateRequest{Messages: []llm.Message{{Role: llm.User, Text: "?"}}, MaxTokens: 1 << 40})
+	cfg = f3.bodies[0]["generationConfig"].(map[string]any)
+	if cfg["maxOutputTokens"] != float64(MaxOutputTokens) || cfg["thinkingConfig"].(map[string]any)["thinkingBudget"] != float64(MaxOutputTokens) {
+		t.Errorf("clamped: %v", cfg)
 	}
 }
 

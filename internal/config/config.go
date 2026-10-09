@@ -230,6 +230,10 @@ type LLM struct {
 	APIKeyEnv   string `yaml:"apiKeyEnv"`
 	ProjectEnv  string `yaml:"projectEnv"`
 	LocationEnv string `yaml:"locationEnv"`
+	// ThinkingBudget (gemini only): the thinking tokens a reply may spend
+	// on top of its own limit; 0 the default, negative no thinking
+	// settings (a model without them).
+	ThinkingBudget int `yaml:"thinkingBudget"`
 }
 
 // Model backends.
@@ -638,6 +642,9 @@ func (l *LLM) validate() error {
 	// The model ID ends up in the request's path.
 	if l.Model != "" && (!modelName.MatchString(l.Model) || strings.Contains(l.Model, "..")) {
 		return fmt.Errorf("llm: model %q is not a model ID", l.Model)
+	}
+	if l.ThinkingBudget != 0 && l.Provider != ProviderGemini {
+		return errors.New("llm: thinkingBudget is for provider gemini")
 	}
 	if l.Provider == ProviderGemini && l.Model == "" {
 		return errors.New("llm: gemini needs a model")

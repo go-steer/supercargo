@@ -44,6 +44,10 @@ const DefaultMaxTokens = 4096
 // thinks first can use up a small reply's whole limit and answer nothing.
 const DefaultThinkingBudget = 1024
 
+// MaxOutputTokens is the most output a request asks for: the current
+// Flash models' ceiling.
+const MaxOutputTokens = 65536
+
 // Options configure a Model: exactly one of APIKey or Vertex.
 type Options struct {
 	Model  string
@@ -51,7 +55,10 @@ type Options struct {
 	// Vertex, if set, reaches Gemini through Vertex AI.
 	Vertex *Vertex
 	// ThinkingBudget bounds the tokens spent thinking before each reply
-	// (0: DefaultThinkingBudget).
+	// (0: DefaultThinkingBudget). Negative sends no thinking settings at
+	// all, for a model that has none and refuses them. The budget guides
+	// the model; it isn't a hard cap, so a JSON reply can still be cut
+	// (an error, and the caller's template answers).
 	ThinkingBudget int
 	// BaseURL and HTTPClient replace the endpoint and transport (tests).
 	BaseURL    string
@@ -114,8 +121,13 @@ func New(ctx context.Context, opts Options) (*Model, error) {
 		return nil, fmt.Errorf("gemini: %w", err)
 	}
 	thinking := opts.ThinkingBudget
-	if thinking <= 0 {
+	switch {
+	case thinking == 0:
 		thinking = DefaultThinkingBudget
+	case thinking < 0:
+		thinking = -1 // no thinking settings
+	case thinking > MaxOutputTokens:
+		thinking = MaxOutputTokens
 	}
 	return &Model{client: client, model: opts.Model, name: name, thinking: int32(thinking)}, nil
 }
@@ -198,8 +210,12 @@ func (m *Model) request(req llm.GenerateRequest) ([]*genai.Content, *genai.Gener
 	if maxTokens <= 0 {
 		maxTokens = DefaultMaxTokens
 	}
-	budget := m.thinking
-	cfg := &genai.GenerateContentConfig{MaxOutputTokens: int32(maxTokens) + budget, ThinkingConfig: &genai.ThinkingConfig{ThinkingBudget: &budget}}
+	maxTokens = min(maxTokens, MaxOutputTokens)
+	cfg := &genai.GenerateContentConfig{MaxOutputTokens: int32(maxTokens)}
+	if budget := m.thinking; budget >= 0 {
+		cfg.MaxOutputTokens = min(cfg.MaxOutputTokens+budget, MaxOutputTokens)
+		cfg.ThinkingConfig = &genai.ThinkingConfig{ThinkingBudget: &budget}
+	}
 	if req.System != "" {
 		cfg.SystemInstruction = &genai.Content{Parts: []*genai.Part{{Text: req.System}}}
 	}
