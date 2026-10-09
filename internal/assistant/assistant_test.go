@@ -63,6 +63,9 @@ func (n *node) Profile(_ context.Context, domain string) (*shipper.Profile, erro
 	if domain == "alias.example" { // answers with another domain's profile
 		domain = "ocean-blue.example"
 	}
+	if strings.HasSuffix(domain, ".verified.example") { // any domain that verifies
+		return &shipper.Profile{Domain: domain, Name: "X", Intents: []string{intents.BookingRequest}}, nil
+	}
 	if domain != "ocean-blue.example" {
 		return nil, errors.New("no such host")
 	}

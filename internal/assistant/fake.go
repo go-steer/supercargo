@@ -130,20 +130,6 @@ func fakeStep(msgs []llm.Message, user string, done []step, now time.Time) llm.G
 			return call(id, ToolPartners, struct{}{})
 		}
 		return call(id, ToolDraftBooking, draftFrom(msgs, user, now))
-	case knowPattern.MatchString(user) && !findPattern.MatchString(user):
-		if last != nil {
-			return partnersReply(last.result.Content)
-		}
-		return call(id, ToolPartners, struct{}{})
-	case findPattern.MatchString(user):
-		if last != nil {
-			return findReply(last.result.Content)
-		}
-		in := map[string]string{"role": "carrier"}
-		if p := portsIn(lower); len(p) >= 2 {
-			in["from"], in["to"] = p[0], p[1]
-		}
-		return call(id, ToolFind, in)
 	case askPattern.MatchString(user):
 		ref := refPattern.FindString(user)
 		switch {
@@ -172,6 +158,20 @@ func fakeStep(msgs []llm.Message, user string, done []step, now time.Time) llm.G
 			}
 		}
 		return call(id, ToolGetEvents, map[string]string{"bookingRef": ref})
+	case knowPattern.MatchString(user) && !findPattern.MatchString(user):
+		if last != nil {
+			return partnersReply(last.result.Content)
+		}
+		return call(id, ToolPartners, struct{}{})
+	case findPattern.MatchString(user):
+		if last != nil {
+			return findReply(last.result.Content)
+		}
+		in := map[string]string{"role": "carrier"}
+		if p := portsIn(lower); len(p) >= 2 {
+			in["from"], in["to"] = p[0], p[1]
+		}
+		return call(id, ToolFind, in)
 	case domainPattern.MatchString(lower):
 		if last != nil {
 			return profileReply(last.result.Content)

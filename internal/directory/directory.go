@@ -115,7 +115,10 @@ func (f *File) Entries() []Entry { return slices.Clone(f.entries) }
 // Search implements Directory.
 func (f *File) Search(_ context.Context, q Query) ([]Entry, error) {
 	text := strings.ToLower(strings.TrimSpace(q.Text))
-	var out []Entry
+	// Entries that list the lane come before ones that list no lanes (and
+	// so match any): a catch-all entry can't crowd out a carrier that
+	// says it serves the lane.
+	var out, catchAll []Entry
 	for _, e := range f.entries {
 		if q.Role != "" && !slices.Contains(e.Roles, q.Role) {
 			continue
@@ -131,10 +134,15 @@ func (f *File) Search(_ context.Context, q Query) ([]Entry, error) {
 		if text != "" && !strings.Contains(strings.ToLower(e.Name+" "+e.Domain+" "+e.Description), text) {
 			continue
 		}
-		out = append(out, e)
-		if len(out) == MaxResults {
-			break
+		if (q.From != "" || q.To != "") && len(e.Lanes) == 0 {
+			catchAll = append(catchAll, e)
+		} else {
+			out = append(out, e)
 		}
+	}
+	out = append(out, catchAll...)
+	if len(out) > MaxResults {
+		out = out[:MaxResults]
 	}
 	return out, nil
 }
@@ -177,7 +185,7 @@ func Parse(data []byte) (*File, error) {
 	seen := map[string]bool{}
 	for i := range doc.Entries {
 		e := &doc.Entries[i]
-		if err := e.validate(); err != nil {
+		if err := e.Validate(); err != nil {
 			return nil, fmt.Errorf("directory: entries[%d]: %w", i, err)
 		}
 		if seen[e.Domain] {
@@ -193,7 +201,8 @@ var unLocode = regexp.MustCompile(`^[A-Z]{2}[A-Z2-9]{3}$`)
 // ValidLocode reports whether s is shaped like a UN/LOCODE (NLRTM).
 func ValidLocode(s string) bool { return unLocode.MatchString(s) }
 
-func (e *Entry) validate() error {
+// Validate checks an entry as loading a file does.
+func (e *Entry) Validate() error {
 	if !envelope.ValidDomain(e.Domain) {
 		return fmt.Errorf("domain %q is not a domain", e.Domain)
 	}

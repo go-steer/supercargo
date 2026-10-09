@@ -319,8 +319,11 @@ type DraftResult struct {
 	NotSent map[string]string `json:"notSent,omitempty"`
 	// NewPartner: the carrier isn't in our address book, and we've never
 	// booked with it. The dialog says so.
-	NewPartner bool   `json:"newPartner,omitempty"`
-	Next       string `json:"next"`
+	NewPartner bool `json:"newPartner,omitempty"`
+	// NewConsignee: the consignee isn't in our address book. Its domain
+	// goes to the carrier, so the dialog says so too.
+	NewConsignee bool   `json:"newConsignee,omitempty"`
+	Next         string `json:"next"`
 }
 
 func (a *Assistant) draft(ctx context.Context, c *Conversation, raw json.RawMessage) (any, error) {
@@ -374,7 +377,9 @@ func (a *Assistant) draft(ctx context.Context, c *Conversation, raw json.RawMess
 			newPartner = !slices.ContainsFunc(s, func(x store.Summary) bool { return x.Operator == in.Operator })
 		}
 	}
-	dr, err := a.Drafts.add(Draft{Operator: in.Operator, Request: req, RequiredBy: in.RequiredBy, NewPartner: newPartner, Created: a.now()})
+	newConsignee := req.Consignee != nil && req.Consignee.Domain != "" && !a.inAddressBook(req.Consignee.Domain)
+	dr, err := a.Drafts.add(Draft{Operator: in.Operator, Request: req, RequiredBy: in.RequiredBy, NewPartner: newPartner,
+		NewConsignee: newConsignee, Created: a.now()})
 	if err != nil {
 		return nil, refuse("%v", err)
 	}
@@ -383,7 +388,7 @@ func (a *Assistant) draft(ctx context.Context, c *Conversation, raw json.RawMess
 
 // Result is the draft as draft_booking returns it and the dialog shows it.
 func (d Draft) Result() DraftResult {
-	out := DraftResult{DraftID: d.ID, To: d.Operator, Request: d.Request, NewPartner: d.NewPartner,
+	out := DraftResult{DraftID: d.ID, To: d.Operator, Request: d.Request, NewPartner: d.NewPartner, NewConsignee: d.NewConsignee,
 		Next: "Nothing has been sent. Tell the user the draft is ready for them to review and confirm; only they can send it."}
 	if d.RequiredBy != "" {
 		out.NotSent = map[string]string{"requiredBy": d.RequiredBy}

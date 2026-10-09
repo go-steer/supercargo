@@ -23,6 +23,9 @@ import (
 )
 
 const sample = `entries:
+  - domain: anywhere.example
+    name: Anywhere Freight
+    roles: [carrier]
   - domain: ocean-blue.example
     name: Ocean Blue
     roles: [carrier]
@@ -33,9 +36,6 @@ const sample = `entries:
     name: North Star Lines
     roles: [carrier]
     lanes: [{ from: DEHAM, to: USNYC }]
-  - domain: anywhere.example
-    name: Anywhere Freight
-    roles: [carrier]
   - domain: cymbal-footwear.example
     name: Cymbal Footwear
     roles: [consignee]
@@ -59,15 +59,15 @@ func TestSearch(t *testing.T) {
 		return strings.Join(n, ", ")
 	}
 	for q, want := range map[Query]string{
-		{}: "Ocean Blue, North Star Lines, Anywhere Freight, Cymbal Footwear",
-		{Role: RoleCarrier, From: "NLRTM", To: "USEWR"}: "Ocean Blue, Anywhere Freight", // no lanes: any lane
+		{}: "Anywhere Freight, Ocean Blue, North Star Lines, Cymbal Footwear",
+		{Role: RoleCarrier, From: "NLRTM", To: "USEWR"}: "Ocean Blue, Anywhere Freight", // no lanes: any lane, after the specific
 		{Role: RoleCarrier, From: "DEHAM"}:              "North Star Lines, Anywhere Freight",
 		{Role: RoleConsignee}:                           "Cymbal Footwear",
 		{Text: "TRANSATLANTIC"}:                         "Ocean Blue",
 		{Text: "north-star"}:                            "North Star Lines",
 		{Role: RoleShipper}:                             "",
-		{Mode: "OCEAN"}:                                 "Ocean Blue, North Star Lines, Anywhere Freight, Cymbal Footwear", // no modes: any mode
-		{Mode: "ROAD"}:                                  "North Star Lines, Anywhere Freight, Cymbal Footwear",
+		{Mode: "OCEAN"}:                                 "Anywhere Freight, Ocean Blue, North Star Lines, Cymbal Footwear", // no modes: any mode
+		{Mode: "ROAD"}:                                  "Anywhere Freight, North Star Lines, Cymbal Footwear",
 	} {
 		if got := names(q); got != want {
 			t.Errorf("%+v: %q, want %q", q, got, want)
