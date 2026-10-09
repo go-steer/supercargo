@@ -45,12 +45,13 @@ func (s *server) redirectURI() string {
 }
 
 // googleLogin sends the browser to Google, with what the callback will
-// check in a cookie only /ui/auth/ gets. Lax, not Strict: the callback is
+// check in a cookie (only /ui/auth/ gets it over plain http; over https
+// it is a __Host- cookie, for this host alone). Lax, not Strict: the callback is
 // a navigation from Google's site, and a Strict cookie wouldn't come back.
 func (s *server) googleLogin(w http.ResponseWriter, r *http.Request) {
 	u, si := s.cfg.Google.Client.Start(s.redirectURI())
 	//nolint:gosec // G124: Secure whenever the node is reached over https
-	http.SetCookie(w, &http.Cookie{Name: s.signInCookie, Value: si.State + "." + si.Verifier + "." + si.Nonce, Path: Prefix + "auth/",
+	http.SetCookie(w, &http.Cookie{Name: s.signInCookie, Value: si.State + "." + si.Verifier + "." + si.Nonce, Path: s.signInPath,
 		HttpOnly: true, Secure: s.cfg.Secure, SameSite: http.SameSiteLaxMode, MaxAge: int(SignInTTL / time.Second)})
 	http.Redirect(w, r, u, http.StatusFound)
 }
@@ -61,7 +62,7 @@ func (s *server) googleLogin(w http.ResponseWriter, r *http.Request) {
 // same-site navigation, so the Strict session cookie goes along.
 func (s *server) googleCallback(w http.ResponseWriter, r *http.Request) {
 	//nolint:gosec // G124: as at login
-	http.SetCookie(w, &http.Cookie{Name: s.signInCookie, Value: "", Path: Prefix + "auth/", HttpOnly: true, Secure: s.cfg.Secure,
+	http.SetCookie(w, &http.Cookie{Name: s.signInCookie, Value: "", Path: s.signInPath, HttpOnly: true, Secure: s.cfg.Secure,
 		SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	q := r.URL.Query()
 	if q.Get("error") != "" {
@@ -79,7 +80,7 @@ func (s *server) googleCallback(w http.ResponseWriter, r *http.Request) {
 		page(w, http.StatusUnauthorized, "Sign-in failed", "The sign-in didn't complete; try again.", false)
 		return
 	}
-	i := slices.IndexFunc(s.cfg.Personas, func(p Persona) bool { return googleauth.Member(id.Email, p.Members) })
+	i := slices.IndexFunc(s.cfg.Personas, func(p Persona) bool { return id.Member(p.Members) })
 	if i < 0 {
 		page(w, http.StatusForbidden, "Not allowed", id.Email+" may not sign in to "+s.cfg.Company+".", false)
 		return

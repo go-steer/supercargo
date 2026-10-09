@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -34,50 +35,119 @@ const clientID = "123-abc.apps.googleusercontent.com"
 
 var now = time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 
-// tokeninfo answers for the tokens it knows, as Google's endpoint does.
-func tokeninfo(t *testing.T, tokens map[string]map[string]string) (*httptest.Server, *atomic.Int32) {
+// fakeGoogle answers tokeninfo (POST /tokeninfo) and userinfo (GET
+// /userinfo) for the tokens it knows, as Google's endpoints do. A token's
+// "hd" and "user_email" go in userinfo's answer, the rest in tokeninfo's;
+// "status" makes both fail with that HTTP status.
+func fakeGoogle(t *testing.T, tokens map[string]map[string]string) (*Client, *atomic.Int32) {
 	t.Helper()
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		if r.Method != http.MethodPost || r.URL.RawQuery != "" {
-			t.Errorf("tokeninfo got %s %s: the token must go in the body", r.Method, r.URL)
+		var tok string
+		switch r.URL.Path {
+		case "/tokeninfo":
+			if r.Method != http.MethodPost || r.URL.RawQuery != "" {
+				t.Errorf("tokeninfo got %s %s: the token must go in the body", r.Method, r.URL)
+			}
+			tok = r.FormValue("access_token")
+		case "/userinfo":
+			tok = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		}
-		info, ok := tokens[r.FormValue("access_token")]
+		info, ok := tokens[tok]
 		if !ok {
 			http.Error(w, `{"error":"invalid_token"}`, http.StatusBadRequest)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(info)
+		if s := info["status"]; s != "" {
+			code, _ := strconv.Atoi(s)
+			http.Error(w, "{}", code)
+			return
+		}
+		out := map[string]string{}
+		for k, v := range info {
+			switch {
+			case r.URL.Path == "/userinfo" && k == "hd":
+				out["hd"] = v
+			case r.URL.Path == "/userinfo" && k == "user_email":
+				out["email"] = v
+			case r.URL.Path == "/tokeninfo" && k != "hd" && k != "user_email":
+				out[k] = v
+			}
+		}
+		if _, ok := out["email"]; !ok && r.URL.Path == "/userinfo" {
+			out["email"] = info["email"]
+		}
+		_ = json.NewEncoder(w).Encode(out)
 	}))
 	t.Cleanup(srv.Close)
-	return srv, &hits
+	return &Client{ID: clientID, TokenInfo: srv.URL + "/tokeninfo", UserInfo: srv.URL + "/userinfo", Now: func() time.Time { return now }}, &hits
 }
 
 func info(aud, email, verified string, exp time.Time) map[string]string {
-	return map[string]string{"aud": aud, "azp": aud, "email": email, "email_verified": verified, "exp": strconv.FormatInt(exp.Unix(), 10)}
+	return map[string]string{"aud": aud, "azp": aud, "email": email, "email_verified": verified, "exp": strconv.FormatInt(exp.Unix(), 10),
+		"scope": "openid " + EmailScope, "hd": "cymbal.example"}
+}
+
+func with(m map[string]string, kv ...string) map[string]string {
+	out := map[string]string{}
+	for k, v := range m {
+		out[k] = v
+	}
+	for i := 0; i+1 < len(kv); i += 2 {
+		if kv[i+1] == "" {
+			delete(out, kv[i])
+		} else {
+			out[kv[i]] = kv[i+1]
+		}
+	}
+	return out
 }
 
 func TestAccessToken(t *testing.T) {
-	srv, hits := tokeninfo(t, map[string]map[string]string{
-		"good":       info(clientID, "Dana@Cymbal.example", "true", now.Add(time.Hour)),
-		"other-app":  info("999-other.apps.googleusercontent.com", "dana@cymbal.example", "true", now.Add(time.Hour)),
-		"unverified": info(clientID, "dana@cymbal.example", "false", now.Add(time.Hour)),
-		"no-email":   info(clientID, "", "true", now.Add(time.Hour)),
-		"expired":    info(clientID, "dana@cymbal.example", "true", now.Add(-time.Second)),
-		"bad-exp":    {"aud": clientID, "email": "dana@cymbal.example", "email_verified": "true", "exp": "soon"},
+	good := info(clientID, "Dana@Cymbal.example", "true", now.Add(time.Hour))
+	c, hits := fakeGoogle(t, map[string]map[string]string{
+		"good":          good,
+		"consumer":      with(good, "hd", ""),
+		"other-app":     with(good, "aud", "999-other.apps.googleusercontent.com", "azp", "999-other.apps.googleusercontent.com"),
+		"no-scope":      with(good, "scope", "openid"),
+		"unverified":    with(good, "email_verified", "false"),
+		"no-email":      with(good, "email", ""),
+		"expired":       with(good, "exp", strconv.FormatInt(now.Add(-time.Second).Unix(), 10)),
+		"bad-exp":       with(good, "exp", "soon"),
+		"other-user":    with(good, "user_email", "mallory@cymbal.example"),
+		"google-down":   with(good, "status", "503"),
+		"google-busy":   with(good, "status", "429"),
+		"eyJh.eyJi.sig": good, // a JWT: never even asked about
 	})
 	clock := now
-	c := &Client{ID: clientID, TokenInfo: srv.URL, Now: func() time.Time { return clock }}
+	c.Now = func() time.Time { return clock }
 	ctx := context.Background()
 
 	id, err := c.AccessToken(ctx, "good")
-	if err != nil || id.Email != "dana@cymbal.example" {
+	if err != nil || id.Email != "dana@cymbal.example" || id.HD != "cymbal.example" {
 		t.Fatalf("good token: %+v, %v", id, err)
 	}
-	for _, tok := range []string{"", "unknown", "other-app", "unverified", "no-email", "expired", "bad-exp", string(make([]byte, 5000))} {
+	if id, err := c.AccessToken(ctx, "consumer"); err != nil || id.HD != "" {
+		t.Errorf("a consumer account: %+v, %v (accepted, with no domain)", id, err)
+	}
+	for _, tok := range []string{"", "unknown", "other-app", "no-scope", "unverified", "no-email", "expired", "bad-exp", "other-user",
+		"eyJh.eyJi.sig", string(make([]byte, 5000))} {
 		if _, err := c.AccessToken(ctx, tok); !errors.Is(err, ErrInvalid) {
 			t.Errorf("token %.20q: %v, want ErrInvalid", tok, err)
+		}
+	}
+	// Google failing isn't Google refusing: not ErrInvalid, and not
+	// remembered.
+	for _, tok := range []string{"google-down", "google-busy"} {
+		n := hits.Load()
+		for range 2 {
+			if _, err := c.AccessToken(ctx, tok); err == nil || errors.Is(err, ErrInvalid) {
+				t.Errorf("%s: %v, want a failure that isn't a refusal", tok, err)
+			}
+		}
+		if hits.Load() != n+2 {
+			t.Errorf("%s: a failure was remembered", tok)
 		}
 	}
 
@@ -87,16 +157,51 @@ func TestAccessToken(t *testing.T) {
 		t.Errorf("a checked token was checked again (%v)", err)
 	}
 	clock = now.Add(MaxTTL)
-	if _, err := c.AccessToken(ctx, "good"); err != nil || hits.Load() != n+1 {
+	if _, err := c.AccessToken(ctx, "good"); err != nil || hits.Load() != n+2 {
 		t.Errorf("a token was trusted past MaxTTL (%v)", err)
 	}
-	// Failures are never cached as successes, and a failure isn't remembered
-	// as one either: an unknown token asks Google every time.
+	// A refusal is remembered for RefusedTTL, and never as a success.
 	n = hits.Load()
-	_, _ = c.AccessToken(ctx, "unknown")
-	_, _ = c.AccessToken(ctx, "unknown")
+	_, _ = c.AccessToken(ctx, "unknown-2")
+	if _, err := c.AccessToken(ctx, "unknown-2"); !errors.Is(err, ErrInvalid) || hits.Load() != n+1 {
+		t.Errorf("a refused token: %v, %d lookups", err, hits.Load()-n)
+	}
+	clock = clock.Add(RefusedTTL)
+	_, _ = c.AccessToken(ctx, "unknown-2")
 	if hits.Load() != n+2 {
-		t.Error("a refused token was cached")
+		t.Error("a refusal was remembered past RefusedTTL")
+	}
+	// The JWT never reached Google.
+	if _, err := c.AccessToken(ctx, "eyJh.eyJi.sig"); !errors.Is(err, ErrInvalid) {
+		t.Error("a JWT passed")
+	}
+}
+
+// TestAccessTokenLookups: past MaxLookups at once, a new token is refused
+// without asking Google.
+func TestAccessTokenLookups(t *testing.T) {
+	release := make(chan struct{})
+	var inflight atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		inflight.Add(1)
+		<-release
+		http.Error(w, "{}", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+	c := &Client{ID: clientID, TokenInfo: srv.URL, UserInfo: srv.URL}
+	done := make(chan struct{})
+	for i := range MaxLookups {
+		go func() { _, _ = c.AccessToken(context.Background(), "slow-"+strconv.Itoa(i)); done <- struct{}{} }()
+	}
+	for inflight.Load() < MaxLookups {
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := c.AccessToken(context.Background(), "one-more"); !errors.Is(err, ErrInvalid) || inflight.Load() != MaxLookups {
+		t.Errorf("past MaxLookups: %v, %d lookups", err, inflight.Load())
+	}
+	close(release)
+	for range MaxLookups {
+		<-done
 	}
 }
 
@@ -105,8 +210,7 @@ func TestAccessTokenCacheBound(t *testing.T) {
 	for i := range MaxCached + 10 {
 		tokens["t"+strconv.Itoa(i)] = info(clientID, "dana@cymbal.example", "true", now.Add(time.Hour))
 	}
-	srv, _ := tokeninfo(t, tokens)
-	c := &Client{ID: clientID, TokenInfo: srv.URL, Now: func() time.Time { return now }}
+	c, _ := fakeGoogle(t, tokens)
 	for tok := range tokens {
 		if _, err := c.AccessToken(context.Background(), tok); err != nil {
 			t.Fatal(err)
@@ -161,12 +265,12 @@ func TestSignIn(t *testing.T) {
 	}
 
 	good := func() map[string]any {
-		return map[string]any{"email": "Dana@cymbal.example", "email_verified": true, "nonce": s.Nonce}
+		return map[string]any{"email": "Dana@cymbal.example", "email_verified": true, "nonce": s.Nonce, "hd": "Cymbal.example"}
 	}
 	ctx := context.Background()
 	claims = good()
 	id, err := c.Finish(ctx, redirect, s, s.State, "the-code")
-	if err != nil || id.Email != "dana@cymbal.example" {
+	if err != nil || id.Email != "dana@cymbal.example" || id.HD != "cymbal.example" {
 		t.Fatalf("sign-in: %+v, %v", id, err)
 	}
 	iss = "accounts.google.com"
@@ -225,20 +329,30 @@ func mustQuery(t *testing.T, raw string) url.Values {
 
 func TestMember(t *testing.T) {
 	members := []string{"dana@cymbal.example", "@ops.cymbal.example", " Lee@Partner.example "}
-	for email, want := range map[string]bool{
-		"dana@cymbal.example":         true,
-		"DANA@cymbal.example":         true,
-		"sam@ops.cymbal.example":      true,
-		"lee@partner.example":         true,
-		"sam@cymbal.example":          false,
-		"sam@evil-ops.cymbal.example": false,
-		"sam@xops.cymbal.example":     false,
-		"@ops.cymbal.example":         false,
-		"ops.cymbal.example":          false,
-		"":                            false,
+	for _, tc := range []struct {
+		email, hd string
+		want      bool
+	}{
+		{"dana@cymbal.example", "", true}, // an exact address needs no domain
+		{"DANA@cymbal.example", "cymbal.example", true},
+		{"sam@ops.cymbal.example", "ops.cymbal.example", true},
+		{"SAM@ops.cymbal.example", "OPS.cymbal.example", true},
+		{"lee@partner.example", "", true},
+		// A domain entry needs the Workspace's word: a consumer account
+		// can carry the address.
+		{"sam@ops.cymbal.example", "", false},
+		{"sam@ops.cymbal.example", "evil.example", false},
+		{"sam@ops.cymbal.example", "cymbal.example", false},
+		{"sam@a.ops.cymbal.example", "a.ops.cymbal.example", false},
+		{"sam@cymbal.example", "cymbal.example", false},
+		{"sam@evil-ops.cymbal.example", "evil-ops.cymbal.example", false},
+		{"sam@xops.cymbal.example", "xops.cymbal.example", false},
+		{"@ops.cymbal.example", "ops.cymbal.example", false},
+		{"ops.cymbal.example", "ops.cymbal.example", false},
+		{"", "", false},
 	} {
-		if got := Member(email, members); got != want {
-			t.Errorf("Member(%q) = %v, want %v", email, got, want)
+		if got := (Identity{Email: tc.email, HD: tc.hd}).Member(members); got != tc.want {
+			t.Errorf("%s (hd %q): member = %v, want %v", tc.email, tc.hd, got, tc.want)
 		}
 	}
 }

@@ -167,7 +167,8 @@ type Persona struct {
 	Title string   `yaml:"title"` // shown; at most 64 characters
 	Roles []string `yaml:"roles"` // roles of this node this persona acts in
 	// Members are who signs in as this persona with Google sign-in: an
-	// exact email address, or "@domain" for everyone in that domain.
+	// exact email address, or "@domain" for every account of that
+	// Workspace domain (Google must say so: an email alone isn't enough).
 	Members []string `yaml:"members"`
 }
 

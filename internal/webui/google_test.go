@@ -33,8 +33,8 @@ import (
 const clientID = "123-abc.apps.googleusercontent.com"
 
 // newGoogleUI is a UI with Google sign-in against a fake Google: the code
-// "the-code" signs in as *email.
-func newGoogleUI(t *testing.T, email *string) http.Handler {
+// "the-code" signs in as *email, of Workspace domain *hd.
+func newGoogleUI(t *testing.T, email, hd *string) http.Handler {
 	t.Helper()
 	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -54,7 +54,7 @@ func newGoogleUI(t *testing.T, email *string) http.Handler {
 			if tok != "id-token" || aud != clientID {
 				return nil, errors.New("bad")
 			}
-			return &idtoken.Payload{Issuer: "https://accounts.google.com", Claims: map[string]any{"email": *email, "email_verified": true, "nonce": nonce}}, nil
+			return &idtoken.Payload{Issuer: "https://accounts.google.com", Claims: map[string]any{"email": *email, "email_verified": true, "nonce": nonce, "hd": *hd}}, nil
 		}}
 	members := []Persona{
 		{ID: "dana", Name: "Dana", Roles: []string{RoleShipper}, Members: []string{"dana@ocean-blue.example"}},
@@ -90,16 +90,16 @@ func start(t *testing.T, h http.Handler) (url.Values, *http.Cookie) {
 		t.Fatalf("login: %d", rec.Code)
 	}
 	u, _ := url.Parse(rec.Header().Get("Location"))
-	c := cookieNamed(rec, "ulp_signin_ocean_blue_example")
-	if u.Host != "accounts.example" || c == nil || c.SameSite != http.SameSiteLaxMode || !c.HttpOnly || !c.Secure || c.Path != "/ui/auth/" {
+	c := cookieNamed(rec, "__Host-ulp_signin_ocean_blue_example")
+	if u.Host != "accounts.example" || c == nil || c.SameSite != http.SameSiteLaxMode || !c.HttpOnly || !c.Secure || c.Path != "/" {
 		t.Fatalf("login went to %s with cookie %+v", u, c)
 	}
 	return u.Query(), c
 }
 
 func TestGoogleSignIn(t *testing.T) {
-	email := "dana@ocean-blue.example"
-	h := newGoogleUI(t, &email)
+	email, hd := "dana@ocean-blue.example", "ocean-blue.example"
+	h := newGoogleUI(t, &email, &hd)
 	host := []string{"Host", "ocean-blue.example"}
 
 	// No personas to pick, and no password sign-in.
@@ -108,7 +108,7 @@ func TestGoogleSignIn(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &pr); err != nil || len(pr.Personas) != 0 || pr.Demo || pr.Login != LoginPath {
 		t.Errorf("personas = %s", rec.Body)
 	}
-	if rec := do(h, http.MethodPost, "/ui/api/login", `{"persona":"dana"}`, nil, host...); rec.Code != http.StatusForbidden || cookieNamed(rec, "ulp_session_ocean_blue_example") != nil {
+	if rec := do(h, http.MethodPost, "/ui/api/login", `{"persona":"dana"}`, nil, host...); rec.Code != http.StatusForbidden || cookieNamed(rec, "__Host-ulp_session_ocean_blue_example") != nil {
 		t.Errorf("persona login with Google sign-in: %d", rec.Code)
 	}
 
@@ -117,14 +117,14 @@ func TestGoogleSignIn(t *testing.T) {
 		t.Errorf("redirect_uri %q", q.Get("redirect_uri"))
 	}
 	rec = do(h, http.MethodGet, CallbackPath+"?state="+url.QueryEscape(q.Get("state"))+"&code=the-code", "", c, host...)
-	session := cookieNamed(rec, "ulp_session_ocean_blue_example")
+	session := cookieNamed(rec, "__Host-ulp_session_ocean_blue_example")
 	if rec.Code != http.StatusOK || session == nil || session.SameSite != http.SameSiteStrictMode || !session.Secure {
 		t.Fatalf("callback: %d %s, session %+v", rec.Code, rec.Body, session)
 	}
 	if !strings.Contains(rec.Body.String(), `http-equiv="refresh" content="0;url=/ui/"`) || rec.Header().Get("Cache-Control") != "no-store" {
 		t.Errorf("the landing page doesn't move on: %s", rec.Body)
 	}
-	if gone := cookieNamed(rec, "ulp_signin_ocean_blue_example"); gone == nil || gone.MaxAge >= 0 {
+	if gone := cookieNamed(rec, "__Host-ulp_signin_ocean_blue_example"); gone == nil || gone.MaxAge >= 0 {
 		t.Error("the sign-in cookie outlived its sign-in")
 	}
 	rec = do(h, http.MethodGet, "/ui/api/me", "", session, host...)
@@ -140,7 +140,7 @@ func TestGoogleSignIn(t *testing.T) {
 	email = "lee@ocean-blue.example"
 	q, c = start(t, h)
 	rec = do(h, http.MethodGet, CallbackPath+"?state="+url.QueryEscape(q.Get("state"))+"&code=the-code", "", c, host...)
-	if s := cookieNamed(rec, "ulp_session_ocean_blue_example"); s == nil {
+	if s := cookieNamed(rec, "__Host-ulp_session_ocean_blue_example"); s == nil {
 		t.Fatal("lee wasn't signed in")
 	} else if err := json.Unmarshal(do(h, http.MethodGet, "/ui/api/me", "", s, host...).Body.Bytes(), &me); err != nil || me.Persona.ID != "ops" {
 		t.Errorf("lee is %+v", me.Persona)
@@ -148,15 +148,24 @@ func TestGoogleSignIn(t *testing.T) {
 }
 
 func TestGoogleSignInRejects(t *testing.T) {
-	email := "dana@ocean-blue.example"
-	h := newGoogleUI(t, &email)
+	email, hd := "dana@ocean-blue.example", "ocean-blue.example"
+	h := newGoogleUI(t, &email, &hd)
 	host := []string{"Host", "ocean-blue.example"}
 	for name, tc := range map[string]struct {
-		email string
-		query func(state string) string
-		drop  bool // no sign-in cookie
-		want  int
+		email, hd string
+		query     func(state string) string
+		drop      bool   // no sign-in cookie
+		cookie    string // a sign-in cookie of this value instead
+		want      int
 	}{
+		// A consumer account with a company address: the domain entry
+		// needs the Workspace's word (hd).
+		"a domain address without its workspace": {email: "lee@ocean-blue.example", hd: "-",
+			query: func(s string) string { return "?state=" + url.QueryEscape(s) + "&code=the-code" }, want: http.StatusForbidden},
+		"another workspace": {email: "lee@ocean-blue.example", hd: "evil.example",
+			query: func(s string) string { return "?state=" + url.QueryEscape(s) + "&code=the-code" }, want: http.StatusForbidden},
+		"a malformed sign-in cookie": {cookie: "only.two",
+			query: func(s string) string { return "?state=only&code=the-code" }, want: http.StatusUnauthorized},
 		"a forged state":    {query: func(string) string { return "?state=forged&code=the-code" }, want: http.StatusUnauthorized},
 		"no state":          {query: func(string) string { return "?code=the-code" }, want: http.StatusUnauthorized},
 		"no sign-in cookie": {query: func(s string) string { return "?state=" + url.QueryEscape(s) + "&code=the-code" }, drop: true, want: http.StatusUnauthorized},
@@ -165,17 +174,27 @@ func TestGoogleSignInRejects(t *testing.T) {
 		"not a member": {email: "mallory@evil.example", query: func(s string) string { return "?state=" + url.QueryEscape(s) + "&code=the-code" },
 			want: http.StatusForbidden},
 	} {
-		email = "dana@ocean-blue.example"
+		email, hd = "dana@ocean-blue.example", "ocean-blue.example"
 		if tc.email != "" {
 			email = tc.email
+		}
+		switch tc.hd {
+		case "-":
+			hd = ""
+		case "":
+		default:
+			hd = tc.hd
 		}
 		q, c := start(t, h)
 		if tc.drop {
 			c = nil
 		}
+		if tc.cookie != "" {
+			c.Value = tc.cookie
+		}
 		rec := do(h, http.MethodGet, CallbackPath+tc.query(q.Get("state")), "", c, host...)
-		if rec.Code != tc.want || cookieNamed(rec, "ulp_session_ocean_blue_example") != nil {
-			t.Errorf("%s: %d, session %v; want %d and none", name, rec.Code, cookieNamed(rec, "ulp_session_ocean_blue_example"), tc.want)
+		if rec.Code != tc.want || cookieNamed(rec, "__Host-ulp_session_ocean_blue_example") != nil {
+			t.Errorf("%s: %d, session %v; want %d and none", name, rec.Code, cookieNamed(rec, "__Host-ulp_session_ocean_blue_example"), tc.want)
 		}
 		if strings.Contains(rec.Body.String(), "<script") {
 			t.Errorf("%s: a script in the page", name)
