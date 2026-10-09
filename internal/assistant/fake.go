@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/directory"
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/llm/fake"
 	"github.com/go-steer/supercargo/internal/ports"
@@ -85,6 +86,12 @@ var (
 	askPattern     = regexp.MustCompile(`(?i)\b(?:ask|why|caused?|delay(?:s|ed)?|late|eta|firm)\b`)
 	isoDatePattern = regexp.MustCompile(`\b20[0-9]{2}-[01][0-9]-[0-3][0-9]\b`)
 	countPattern   = regexp.MustCompile(`(?i)\b([0-9]{1,3}|one|two|three|four|five)\s*(?:x\s*)?(?:20|40|45)`)
+	// findPattern: a search for partners we don't know ("find me a
+	// carrier", "who can ship Rotterdam to Newark").
+	findPattern = regexp.MustCompile(`(?i)\b(?:find|search|who (?:can|serves?|ships?))\b`)
+	// knowPattern: a question about the partners we know.
+	knowPattern   = regexp.MustCompile(`(?i)\b(?:who do we know|partners|address book|contacts|carriers do we|consignees)\b`)
+	consigneeName = regexp.MustCompile(`(?i)consignee is ([^,.(]+)`)
 )
 
 var portNames = []struct{ name, code string }{
@@ -115,10 +122,28 @@ func fakeStep(msgs []llm.Message, user string, done []step, now time.Time) llm.G
 	case strings.HasPrefix(user, notePrefix):
 		return reportReply(block(user, "result"))
 	case strings.Contains(lower, "book "):
-		if last != nil {
+		switch {
+		case last != nil && last.call.Name == ToolDraftBooking:
 			return draftReply(last.result.Content)
+		case last == nil && needsPartners(msgs, user):
+			// A carrier named by name: look up its domain first.
+			return call(id, ToolPartners, struct{}{})
 		}
 		return call(id, ToolDraftBooking, draftFrom(msgs, user, now))
+	case knowPattern.MatchString(user) && !findPattern.MatchString(user):
+		if last != nil {
+			return partnersReply(last.result.Content)
+		}
+		return call(id, ToolPartners, struct{}{})
+	case findPattern.MatchString(user):
+		if last != nil {
+			return findReply(last.result.Content)
+		}
+		in := map[string]string{"role": "carrier"}
+		if p := portsIn(lower); len(p) >= 2 {
+			in["from"], in["to"] = p[0], p[1]
+		}
+		return call(id, ToolFind, in)
 	case askPattern.MatchString(user):
 		ref := refPattern.FindString(user)
 		switch {
@@ -153,7 +178,7 @@ func fakeStep(msgs []llm.Message, user string, done []step, now time.Time) llm.G
 		}
 		return call(id, ToolGetProfile, map[string]string{"domain": domainPattern.FindString(lower)})
 	}
-	return say("I can look up a carrier (give me its domain), prepare a booking for you to confirm, follow our shipments (\"where is OB-BKG-1042?\"), and ask a carrier about one (\"why is OB-BKG-1042 delayed?\").")
+	return say("I can list the partners we know, find carriers in the directory (\"find a carrier from Rotterdam to Newark\"), look up a carrier, prepare a booking for you to confirm, follow our shipments (\"where is OB-BKG-1042?\"), and ask a carrier about one (\"why is OB-BKG-1042 delayed?\").")
 }
 
 // draftFrom reads a booking request out of the user's words, the way the
@@ -167,6 +192,12 @@ func draftFrom(msgs []llm.Message, user string, now time.Time) map[string]any {
 	if m := consignee.FindStringSubmatch(user); m != nil {
 		cons = m
 		in["consigneeName"], in["consigneeDomain"] = strings.TrimSpace(m[1]), m[2]
+	} else if m := consigneeName.FindStringSubmatch(user); m != nil {
+		// A consignee named by name: its domain from the partners we know.
+		if e, ok := partnerNamed(msgs, m[1], directory.RoleConsignee); ok {
+			in["consigneeName"], in["consigneeDomain"] = e.Name, e.Domain
+			cons = []string{"", e.Name, e.Domain}
+		}
 	}
 	for _, m := range msgs {
 		for _, c := range m.ToolCalls {
@@ -185,19 +216,14 @@ func draftFrom(msgs []llm.Message, user string, now time.Time) map[string]any {
 			}
 		}
 	}
-	type at struct {
-		i          int
-		name, code string
-	}
-	var found []at
-	for _, p := range portNames {
-		if i := strings.Index(lower, p.name); i >= 0 {
-			found = append(found, at{i, p.name, p.code})
+	if in["operator"] == nil {
+		// A carrier named by name, from the partners we know or found.
+		if e, ok := partnerNamed(msgs, user, directory.RoleCarrier); ok {
+			in["operator"] = e.Domain
 		}
 	}
-	slices.SortFunc(found, func(a, b at) int { return a.i - b.i })
-	if len(found) >= 2 {
-		in["portOfLoading"], in["portOfDischarge"] = found[0].code, found[1].code
+	if p := portsIn(lower); len(p) >= 2 {
+		in["portOfLoading"], in["portOfDischarge"] = p[0], p[1]
 	}
 	in["grossWeightKg"] = 12000 // a plausible estimate for a box of shoes
 	switch {
@@ -362,4 +388,132 @@ func reportReply(result string) llm.GenerateResponse {
 		}
 	}
 	return say("%s. I'll tell you about anything that affects it.", out)
+}
+
+// portsIn returns the UN/LOCODEs of the ports text names, in the order
+// named.
+func portsIn(lower string) []string {
+	type at struct {
+		i    int
+		code string
+	}
+	var found []at
+	for _, p := range portNames {
+		if i := strings.Index(lower, p.name); i >= 0 {
+			found = append(found, at{i, p.code})
+		}
+	}
+	slices.SortFunc(found, func(a, b at) int { return a.i - b.i })
+	var out []string
+	for _, f := range found {
+		out = append(out, f.code)
+	}
+	return out
+}
+
+// knownPartners are the partners the conversation's tool results listed:
+// list_partners' address book and finds, and find_partners' verified
+// candidates.
+func knownPartners(msgs []llm.Message) []directory.Entry {
+	calls := map[string]string{}
+	var out []directory.Entry
+	for _, m := range msgs {
+		for _, c := range m.ToolCalls {
+			calls[c.ID] = c.Name
+		}
+		for _, r := range m.ToolResults {
+			if r.IsError {
+				continue
+			}
+			switch calls[r.CallID] {
+			case ToolPartners:
+				var l struct{ AddressBook, FoundInThisConversation []directory.Entry }
+				_ = json.Unmarshal([]byte(r.Content), &l)
+				out = append(out, append(l.AddressBook, l.FoundInThisConversation...)...)
+			case ToolFind:
+				var f struct{ Candidates []Candidate }
+				_ = json.Unmarshal([]byte(r.Content), &f)
+				for _, c := range f.Candidates {
+					if c.Verified {
+						out = append(out, c.Entry)
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// partnerNamed is the known partner with role whose name text contains,
+// the longest such name.
+func partnerNamed(msgs []llm.Message, text, role string) (directory.Entry, bool) {
+	said := " " + directory.NameKey(text) + " "
+	var best directory.Entry
+	for _, e := range knownPartners(msgs) {
+		key := directory.NameKey(e.Name)
+		if key != "" && slices.Contains(e.Roles, role) && strings.Contains(said, " "+key+" ") && len(key) > len(directory.NameKey(best.Name)) {
+			best = e
+		}
+	}
+	return best, best.Domain != ""
+}
+
+// needsPartners: a booking that names no carrier by domain, and none the
+// conversation has looked up or listed yet.
+func needsPartners(msgs []llm.Message, user string) bool {
+	if domainPattern.MatchString(strings.ToLower(consignee.ReplaceAllString(user, ""))) {
+		return false
+	}
+	for _, m := range msgs {
+		for _, c := range m.ToolCalls {
+			if c.Name == ToolGetProfile {
+				return false
+			}
+		}
+	}
+	_, ok := partnerNamed(msgs, user, directory.RoleCarrier)
+	return !ok
+}
+
+func partnersReply(content string) llm.GenerateResponse {
+	var l struct {
+		AddressBook             []directory.Entry
+		CarriersWeBookedWith    []struct{ Domain string }
+		FoundInThisConversation []directory.Entry
+	}
+	_ = json.Unmarshal([]byte(content), &l)
+	var lines []string
+	for _, e := range l.AddressBook {
+		lines = append(lines, fmt.Sprintf("- **%s** (`%s`): %s", e.Name, e.Domain, strings.Join(e.Roles, ", ")))
+	}
+	for _, c := range l.CarriersWeBookedWith {
+		lines = append(lines, fmt.Sprintf("- `%s`: a carrier we've booked with", c.Domain))
+	}
+	for _, e := range l.FoundInThisConversation {
+		lines = append(lines, fmt.Sprintf("- **%s** (`%s`): found in the directory", e.Name, e.Domain))
+	}
+	if len(lines) == 0 {
+		return say("We don't know any partners yet. I can search the directory: tell me the lane.")
+	}
+	return say("The partners we know:\n\n%s", strings.Join(lines, "\n"))
+}
+
+func findReply(content string) llm.GenerateResponse {
+	var f struct{ Candidates []Candidate }
+	_ = json.Unmarshal([]byte(content), &f)
+	if len(f.Candidates) == 0 {
+		return say("The directory has no carrier for that.")
+	}
+	var lines []string
+	for _, c := range f.Candidates {
+		switch {
+		case c.Verified && c.Bookable:
+			lines = append(lines, fmt.Sprintf("- **%s** (`%s`): verified, takes bookings", c.Name, c.Domain))
+		case c.Verified:
+			lines = append(lines, fmt.Sprintf("- **%s** (`%s`): verified, but takes no bookings", c.Name, c.Domain))
+		default:
+			lines = append(lines, fmt.Sprintf("- %s (`%s`): its profile didn't verify, so I can't use it", c.Name, c.Domain))
+		}
+	}
+	return say("The directory lists:\n\n%s\n\nTell me which one to book with.", strings.Join(lines, "\n"))
 }

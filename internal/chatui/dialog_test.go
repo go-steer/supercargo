@@ -273,6 +273,10 @@ func TestDialogShowsEverything(t *testing.T) {
 	if s := screen(m); !strings.Contains(s, "AND-THE-TAIL") {
 		t.Errorf("the tail of a long field is hidden:\n%s", s)
 	}
+	// A carrier we've never booked with, not in an address book: said.
+	if s := screen(m); !strings.Contains(s, "A new partner") {
+		t.Errorf("no new-partner warning:\n%s", s)
+	}
 }
 
 // TestUnknownOutcome: a send whose outcome is unknown isn't offered

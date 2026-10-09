@@ -183,6 +183,11 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			return nil, err
 		}
 	}
+	// The address book and the directory are read again for each
+	// assistant; a broken one stops the node now, not the first chat.
+	if _, _, err := Partners(cfg); err != nil {
+		return nil, err
+	}
 	var guard func(string, []byte) error
 	if cfg.Business != nil {
 		if a.Business, err = business.Load(cfg.Business.File); err != nil {

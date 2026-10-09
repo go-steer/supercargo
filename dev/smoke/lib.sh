@@ -159,6 +159,10 @@ control:
   socket: $dir/cy.sock
 business:
   file: $dir/business.yaml   # private: never in an envelope
+addressBook:
+  file: $dir/address-book.yaml   # the partners Cymbal knows
+directory:
+  file: $dir/directory.yaml      # where Cymbal searches for new ones
 llm: $llm
 web:                     # the browser UI at http://cymbal-shoes.localhost:$SH_PORT/ui/
   auth: demo             # no password: local demos only
@@ -176,6 +180,38 @@ shipments:
     notes: "Spring launch stock: shelves must be full by Friday the 16th"
 notes:
   - "Tell the launch team about any delay that puts the receiving slot at risk"
+EOF
+
+  # The partners Cymbal knows. Ocean Blue isn't one yet: Cymbal finds it
+  # in the directory.
+  cat >"$dir/address-book.yaml" <<'EOF'
+entries:
+  - domain: cymbal-footwear.example
+    name: Cymbal Footwear
+    roles: [consignee]
+    description: Our US retail arm; receives at the Newark DC.
+EOF
+
+  # A directory to search (Google Cloud API hub in a deployment). Entries
+  # are each company's own claim: only Ocean Blue's domain has a profile
+  # that verifies, so North Star Lines shows up as unverified.
+  cat >"$dir/directory.yaml" <<'EOF'
+entries:
+  - domain: ocean-blue.example
+    name: Ocean Blue
+    roles: [carrier]
+    modes: [OCEAN]
+    lanes: [{ from: NLRTM, to: USEWR }, { from: USEWR, to: NLRTM }]
+    description: Transatlantic container service, weekly departures from Rotterdam.
+  - domain: north-star.example
+    name: North Star Lines
+    roles: [carrier]
+    modes: [OCEAN]
+    lanes: [{ from: NLRTM, to: USEWR }, { from: DEHAM, to: USNYC }]
+    description: North Atlantic container lines.
+  - domain: cymbal-shoes.example
+    name: Cymbal Shoes
+    roles: [shipper]
 EOF
 
   cat >"$dir/booking.json" <<'EOF'

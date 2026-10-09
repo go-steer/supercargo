@@ -17,6 +17,7 @@ package chatui
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -165,6 +166,9 @@ func (m *Model) dialogView() string {
 		line("Cargo:", fmt.Sprintf("%s, HS %s", r.Cargo.Description, r.Cargo.HSCode)),
 		line("Departure:", "on/after "+r.EarliestDeparture),
 		line("Reference:", r.ShipperRef),
+	}
+	if d.NewPartner {
+		lines = slices.Insert(lines, 1, fmt.Sprintf("%-11s", "")+m.st.pending.Render("A new partner: not in your address book, never booked with. Check the domain."))
 	}
 	if r.ServiceContractNumber != "" {
 		lines = append(lines, line("Contract:", r.ServiceContractNumber))

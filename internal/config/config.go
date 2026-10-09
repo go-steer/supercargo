@@ -79,6 +79,11 @@ type Config struct {
 	Simulator *Simulator `yaml:"simulator"` // operator only
 	Control   *Control   `yaml:"control"`
 	Business  *Business  `yaml:"business"` // shipper only
+	// AddressBook is the company's own list of the partners it knows
+	// (internal/directory); Directory is somewhere to search for new ones.
+	// Neither is trust: a partner's verified profile is.
+	AddressBook *AddressBook `yaml:"addressBook"`
+	Directory   *Directory   `yaml:"directory"`
 
 	// Sections for later milestones, accepted so a full config loads.
 	LLM    *LLM    `yaml:"llm"`
@@ -246,6 +251,17 @@ const (
 // (internal/business): delivery deadlines and receiving slots its own model
 // uses, never sent to partners.
 type Business struct {
+	File string `yaml:"file"`
+}
+
+// AddressBook points at the company's address book file.
+type AddressBook struct {
+	File string `yaml:"file"`
+}
+
+// Directory configures where to search for partners: a file for local
+// runs and tests (Google Cloud API hub later, #79).
+type Directory struct {
 	File string `yaml:"file"`
 }
 
@@ -469,6 +485,12 @@ func (c *Config) validate() error {
 	}
 	if c.Business != nil && (!c.Customer() || !filepath.IsAbs(c.Business.File)) {
 		return fmt.Errorf("business: for the shipper or receiver role only, with an absolute file path (got %q)", c.Business.File)
+	}
+	if c.AddressBook != nil && !filepath.IsAbs(c.AddressBook.File) {
+		return fmt.Errorf("addressBook: file %q must be an absolute path", c.AddressBook.File)
+	}
+	if c.Directory != nil && !filepath.IsAbs(c.Directory.File) {
+		return fmt.Errorf("directory: file %q must be an absolute path", c.Directory.File)
 	}
 	if c.Skills != nil && (c.Skills.Dir == "" || !filepath.IsAbs(c.Skills.Dir)) {
 		return fmt.Errorf("skills: dir %q must be an absolute path", c.Skills.Dir)
