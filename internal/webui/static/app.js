@@ -549,6 +549,67 @@ function renderLeftNow() {
 }
 
 // ── the assistant ────────────────────────────────────────────────────
+// markdown renders the small Markdown subset models answer in (paragraphs,
+// bullet and numbered lists, headings, **bold**, *italics*, `code`) as
+// elements and text nodes only: the text is model output, so nothing in
+// it ever becomes markup, a link or an attribute.
+function markdown(text) {
+  const box = el('div', 'md');
+  let list = null, para = null;
+  const end = () => { list = null; para = null; };
+  for (const raw of String(text).split('\n')) {
+    const line = raw.trimEnd();
+    let m;
+    if (!line.trim()) { end(); continue; }
+    if ((m = line.match(/^\s*(#{1,4})\s+(.*)$/))) {
+      end();
+      box.appendChild(inline(el('div', 'md-h'), m[2]));
+    } else if ((m = line.match(/^\s*(?:[-*•]|(\d{1,3})[.)])\s+(.*)$/))) {
+      para = null;
+      const kind = m[1] ? 'ol' : 'ul';
+      if (!list || list.tagName.toLowerCase() !== kind) { list = el(kind); box.appendChild(list); }
+      list.appendChild(inline(el('li'), m[2]));
+    } else if (list && /^\s{2,}\S/.test(raw) && list.lastChild) {
+      // A list item's continuation line.
+      inline(list.lastChild, ' ' + line.trim());
+    } else {
+      list = null;
+      if (para) para.appendChild(document.createElement('br'));
+      else { para = el('p'); box.appendChild(para); }
+      inline(para, line);
+    }
+  }
+  return box;
+}
+
+// inline appends text to node with **bold**, *italics* or _italics_, and
+// `code` as elements; anything else, unmatched markers included, as text.
+function inline(node, text) {
+  const re = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^*\s][^*\n]*\*)|((?<![\w])_[^_\s][^_\n]*_(?![\w]))/g;
+  let at = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > at) node.appendChild(document.createTextNode(text.slice(at, m.index)));
+    const t = m[0];
+    if (m[1]) node.appendChild(el('code', null, t.slice(1, -1)));
+    else if (m[2]) node.appendChild(inline(el('strong'), t.slice(2, -2)));
+    else node.appendChild(inline(el('em'), t.slice(1, -1)));
+    at = m.index + t.length;
+  }
+  if (at < text.length) node.appendChild(document.createTextNode(text.slice(at)));
+  return node;
+}
+
+// toolView is one tool call: its name, its arguments in short, and how it
+// went (or that it's running).
+function toolView(tool, running) {
+  const c = el('div', 'toolcall' + (running ? ' running' : ''), '▸ ' + tool.name);
+  if (tool.detail) c.appendChild(el('span', 'args', ' ' + tool.detail));
+  c.appendChild(document.createTextNode(' '));
+  if (running) c.appendChild(el('span', 'spin', '…'));
+  else c.appendChild(el('span', tool.error ? 'bad' : 'okk', tool.error ? '✗ ' + tool.error : '✓'));
+  return c;
+}
+
 async function loadChat() {
   try { state.chat = await api('assistant'); renderChat(); } catch (e) { setStatus('bad', e.message); }
 }
@@ -566,12 +627,8 @@ function renderChat() {
   for (const l of lines) {
     const t = el('div', 'turn ' + (l.who === 'you' ? 'you' : l.who === 'note' ? 'note' : 'ai'));
     if (l.who !== 'note') t.appendChild(el('div', 'who', (l.who === 'you' ? 'YOU' : 'ASSISTANT') + ' · ' + clock(l.time)[0]));
-    for (const tool of l.tools || []) {
-      const c = el('div', 'toolcall', '▸ ' + tool.name + ' ');
-      c.appendChild(el('span', tool.error ? 'bad' : 'okk', tool.error ? '✗ ' + tool.error : '✓'));
-      t.appendChild(c);
-    }
-    t.appendChild(el('div', 'text', l.text));
+    for (const tool of l.tools || []) t.appendChild(toolView(tool, false));
+    t.appendChild(l.who === 'assistant' ? markdown(l.text) : el('div', 'text', l.text));
     for (const d of l.drafts || []) {
       if (!(state.chat.drafts || []).some((x) => x.draftId === d.draftId)) continue;
       const b = el('button', 'draftlink', `Review draft ${d.draftId}…`);
@@ -580,7 +637,16 @@ function renderChat() {
     }
     body.appendChild(t);
   }
-  if (state.thinking) body.appendChild(el('div', 'thinking', '✦ thinking…'));
+  if (state.thinking) {
+    // What the assistant is doing: the calls so far, the one running, or
+    // (between them) the model thinking.
+    const p = state.progress || {};
+    const work = el('div', 'turn working');
+    for (const tool of p.tools || []) work.appendChild(toolView(tool, false));
+    if (p.running) work.appendChild(toolView(p.running, true));
+    else work.appendChild(el('div', 'thinking', (p.tools || []).length ? '✦ thinking about the results…' : '✦ thinking…'));
+    body.appendChild(work);
+  }
   const comp = el('div', 'composer');
   const ta = el('textarea');
   ta.placeholder = 'Ask about a carrier, book a shipment, or check on one…  (Enter sends, Shift+Enter: new line)';
@@ -598,8 +664,26 @@ function renderChat() {
   if (!state.thinking) ta.focus();
 }
 
+// watchProgress polls what the assistant is doing while a turn runs, and
+// redraws the chat when it changes. It stops when the turn is over.
+function watchProgress() {
+  state.progress = null;
+  let last = '';
+  const tick = async () => {
+    if (!state.thinking) return;
+    try {
+      const p = await api('assistant/progress');
+      const key = JSON.stringify(p);
+      if (state.thinking && p.working && key !== last) { last = key; state.progress = p; renderChat(); }
+    } catch { /* the turn itself reports failures */ }
+    if (state.thinking) setTimeout(tick, 600);
+  };
+  setTimeout(tick, 300);
+}
+
 async function chatTurn(text) {
   state.thinking = true;
+  watchProgress();
   state.chat.lines = [...(state.chat.lines || []), { who: 'you', text, time: new Date().toISOString() }];
   renderChat();
   try {
@@ -608,6 +692,7 @@ async function chatTurn(text) {
     state.chat.lines.push({ who: 'note', text: e.message, time: new Date().toISOString() });
   } finally {
     state.thinking = false;
+    state.progress = null;
     renderChat();
   }
   // A new draft opens its dialog, as in ulpchat.

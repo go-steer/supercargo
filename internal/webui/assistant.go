@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -67,10 +68,47 @@ type Line struct {
 	Drafts []assistant.DraftResult `json:"drafts,omitempty"`
 }
 
-// ToolLine is a tool call as the transcript shows it.
+// ToolLine is a tool call as the transcript shows it. Detail is a short
+// summary of the model's arguments (one line, capped): text for the page
+// to show as text, never markup.
 type ToolLine struct {
-	Name  string `json:"name"`
-	Error string `json:"error,omitempty"`
+	Name   string `json:"name"`
+	Detail string `json:"detail,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+// toolDetail summarizes a call's arguments: the values of its top-level
+// members, in order, as one line of at most 80 characters.
+func toolDetail(input json.RawMessage) string {
+	dec := json.NewDecoder(bytes.NewReader(input))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return ""
+	}
+	var parts []string
+	for dec.More() {
+		if _, err := dec.Token(); err != nil { // the member's name
+			break
+		}
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			break
+		}
+		switch v := v.(type) {
+		case string:
+			parts = append(parts, v)
+		case float64, bool:
+			parts = append(parts, fmt.Sprint(v))
+		}
+	}
+	return assistant.OneLine(strings.Join(parts, ", "), 80)
+}
+
+// Progress is the work in progress in this session: the tool calls made
+// so far, and the one running, if any. Between them the model is thinking.
+type Progress struct {
+	Working bool       `json:"working"`
+	Tools   []ToolLine `json:"tools"`
+	Running *ToolLine  `json:"running,omitempty"`
 }
 
 type chat struct {
@@ -80,12 +118,14 @@ type chat struct {
 	// send and its report. A second tab asking meanwhile is told it's busy.
 	work sync.Mutex
 
-	mu     sync.Mutex
-	lines  []Line
-	tools  []ToolLine                       // the turn in progress
-	drafts map[string]assistant.DraftResult // open: drafted, not sent or discarded
-	order  []string                         // open drafts, in the order made
-	shown  map[string]time.Time             // when the node first handed each draft to the page
+	mu      sync.Mutex
+	lines   []Line
+	tools   []ToolLine                       // the turn in progress
+	busy    bool                             // a turn, or a send and its report, is running
+	running *ToolLine                        // the tool call running now
+	drafts  map[string]assistant.DraftResult // open: drafted, not sent or discarded
+	order   []string                         // open drafts, in the order made
+	shown   map[string]time.Time             // when the node first handed each draft to the page
 }
 
 func (c *chat) add(l Line) {
@@ -175,9 +215,15 @@ func (s *server) chatFor(r *http.Request) (*chat, error) {
 		who := "assistant · " + persona
 		a.OnModelCall = func(m activity.Model) { m.Agent = who; report(m) }
 	}
+	a.OnToolStart = func(ev assistant.ToolEvent) {
+		c.mu.Lock()
+		c.running = &ToolLine{Name: ev.Name, Detail: toolDetail(ev.Input)}
+		c.mu.Unlock()
+	}
 	a.OnTool = func(ev assistant.ToolEvent) {
 		c.mu.Lock()
-		c.tools = append(c.tools, ToolLine{Name: ev.Name, Error: assistant.OneLine(ev.Error, 200)})
+		c.tools = append(c.tools, ToolLine{Name: ev.Name, Detail: toolDetail(ev.Input), Error: assistant.OneLine(ev.Error, 200)})
+		c.running = nil
 		c.mu.Unlock()
 	}
 	s.mu.Lock()
@@ -205,6 +251,31 @@ func (s *server) assistantState(w http.ResponseWriter, r *http.Request, _ Person
 	control.Answer(w, http.StatusOK, c.state(s.cfg.Now()))
 }
 
+// assistantProgress is what the page shows while a turn runs. It hands
+// out no drafts, so polling it never starts a draft's ArmDelay.
+func (s *server) assistantProgress(w http.ResponseWriter, r *http.Request, _ Persona) {
+	if s.cfg.NewAssistant == nil {
+		control.Answer(w, http.StatusOK, Progress{Tools: []ToolLine{}})
+		return
+	}
+	c, err := s.chatFor(r)
+	if err != nil {
+		control.Answer(w, http.StatusInternalServerError, AssistantResponse{Error: err.Error()})
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	p := Progress{Working: c.busy, Tools: []ToolLine{}}
+	if c.busy {
+		p.Tools = slices.Clone(c.tools)
+		if c.running != nil {
+			run := *c.running
+			p.Running = &run
+		}
+	}
+	control.Answer(w, http.StatusOK, p)
+}
+
 // begin takes the session's work lock and a turn slot, or answers why not.
 func (s *server) begin(w http.ResponseWriter, c *chat) bool {
 	if !c.work.TryLock() {
@@ -213,6 +284,9 @@ func (s *server) begin(w http.ResponseWriter, c *chat) bool {
 	}
 	select {
 	case turnSlots <- struct{}{}:
+		c.mu.Lock()
+		c.busy, c.tools, c.running = true, nil, nil
+		c.mu.Unlock()
 		return true
 	default:
 		c.work.Unlock()
@@ -222,6 +296,9 @@ func (s *server) begin(w http.ResponseWriter, c *chat) bool {
 }
 
 func (s *server) end(c *chat) {
+	c.mu.Lock()
+	c.busy, c.running = false, nil
+	c.mu.Unlock()
 	<-turnSlots
 	c.work.Unlock()
 }

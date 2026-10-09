@@ -91,6 +91,9 @@ type Assistant struct {
 	// OnTool learns about every tool call, run or refused: what the UI
 	// shows as the assistant works. Optional.
 	OnTool func(ToolEvent)
+	// OnToolStart learns about a tool call about to run (it passed
+	// validation), before OnTool reports how it went. Optional.
+	OnToolStart func(ToolEvent)
 	// Now is the clock (default time.Now).
 	Now func() time.Time
 }
@@ -416,6 +419,9 @@ func (a *Assistant) call(ctx context.Context, c *Conversation, t *turnState, cal
 		err = fmt.Errorf("%w: the input is not a JSON object", llm.ErrBadInput)
 	default:
 		if err = llm.ValidateCall(Tools, call); err == nil {
+			if a.OnToolStart != nil {
+				a.OnToolStart(ToolEvent{Name: clean(call.Name), Input: call.Input})
+			}
 			result, err = a.run(ctx, c, t, call)
 		}
 	}

@@ -38,9 +38,16 @@ type node struct {
 	booked []shipper.BookRequest
 	fail   error         // Book fails with it, if set
 	hold   chan struct{} // Book waits for it to close, if set
+	// lookup, if set, gets a value when Profile starts, then Profile waits
+	// for it to close.
+	lookup chan struct{}
 }
 
 func (n *node) Profile(context.Context, string) (*shipper.Profile, error) {
+	if n.lookup != nil {
+		n.lookup <- struct{}{}
+		<-n.lookup
+	}
 	return &shipper.Profile{Domain: "ocean-blue.example", Name: "Ocean Blue", Intents: []string{intents.BookingRequest}}, nil
 }
 func (n *node) Shipments(context.Context) ([]store.Summary, error) { return nil, nil }
@@ -154,6 +161,63 @@ func TestDiscard(t *testing.T) {
 	}
 	if code, _ := post(h, "/ui/api/assistant/discard", SendRequest{DraftID: id}, alex); code != http.StatusNotFound {
 		t.Errorf("a second discard: HTTP %d", code)
+	}
+}
+
+// TestProgress: while a turn runs, the page sees the calls made so far
+// and the one running, with its arguments in short; another session sees
+// nothing of it, and once the turn is over there's nothing to show.
+func TestProgress(t *testing.T) {
+	h, n, _, _ := assistantUI(t)
+	alex, jo := login(t, h, "alex"), login(t, h, "jo")
+	progress := func(c *http.Cookie) Progress {
+		var p Progress
+		rec := do(h, http.MethodGet, "/ui/api/assistant/progress", "", c)
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil {
+			t.Fatalf("progress: HTTP %d %s", rec.Code, rec.Body)
+		}
+		return p
+	}
+	if p := progress(alex); p.Working || len(p.Tools) != 0 || p.Running != nil {
+		t.Errorf("idle: %+v", p)
+	}
+	n.lookup = make(chan struct{})
+	done := make(chan AssistantResponse)
+	go func() {
+		_, st := post(h, "/ui/api/assistant/turn", map[string]string{"text": "We have a new carrier, ocean-blue.example. What can they do?"}, alex)
+		done <- st
+	}()
+	<-n.lookup // the profile lookup has started
+	p := progress(alex)
+	if !p.Working || p.Running == nil || p.Running.Name != assistant.ToolGetProfile || p.Running.Detail != "ocean-blue.example" {
+		t.Errorf("mid-turn: %+v", p)
+	}
+	if p := progress(jo); p.Working || p.Running != nil {
+		t.Errorf("another session saw this one's turn: %+v", p)
+	}
+	close(n.lookup)
+	st := <-done
+	last := st.Lines[len(st.Lines)-1]
+	if len(last.Tools) != 1 || last.Tools[0].Detail != "ocean-blue.example" {
+		t.Errorf("the transcript's tool line: %+v", last.Tools)
+	}
+	if p := progress(alex); p.Working || len(p.Tools) != 0 || p.Running != nil {
+		t.Errorf("after the turn: %+v", p)
+	}
+}
+
+func TestToolDetail(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"bookingRef":"OB-1","question":"Why?"}`:     "OB-1, Why?",
+		`{"count":2,"reefer":false,"nested":{"x":1}}`: "2, false",
+		`{"q":"line one\nline two\u202e"}`:            "line one line two",
+		`[1,2]`:                                       "",
+		`{"q":"` + strings.Repeat("x", 200) + `"}`:    strings.Repeat("x", 79) + "…",
+		`{"a":"x",`: "x",
+	} {
+		if got := toolDetail(json.RawMessage(in)); got != want {
+			t.Errorf("%s: %q, want %q", in, got, want)
+		}
 	}
 }
 
