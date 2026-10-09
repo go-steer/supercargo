@@ -19,11 +19,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/assistant"
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/llm/fake"
@@ -41,6 +43,9 @@ type node struct {
 	// lookup, if set, gets a value when Profile starts, then Profile waits
 	// for it to close.
 	lookup chan struct{}
+	// models are the model calls the assistants reported, as the node's
+	// activity would get them.
+	models []activity.Model
 }
 
 func (n *node) Profile(context.Context, string) (*shipper.Profile, error) {
@@ -88,7 +93,12 @@ func assistantUI(t *testing.T) (http.Handler, *node, *echo, *time.Time) {
 	h := Handler(Config{Company: "Cymbal Shoes", Domain: "cymbal-shoes.example", Personas: personas, Control: ctl, Now: clock,
 		NewAssistant: func() (*assistant.Assistant, error) {
 			return &assistant.Assistant{Model: assistant.FakeModel(clock), Node: n, Drafts: &assistant.Drafts{}, Now: clock,
-				Self: assistant.Self{Domain: "cymbal-shoes.example", Name: "Cymbal Shoes"}}, nil
+				Self: assistant.Self{Domain: "cymbal-shoes.example", Name: "Cymbal Shoes"},
+				OnModelCall: func(m activity.Model) {
+					n.mu.Lock()
+					defer n.mu.Unlock()
+					n.models = append(n.models, m)
+				}}, nil
 		}})
 	return h, n, ctl, &now
 }
@@ -216,6 +226,13 @@ func TestProgress(t *testing.T) {
 	last := st.Lines[len(st.Lines)-1]
 	if len(last.Tools) != 1 || last.Tools[0].Detail != "ocean-blue.example" {
 		t.Errorf("the transcript's tool line: %+v", last.Tools)
+	}
+	// The node's activity hears whose assistant called the model.
+	n.mu.Lock()
+	models := slices.Clone(n.models)
+	n.mu.Unlock()
+	if len(models) == 0 || models[0].Agent != "assistant · alex" {
+		t.Errorf("model calls %+v", models)
 	}
 	if p := progress(alex); p.Working || len(p.Tools) != 0 || p.Running != nil {
 		t.Errorf("after the turn: %+v", p)
