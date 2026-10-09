@@ -498,6 +498,7 @@ const loadLeft = latest(async () => {
     bar.append(el('span', 'panel-title', title), el('span', 'hint', state.activeSide === 'operator' ? 'carrier role' : 'shipper role'));
     const body = el('div', 'panel-body');
     const list = r[key] || [];
+    state.lastList = list;
     if (!list.length) body.appendChild(el('div', 'empty', state.activeSide === 'operator' ? 'No bookings yet.' : 'No shipments yet: book one with a carrier.'));
     for (const s of list) {
       const card = el('div', 'booking');
@@ -531,8 +532,8 @@ const loadLeft = latest(async () => {
       card.appendChild(counts);
       if (state.activeSide === 'operator') {
         const act = el('div', 'actions');
-        const b = el('button', null, 'Disrupt voyage…');
-        b.dataset.tip = 'Delay this voyage: the customer gets a signed delay alert. You confirm first.';
+        const b = el('button', null, 'Disrupt…');
+        b.dataset.tip = 'Delay this booking, or its whole voyage: each customer gets a signed delay alert. You confirm first.';
         b.onclick = () => disruptDialog(s);
         act.appendChild(b);
         card.appendChild(act);
@@ -800,13 +801,50 @@ function disruptDialog(s) {
   const reason = el('input');
   reason.maxLength = 280;
   reason.value = 'Engine repair, unscheduled call at Halifax.';
+  // One booking, or every booking on its voyage: one decision, a signed
+  // alert to each booking's customer (the node picks the bookings under way).
+  const onVoyage = (state.lastList || []).filter((b) => s.voyage && b.voyage === s.voyage && b.vessel === s.vessel);
+  const scope = el('select');
+  const one = el('option', null, `this booking (${s.bookingRef})`); one.value = 'booking';
+  scope.appendChild(one);
+  if (s.voyage) {
+    // The node delays only the bookings still under way, which may be
+    // fewer than the list shows.
+    const all = el('option', null, `the whole voyage: ${s.vessel || ''} ${s.voyage} (up to ${onVoyage.length} booking${onVoyage.length === 1 ? '' : 's'})`);
+    all.value = 'voyage';
+    scope.appendChild(all);
+  }
+  const note = el('div', 'fineprint');
+  const explain = () => {
+    note.textContent = scope.value === 'voyage'
+      ? `Every booking on ${s.vessel || ''} ${s.voyage} that hasn't arrived gets the delay, and each customer a signed alert with this reason.`
+      : `${s.shipper} gets a signed delay alert with this reason, and the arrival estimate moves.`;
+  };
+  scope.onchange = explain;
+  explain();
   const fields = el('div');
-  const r1 = el('div', 'row'); r1.append(el('span', 'k', 'Delay:'), delay);
+  const r0 = el('div', 'row'); r0.append(el('span', 'k', 'Delay:'), scope);
+  const r1 = el('div', 'row'); r1.append(el('span', 'k', 'How long:'), delay);
   const r2 = el('div', 'row'); r2.append(el('span', 'k', 'Reason:'), reason);
-  fields.append(r1, r2, el('div', 'fineprint', `${s.shipper} gets a signed delay alert with this reason, and the arrival estimate moves.`));
-  modal(`Disrupt voyage · ${s.bookingRef}`, [['Booking:', s.bookingRef], ['Customer:', s.shipper], ['Vessel:', `${s.vessel || ''} ${s.voyage || ''}`]],
+  fields.append(r0, r1, r2, note);
+  modal(`Disrupt · ${s.vessel || ''} ${s.voyage || ''}`, [['Booking:', s.bookingRef], ['Customer:', s.shipper], ['Vessel:', `${s.vessel || ''} ${s.voyage || ''}`]],
     'Publish this delay?', 'Publish delay', async () => {
-      await api('disrupt', { method: 'POST', body: JSON.stringify({ bookingRef: s.bookingRef, delay: delay.value, reason: reason.value.trim() }) });
+      const req = scope.value === 'voyage'
+        ? { vessel: s.vessel || '', voyage: s.voyage, delay: delay.value, reason: reason.value.trim() }
+        : { bookingRef: s.bookingRef, delay: delay.value, reason: reason.value.trim() };
+      const r = await api('disrupt', { method: 'POST', body: JSON.stringify(req) });
+      // A voyage answers per booking: say what didn't go out. Once any
+      // delay is applied, the dialog closes either way: publishing again
+      // would delay those bookings twice.
+      const failed = (r.alerts || []).filter((a) => !a.alert);
+      if (failed.length) {
+        const applied = failed.filter((a) => a.applied).length;
+        const sent = (r.alerts || []).length - failed.length;
+        setStatus(applied ? 'bad' : 'warn', `Voyage delay: ${sent} alert${sent === 1 ? '' : 's'} sent; ` +
+          failed.map((a) => `${a.bookingRef} ${a.applied ? 'DELAYED, alert not sent' : 'not delayed'}`).join(', ') +
+          (applied ? '. Don\'t publish again: it would delay them twice.' : ''));
+        if (!sent && !applied) throw new Error(failed[0].error || 'no booking took the delay');
+      }
     }, [fields]);
 }
 

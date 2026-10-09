@@ -57,7 +57,18 @@ func fakeNode(t *testing.T, status int, errText string) (cfg string, got *operat
 			t.Errorf("decode: %v", err)
 		}
 		resp := operator.DisruptResponse{Error: errText}
-		if status == http.StatusOK {
+		if status == http.StatusOK && got.Voyage != "" {
+			// A voyage: one booking alerted, and a second refused with
+			// errText, if any.
+			alert := &intents.TnTAlertBody{AlertID: "AL-000010", Kind: "delay", Severity: "medium", Summary: got.Reason,
+				PreviousETA: "2026-10-13T08:00:00Z", NewETA: "2026-10-14T08:00:00Z", CauseEventIDs: []string{"EV-000009"}}
+			resp = operator.DisruptResponse{Alerts: []operator.VoyageAlert{{BookingRef: "OB-BKG-1042", Alert: alert}}}
+			if errText != "" {
+				// "applied: …" is a booking delayed whose alert wasn't sent.
+				applied := strings.HasPrefix(errText, "applied: ")
+				resp.Alerts = append(resp.Alerts, operator.VoyageAlert{BookingRef: "OB-BKG-1043", Error: errText, Applied: applied})
+			}
+		} else if status == http.StatusOK {
 			resp.Alert = &intents.TnTAlertBody{AlertID: "AL-000009", Kind: "delay", Severity: "high", Summary: got.Reason,
 				PreviousETA: "2026-10-13T08:00:00Z", NewETA: "2026-10-16T08:00:00Z", CauseEventIDs: []string{"EV-000008"}}
 		}
@@ -89,6 +100,41 @@ func TestDisrupt(t *testing.T) {
 	}
 }
 
+// TestDisruptVoyage: --voyage disrupts every booking under way on it and
+// lists each outcome; one that got no alert makes the command fail.
+func TestDisruptVoyage(t *testing.T) {
+	cfg, got := fakeNode(t, http.StatusOK, "")
+	var out bytes.Buffer
+	if err := run([]string{"disrupt", "--config", cfg, "--voyage", "42W", "--vessel", "Ocean Blue Aurora", "--delay", "24h", "--reason", "Strike."}, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got.Voyage != "42W" || got.Vessel != "Ocean Blue Aurora" || got.BookingRef != "" {
+		t.Errorf("sent %+v", got)
+	}
+	for _, want := range []string{"Disrupted voyage 42W: 1 booking(s)", "OB-BKG-1042: medium delay alert AL-000010"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	cfg, _ = fakeNode(t, http.StatusOK, "already 30 days late")
+	out.Reset()
+	err := run([]string{"disrupt", "--config", cfg, "--voyage", "42W", "--delay", "24h", "--reason", "Strike."}, &out, &out)
+	if err == nil || !strings.Contains(out.String(), "OB-BKG-1043: not delayed: already 30 days late") || strings.Contains(err.Error(), "twice") {
+		t.Errorf("a partial voyage: %v\n%s", err, out.String())
+	}
+	// Delayed, but its alert not sent: said loudly, and no retry.
+	cfg, _ = fakeNode(t, http.StatusOK, "applied: the alert was not sent")
+	out.Reset()
+	err = run([]string{"disrupt", "--config", cfg, "--voyage", "42W", "--delay", "24h", "--reason", "Strike."}, &out, &out)
+	if err == nil || !strings.Contains(err.Error(), "don't run this again") || !strings.Contains(out.String(), "OB-BKG-1043: DELAYED, but no alert sent") {
+		t.Errorf("an applied booking without its alert: %v\n%s", err, out.String())
+	}
+	cfg, _ = fakeNode(t, http.StatusNotFound, "no booking under way on that voyage")
+	if err := run([]string{"disrupt", "--config", cfg, "--voyage", "43E", "--delay", "24h", "--reason", "Strike."}, &out, &out); err == nil {
+		t.Error("an unknown voyage succeeded")
+	}
+}
+
 func TestDisruptRejects(t *testing.T) {
 	notFound, _ := fakeNode(t, http.StatusNotFound, "operator: no voyage in progress for that booking")
 	var out bytes.Buffer
@@ -113,18 +159,20 @@ control: { socket: /tmp/cy.sock }
 	stopped := filepath.Join(dir, "stopped.yaml")
 	_ = os.WriteFile(stopped, []byte(strings.Replace(operatorYAML, "SOCKET", filepath.Join(dir, "none.sock"), 1)), 0o600)
 	for name, args := range map[string][]string{
-		"no command":       {},
-		"unknown command":  {"attack"},
-		"no config":        {"disrupt", "--booking", "B", "--delay", "1h", "--reason", "Late."},
-		"no booking":       {"disrupt", "--config", ok, "--delay", "1h", "--reason", "Late."},
-		"no delay":         {"disrupt", "--config", ok, "--booking", "B", "--reason", "Late."},
-		"negative delay":   {"disrupt", "--config", ok, "--booking", "B", "--delay", "-1h", "--reason", "Late."},
-		"no reason":        {"disrupt", "--config", ok, "--booking", "B", "--delay", "1h"},
-		"missing config":   {"disrupt", "--config", "/nonexistent.yaml", "--booking", "B", "--delay", "1h", "--reason", "Late."},
-		"no control":       {"disrupt", "--config", noControl, "--booking", "B", "--delay", "1h", "--reason", "Late."},
-		"shipper's config": {"disrupt", "--config", shipperCfg, "--booking", "B", "--delay", "1h", "--reason", "Late."},
-		"node not running": {"disrupt", "--config", stopped, "--booking", "B", "--delay", "1h", "--reason", "Late."},
-		"bad flag":         {"disrupt", "--frobnicate"},
+		"no command":         {},
+		"unknown command":    {"attack"},
+		"no config":          {"disrupt", "--booking", "B", "--delay", "1h", "--reason", "Late."},
+		"no booking":         {"disrupt", "--config", ok, "--delay", "1h", "--reason", "Late."},
+		"booking and voyage": {"disrupt", "--config", ok, "--booking", "B", "--voyage", "42W", "--delay", "1h", "--reason", "Late."},
+		"vessel alone":       {"disrupt", "--config", ok, "--booking", "B", "--vessel", "V", "--delay", "1h", "--reason", "Late."},
+		"no delay":           {"disrupt", "--config", ok, "--booking", "B", "--reason", "Late."},
+		"negative delay":     {"disrupt", "--config", ok, "--booking", "B", "--delay", "-1h", "--reason", "Late."},
+		"no reason":          {"disrupt", "--config", ok, "--booking", "B", "--delay", "1h"},
+		"missing config":     {"disrupt", "--config", "/nonexistent.yaml", "--booking", "B", "--delay", "1h", "--reason", "Late."},
+		"no control":         {"disrupt", "--config", noControl, "--booking", "B", "--delay", "1h", "--reason", "Late."},
+		"shipper's config":   {"disrupt", "--config", shipperCfg, "--booking", "B", "--delay", "1h", "--reason", "Late."},
+		"node not running":   {"disrupt", "--config", stopped, "--booking", "B", "--delay", "1h", "--reason", "Late."},
+		"bad flag":           {"disrupt", "--frobnicate"},
 	} {
 		if err := run(args, &out, &out); err == nil {
 			t.Errorf("%s: succeeded", name)

@@ -454,7 +454,9 @@ func (s *server) disrupt(w http.ResponseWriter, r *http.Request, _ Persona) {
 		return
 	}
 	var req struct {
-		BookingRef string `json:"bookingRef"`
+		BookingRef string `json:"bookingRef,omitempty"`
+		Vessel     string `json:"vessel,omitempty"`
+		Voyage     string `json:"voyage,omitempty"`
 		Delay      string `json:"delay"`
 		Reason     string `json:"reason"`
 	}
@@ -462,7 +464,7 @@ func (s *server) disrupt(w http.ResponseWriter, r *http.Request, _ Persona) {
 		control.Answer(w, http.StatusBadRequest, errorBody(err.Error()))
 		return
 	}
-	b, _ := json.Marshal(req) // three strings: always marshals
+	b, _ := json.Marshal(req) // strings: always marshals
 	// A constant method and path: the request always builds.
 	r2, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, "/disrupt", bytes.NewReader(b))
 	r2.Header.Set("Content-Type", "application/json")

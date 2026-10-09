@@ -17,6 +17,7 @@ package operator
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-steer/supercargo/internal/control"
@@ -24,17 +25,23 @@ import (
 	"github.com/go-steer/supercargo/pkg/intents"
 )
 
-// DisruptRequest is the body of the control API's POST /disrupt.
+// DisruptRequest is the body of the control API's POST /disrupt: one
+// booking (BookingRef), or every booking under way on a voyage (Voyage,
+// and Vessel if voyage numbers repeat across vessels).
 type DisruptRequest struct {
-	BookingRef string `json:"bookingRef"`
+	BookingRef string `json:"bookingRef,omitempty"`
+	Vessel     string `json:"vessel,omitempty"`
+	Voyage     string `json:"voyage,omitempty"`
 	Delay      string `json:"delay"` // a Go duration, e.g. "72h"
 	Reason     string `json:"reason"`
 }
 
-// DisruptResponse is its answer: the alert published, or why not.
+// DisruptResponse is its answer: the alert published (a booking), each
+// booking's outcome (a voyage), or why not.
 type DisruptResponse struct {
-	Alert *intents.TnTAlertBody `json:"alert,omitempty"`
-	Error string                `json:"error,omitempty"`
+	Alert  *intents.TnTAlertBody `json:"alert,omitempty"`
+	Alerts []VoyageAlert         `json:"alerts,omitempty"`
+	Error  string                `json:"error,omitempty"`
 }
 
 // ControlHandler is the operator's control API (internal/control): ulpctl
@@ -88,6 +95,23 @@ func RegisterControl(mux *http.ServeMux, sim *Simulator, bookings *store.Booking
 		delay, err := time.ParseDuration(req.Delay)
 		if err != nil {
 			control.Answer(w, http.StatusBadRequest, DisruptResponse{Error: "delay: " + err.Error()})
+			return
+		}
+		req.Vessel, req.Voyage = strings.TrimSpace(req.Vessel), strings.TrimSpace(req.Voyage)
+		if (req.BookingRef == "") == (req.Voyage == "") || (req.Vessel != "" && req.Voyage == "") {
+			control.Answer(w, http.StatusBadRequest, DisruptResponse{Error: "a booking (bookingRef) or a voyage (voyage, and vessel if needed), not both"})
+			return
+		}
+		if req.Voyage != "" {
+			alerts, err := sim.DisruptVoyage(req.Vessel, req.Voyage, delay, req.Reason)
+			switch {
+			case errors.Is(err, ErrUnknownVoyage):
+				control.Answer(w, http.StatusNotFound, DisruptResponse{Error: err.Error()})
+			case err != nil:
+				control.Answer(w, http.StatusBadRequest, DisruptResponse{Error: err.Error()})
+			default:
+				control.Answer(w, http.StatusOK, DisruptResponse{Alerts: alerts})
+			}
 			return
 		}
 		alert, err := sim.Disrupt(req.BookingRef, delay, req.Reason)

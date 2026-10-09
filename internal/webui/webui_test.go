@@ -16,6 +16,7 @@ package webui
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -26,10 +27,14 @@ import (
 )
 
 // echo is a control API that answers with what it was asked.
-type echo struct{ got *http.Request }
+type echo struct {
+	got  *http.Request
+	body []byte
+}
 
 func (e *echo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	e.got = r
+	e.body, _ = io.ReadAll(r.Body)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"path": r.URL.Path, "query": r.URL.RawQuery, "cookie": r.Header.Get("Cookie")})
 }
