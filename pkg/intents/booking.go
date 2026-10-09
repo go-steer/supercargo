@@ -211,7 +211,7 @@ const (
 
 // DialectDCSAEBL is the payload schema of a confirmation's eBL: the ULP
 // payload specification's DCSA ocean container document.
-var DialectDCSAEBL = envelope.Dialect{Standard: "DCSA_OCEAN_CONTAINER", Version: "0.0.1", SchemaURL: "https://dcsa.org/standards/ebill-of-lading"}
+var DialectDCSAEBL = envelope.Dialect{Standard: "DCSA_OCEAN_CONTAINER", Version: "2.0.0", SchemaURL: "https://dcsa.org/standards/ebill-of-lading"}
 
 // BookingConfirmationBody is the body of ulp.ocean.booking.confirmation,
 // the operator's answer to a booking request. A confirmed booking carries

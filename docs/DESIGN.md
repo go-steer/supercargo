@@ -304,7 +304,7 @@ It is deliberately not an "allow private networks" switch: only the listed domai
 
 ```json
 {
-  "protocolVersion": "0.3-demo",
+  "protocolVersion": "0.4-demo",
   "party": { "domain": "ocean-blue.example", "name": "Ocean Blue", "roles": ["operator"] },
   "services": [{
     "name": "ulp.freight",
@@ -312,9 +312,9 @@ It is deliberately not an "allow private networks" switch: only the listed domai
     "extensions": []
   }],
   "capabilities": [
-    { "name": "dev.ulp.logistics.shipment", "version": "0.3-demo",
+    { "name": "dev.ulp.logistics.shipment", "version": "0.4-demo",
       "tags": ["ulp:service", "ulp:dcsa:container-booking", "ulp:transport:rest"] },
-    { "name": "dev.ulp.logistics.tracking", "version": "0.3-demo",
+    { "name": "dev.ulp.logistics.tracking", "version": "0.4-demo",
       "spec_url": "https://dcsa.org/standards/track-and-trace",
       "tags": ["ulp:service", "ulp:dcsa:track-and-trace", "ulp:transport:rest", "ulp:transport:a2a"] }
   ],
@@ -379,7 +379,7 @@ The **payload** (base64url JSON) is the envelope content:
 ```json
 {
   "header": {
-    "ulpVersion": "0.3-demo",
+    "ulpVersion": "0.4-demo",
     "intent": "ulp.tnt.inquiry",
     "messageId": "8f1c2e9a-5b7d-4f0e-9c3a-2d6b8e1f4a77",
     "correlationId": "8f1c2e9a-…",
@@ -454,6 +454,7 @@ Handlers act on the verified payload bytes, so there is no canonicalization and 
 | Envelope, signing, replay, identity, keys | `ulp_header` / `ulp_body`, unsigned; HS256 shared-secret token; `did:ulp:` | **ours** ([A.4](#a4-envelope), [A.2](#a2-identity-keys-and-trust-design-decisions)) |
 | Body of each intent | what pf puts in `ulp_body` | **pf's**, field for field |
 | Payload schema descriptor | `dialect { standard, version, schema_url }` in its header | **adopted**: `dialect` in our signed header |
+| `native_standard` and `modality` beside each body (pf, 2026-10-08) | name the payload standard and the mode inside the body, for receivers that dispatch on the body alone | **not adopted** (a deliberate deviation): they repeat the signed header's `dialect`, from which the intent and the standard give the mode, and two places to say one thing are two places to disagree, which a strict receiver must then refuse. pf's own values also differ between its builder and its docs |
 | Ocean booking | `ulp.ocean.booking`, body `{ "ebl": … }` (a DCSA eBL) | the intent name is **adopted** as `ulp.ocean.booking.request`. The request carries what a shipper knows, in pf's types and names. The eBL, with its vessel and transport document reference, is the carrier's document, so it comes back in the confirmation (`ulp.ocean.booking.confirmation`, ours) with dialect `DCSA_OCEAN_CONTAINER` (#66) |
 | Track & trace event | DCSA T&T event (`event_id`, `event_type`, `event_classifier_code`, `event_date_time`, `event_type_code`, `description`, `un_location_code`, …) | **adopted** as the body of `ulp.tnt.event` with dialect `DCSA_TNT` (#64) |
 | Track & trace status | `ulp.ocean.tnt.request` / `.response`, bodies `{ "tnt_request": … }` / `{ "tnt_response": … }` | **adopted**, under the inquiry's authorization (#65) |
@@ -480,7 +481,7 @@ The binding column is the **default**. Every intent is a signed envelope, so any
 | Intent | `bookingRef` | `inReplyTo` | `attachments.delegation` | `dialect` |
 |---|---|---|---|---|
 | `ocean.booking.request` | absent (no booking yet) | absent | absent | absent (the request is ULP's own) |
-| `ocean.booking.confirmation` | required, equal to the body's `carrier_booking_reference` | required | absent | required: `DCSA_OCEAN_CONTAINER` `0.0.1` |
+| `ocean.booking.confirmation` | required, equal to the body's `carrier_booking_reference` | required | absent | required: `DCSA_OCEAN_CONTAINER` `2.0.0` |
 | `tnt.event` | required | absent | absent | required: `DCSA_TNT` `2.2.0` (the schema URL is informative) |
 | `tnt.alert` | required | absent | absent | absent |
 | `tnt.inquiry` | required | absent | optional (a receiver's delegation) | absent |
@@ -515,7 +516,7 @@ The binding column is the **default**. Every intent is a signed envelope, so any
 ```
 Ports are UN/LOCODEs and must differ; a node names them from its own table, never from the sender. Each container line has an ISO 6346 size-type code, a count of 1–999 (at most 20 lines) and each container's gross weight, above 0 and at most 40,000 kg. `service_contract_number`, `consignee` and `subscription` are optional. The shipper's required delivery date is **deliberately not sent**. It's private business context used only by the shipper's LLM (Scene 4).
 
-**`ulp.ocean.booking.confirmation`**: ULP's answer, carrying pf's eBL, with header `dialect` `{ "standard": "DCSA_OCEAN_CONTAINER", "version": "0.0.1", "schema_url": "https://dcsa.org/standards/ebill-of-lading" }`
+**`ulp.ocean.booking.confirmation`**: ULP's answer, carrying pf's eBL, with header `dialect` `{ "standard": "DCSA_OCEAN_CONTAINER", "version": "2.0.0", "schema_url": "https://dcsa.org/standards/ebill-of-lading" }`
 ```json
 {
   "carrier_booking_reference": "OB-BKG-1042",

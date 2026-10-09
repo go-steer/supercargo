@@ -423,7 +423,7 @@ func TestParseRejects(t *testing.T) {
 		{"number header member", signedPayload(`"sentAt":"2026-10-09T14:03:11Z"`, `"sentAt":1760018591`)},
 		{"array nullable header member", signedPayload(`"inReplyTo":null`, `"inReplyTo":["a"]`)},
 		{"bad header value", signedPayload(`"sender":"cymbal-shoes.example"`, `"sender":"evil.example:8443"`)},
-		{"wrong version", signedPayload(`"0.3-demo"`, `"0.1"`)},
+		{"wrong version", signedPayload(`"0.4-demo"`, `"0.1"`)},
 		{"body array", signedPayload(`"body":{"question":"What caused the delay?","n":1,"f":17.0}`, `"body":[]`)},
 		{"body null", signedPayload(`"body":{"question":"What caused the delay?","n":1,"f":17.0}`, `"body":null`)},
 		{"attachments null", signedPayload(`"attachments":{"delegation":null}`, `"attachments":null`)},
@@ -798,7 +798,7 @@ func TestSignatureTrailingBits(t *testing.T) {
 // before any key is resolved, so this is the per-message cost an anonymous
 // sender can impose.
 func BenchmarkParseHostile(b *testing.B) {
-	payload := `{"header":{"ulpVersion":"0.3-demo","intent":"ulp.tnt.inquiry","messageId":"8f1c2e9a-5b7d-4f0e-9c3a-2d6b8e1f4a77","correlationId":"8f1c2e9a-5b7d-4f0e-9c3a-2d6b8e1f4a77","inReplyTo":null,"sentAt":"2026-10-09T14:03:11Z","sender":"mallory.example","receiver":"ocean-blue.example","bookingRef":null},"body":{"a":[` +
+	payload := `{"header":{"ulpVersion":"0.4-demo","intent":"ulp.tnt.inquiry","messageId":"8f1c2e9a-5b7d-4f0e-9c3a-2d6b8e1f4a77","correlationId":"8f1c2e9a-5b7d-4f0e-9c3a-2d6b8e1f4a77","inReplyTo":null,"sentAt":"2026-10-09T14:03:11Z","sender":"mallory.example","receiver":"ocean-blue.example","bookingRef":null},"body":{"a":[` +
 		strings.TrimSuffix(strings.Repeat("1,", (MaxSize-1000)*3/4/2), ",") + `]},"attachments":{"delegation":null}}`
 	w, _ := json.Marshal(wire{Protected: b64(goodProtected), Payload: b64(payload), Signature: strings.Repeat("A", 86)})
 	if len(w) > MaxSize {

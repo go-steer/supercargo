@@ -80,7 +80,7 @@ def seal(payload: bytes, key, alg=ALG, kid=KID, typ=TYP):
 def header(intent, sender, receiver, booking_ref=None, in_reply_to=None, correlation_id=None):
     mid = str(uuid.uuid4())
     return {
-        "ulpVersion": "0.3-demo",
+        "ulpVersion": "0.4-demo",
         "intent": intent,
         "messageId": mid,
         "correlationId": correlation_id or mid,
@@ -111,7 +111,7 @@ def payloads():
     confirmation_header = header("ulp.ocean.booking.confirmation", ob, cy, booking_ref="OB-BKG-1042",
                                  in_reply_to=request["header"]["messageId"],
                                  correlation_id=request["header"]["correlationId"])
-    confirmation_header["dialect"] = {"standard": "DCSA_OCEAN_CONTAINER", "version": "0.0.1",
+    confirmation_header["dialect"] = {"standard": "DCSA_OCEAN_CONTAINER", "version": "2.0.0",
                                       "schema_url": "https://dcsa.org/standards/ebill-of-lading"}
     confirmation = {
         "header": confirmation_header,

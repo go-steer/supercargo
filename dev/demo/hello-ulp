@@ -70,9 +70,16 @@ ask="$q/bin/ulpnode ask --config $q/shipper.yaml --booking OB-BKG-1042 \"What ca
 # The browser UIs: on a Cloud Workstation, through its proxy.
 ob_ui="http://ocean-blue.localhost:$OP_PORT/ui/"
 cy_ui="http://cymbal-shoes.localhost:$SH_PORT/ui/"
+proxy_note=""
 if [[ -n "${WEB_HOST:-}" ]]; then
   ob_ui="https://$OP_PORT-$WEB_HOST/ui/"
   cy_ui="https://$SH_PORT-$WEB_HOST/ui/"
+  # The proxy signs you in per address, and its sign-in page won't load
+  # in a frame: the presenter shows "This content is blocked" for a panel
+  # whose address you haven't opened yet.
+  proxy_note="
+       (On the workstation, open each company's address above once first:
+       the proxy signs you in per address, and not inside the presenter.)"
 fi
 
 if $tmux; then
@@ -109,7 +116,7 @@ if $tmux; then
   echo "the sentences); answer y in the dialog. Once Cymbal's log (bottom left) shows"
   echo "the departure, press Enter in the bottom-right pane to disrupt, then ask the"
   echo "assistant: Ask ocean-blue.example why OB-BKG-1042 is delayed."
-  echo "Browser UIs: $ob_ui (Sam) and $cy_ui (Alex)."
+  echo "Browser UIs: $ob_ui (Sam) and $cy_ui (Alex); presenter: $(web_origin "$OP_PORT")/ui/presenter.$proxy_note"
   [[ -n "${HELLO_ULP_NO_ATTACH:-}" ]] && exit 0 # tests
   exec tmux attach -t "$session"
 fi
@@ -121,7 +128,7 @@ Hello ULP is set up in $dir. Open four terminals:
   Each company's browser UI, once its node runs (sign in as its persona):
        Ocean Blue:   $ob_ui   (Sam: bookings, Disrupt voyage…)
        Cymbal Shoes: $cy_ui   (Alex: the assistant; book and confirm there)
-       Presenter:    $(web_origin "$OP_PORT")/ui/presenter   (both side by side; sign in to each)
+       Presenter:    $(web_origin "$OP_PORT")/ui/presenter   (both side by side; sign in to each)$proxy_note
 
   1. Ocean Blue's node (the operator):
        $operator
