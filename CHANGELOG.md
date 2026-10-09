@@ -32,6 +32,10 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 - The structured status pull (#65): `ulp.ocean.tnt.request` / `ulp.ocean.tnt.response` (the standard payloads, DCSA Track & Trace status with dialect `DCSA_TNT 2.2.0`). Only the booking's shipper may ask, and no model is involved: the operator reports the DCSA status, vessel, ports, current location, ETA and events, and the shipper marks the events it never received as pushes. `ulpnode status`, `POST /status` on the control API, and the assistant's `get_status` tool. `smoke/push` checks it.
 
+### Fixed
+
+- The browser UI dropped a refresh asked for while one was in flight, so a delay alert arriving milliseconds after its event could never show (no alert, banner or DELAYED card until the next message), and overlapping refreshes of the left panel could land out of order. Each loader now runs one fetch at a time and fetches again for anything that arrived meanwhile. The browser smoke test holds a fetch across the disruption to check it.
+
 ### Security
 
 - Go 1.26.9 (from 1.26.6) for the standard library's `net/http`, `html/template` and related advisories that govulncheck found reachable, and `golang.org/x/net` v0.60.0.

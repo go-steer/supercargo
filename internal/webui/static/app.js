@@ -251,9 +251,22 @@ function renderMessages() {
   box.scrollTop = atBottom ? box.scrollHeight : keepScroll;
 }
 
-async function loadMessages() {
-  if (state.loading) return;
-  state.loading = true;
+// latest makes a loader that runs one fetch at a time, and runs once more
+// when asked during one: what arrived meanwhile is never dropped (two
+// messages a few milliseconds apart, an alert after its event), and an
+// older response never lands after a newer one.
+function latest(load) {
+  let running = null, again = false;
+  return function run() {
+    if (running) { again = true; return running; }
+    running = (async () => {
+      try { do { again = false; await load(); } while (again); } finally { running = null; }
+    })();
+    return running;
+  };
+}
+
+const loadMessages = latest(async () => {
   try {
     const r = await api('messages?' + new URLSearchParams(state.lastSeq ? { since: state.lastSeq } : { limit: 300 }));
     const first = state.initialSeq === null;
@@ -268,8 +281,7 @@ async function loadMessages() {
     if (first) state.initialSeq = state.lastSeq;
     renderBanner();
   } catch (e) { setStatus('bad', e.message); }
-  finally { state.loading = false; }
-}
+});
 
 // ── activity ─────────────────────────────────────────────────────────
 const KIND_TIPS = {
@@ -408,7 +420,7 @@ const VIEWS = {
 const tabsFor = (side) => VIEWS[side].tabs.filter(([, k]) => k !== 'assistant' || state.me.assistant);
 const currentTab = () => state.tab[state.activeSide] || tabsFor(state.activeSide)[0][1];
 
-async function loadLeft() {
+const loadLeft = latest(async () => {
   const view = VIEWS[state.activeSide];
   if (!view) return;
   if (currentTab() === 'assistant') { if (!state.chat) await loadChat(); return; }
@@ -460,7 +472,7 @@ async function loadLeft() {
     left.className = 'panel tall';
     left.replaceChildren(bar, body);
   } catch (e) { setStatus('bad', e.message); }
-}
+});
 
 function renderLeftNow() {
   if (currentTab() === 'assistant') { state.chat ? renderChat() : loadChat(); } else { loadLeft(); }

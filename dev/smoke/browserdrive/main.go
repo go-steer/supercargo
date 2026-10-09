@@ -24,13 +24,17 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/chromedp"
 )
 
@@ -136,6 +140,14 @@ func run(chrome, shipperURL, operatorURL string) error {
 	if err := step("Cymbal Shoes: the vessel departs (a live event)", cy, waitText(`#messages`, "TRANSPORT DEPA ACT")); err != nil {
 		return err
 	}
+	// The delay arrives as two messages milliseconds apart (the event, then
+	// the alert). Cymbal's first fetch of its messages after now is held,
+	// then answered as if it was taken before both: the page must fetch
+	// again for what arrived meanwhile, not drop it.
+	time.Sleep(time.Second) // what the departure brought, settled
+	if err := holdFirstFetch(cy, "*/api/messages*", 1500*time.Millisecond, `{"messages":[]}`); err != nil {
+		return fmt.Errorf("holding Cymbal's next messages fetch: %w", err)
+	}
 	if err := step("Ocean Blue: disrupt the voyage, confirmed in its dialog", ob,
 		chromedp.Click(`.booking .actions button`, chromedp.ByQuery),
 		chromedp.WaitVisible(`.dialog`, chromedp.ByQuery),
@@ -150,6 +162,32 @@ func run(chrome, shipperURL, operatorURL string) error {
 		waitText(`#banner`, "misses your deadline"),
 		chromedp.Click(`//button[contains(@class,"tab") and text()="Shipments"]`, chromedp.BySearch),
 		chromedp.WaitVisible(`.booking.delayed .delayed-badge`, chromedp.ByQuery))
+}
+
+// holdFirstFetch intercepts the tab's requests matching pattern: the first
+// is held for hold, then answered with body (a stale response, as if the
+// server had answered before anything newer arrived); the rest go through.
+func holdFirstFetch(tab context.Context, pattern string, hold time.Duration, body string) error {
+	var held atomic.Bool
+	c := chromedp.FromContext(tab)
+	exec := cdp.WithExecutor(tab, c.Target)
+	chromedp.ListenTarget(tab, func(ev any) {
+		e, ok := ev.(*fetch.EventRequestPaused)
+		if !ok {
+			return
+		}
+		go func() {
+			if held.CompareAndSwap(false, true) {
+				time.Sleep(hold)
+				_ = fetch.FulfillRequest(e.RequestID, 200).
+					WithResponseHeaders([]*fetch.HeaderEntry{{Name: "Content-Type", Value: "application/json"}}).
+					WithBody(base64.StdEncoding.EncodeToString([]byte(body))).Do(exec)
+				return
+			}
+			_ = fetch.ContinueRequest(e.RequestID).Do(exec)
+		}()
+	})
+	return chromedp.Run(tab, fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: pattern, RequestStage: fetch.RequestStageRequest}}))
 }
 
 // waitText waits until the element sel's text contains want.
