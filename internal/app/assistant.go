@@ -86,6 +86,31 @@ func ToolAssistant(cfg *config.Config, node assistant.Node) (*assistant.Assistan
 	return a, nil
 }
 
+// CarrierAssistant builds the carrier's assistant (the operator role's),
+// for the browser UI: its tools read the carrier side's bookings and draft
+// delays, which a person publishes in the confirmation dialog.
+func CarrierAssistant(cfg *config.Config, node assistant.CarrierNode) (*assistant.Assistant, error) {
+	if !cfg.Has(config.RoleOperator) {
+		return nil, fmt.Errorf("%s has roles %v; the carrier's assistant needs the operator role", cfg.Domain, cfg.Roles)
+	}
+	if cfg.LLM == nil {
+		return nil, errors.New("the configuration has no llm section: the assistant needs a model (provider: fake needs no key)")
+	}
+	model, err := NewModel(cfg.LLM, assistant.FakeCarrierModel())
+	if err != nil {
+		return nil, err
+	}
+	// The company's own skills (how it phrases delays, say) shape it too.
+	var agentSkills []skills.Skill
+	if cfg.Skills != nil {
+		if agentSkills, err = skills.LoadDir(cfg.Skills.Dir); err != nil {
+			return nil, err
+		}
+	}
+	return &assistant.Assistant{Model: model, Carrier: node, Drafts: &assistant.Drafts{}, Skills: agentSkills,
+		Self: assistant.Self{Domain: cfg.Domain, Name: cfg.Name}}, nil
+}
+
 // Partners loads the configured address book's entries and the directory
 // to search, either absent if not configured.
 func Partners(cfg *config.Config) ([]directory.Entry, *directory.File, error) {

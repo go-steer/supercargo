@@ -108,10 +108,12 @@ type Config struct {
 	FrameAncestors []string
 	// Panels, if any, are the UIs /ui/presenter shows side by side.
 	Panels []Panel
-	// NewAssistant makes the shipper role's assistant for one session (nil:
-	// the UI has no assistant). Each session gets its own, with its own
-	// conversation and drafts.
-	NewAssistant func() (*assistant.Assistant, error)
+	// NewAssistant makes one session's assistant for a side: the shipper
+	// role's (SideCustomer) or the carrier's (SideOperator), each with its
+	// own conversation and drafts. AssistantSides are the sides it makes
+	// one for (nil NewAssistant: none).
+	NewAssistant   func(side string) (*assistant.Assistant, error)
+	AssistantSides []string
 	// Inbox, if set, holds the drafts the company's outside agents made
 	// over MCP; the shipper role's personas confirm them here.
 	Inbox *assistant.Assistant
@@ -141,7 +143,7 @@ type session struct {
 	persona Persona
 	expires time.Time
 	streams int
-	chat    *chat // the session's assistant, made on first use
+	chats   map[string]*chat // the session's assistants by side, made on first use
 }
 
 type server struct {
@@ -203,12 +205,14 @@ func Handler(cfg Config) http.Handler {
 	mux.HandleFunc("GET /ui/api/shipments/{operator}/{ref}/journey", s.authed(s.forward("/shipments/{operator}/{ref}/journey", shipper)))
 	mux.HandleFunc("GET /ui/api/bookings/{ref}/journey", s.authed(s.forward("/bookings/{ref}/journey", []string{RoleOperator})))
 	// The assistant is the shipper role's (a receiver's comes later, #75).
+	// The assistant routes take ?side= (customer, the default, or
+	// operator): the side's role is required.
+	mux.HandleFunc("GET /ui/api/assistant", s.authed(s.assistantRole(s.assistantState)))
+	mux.HandleFunc("GET /ui/api/assistant/progress", s.authed(s.assistantRole(s.assistantProgress)))
+	mux.HandleFunc("POST /ui/api/assistant/turn", s.authed(s.assistantRole(s.assistantTurn)))
+	mux.HandleFunc("POST /ui/api/assistant/send", s.authed(s.assistantRole(s.assistantSend)))
+	mux.HandleFunc("POST /ui/api/assistant/discard", s.authed(s.assistantRole(s.assistantDiscard)))
 	asShipper := []string{RoleShipper}
-	mux.HandleFunc("GET /ui/api/assistant", s.authed(s.role(asShipper, s.assistantState)))
-	mux.HandleFunc("GET /ui/api/assistant/progress", s.authed(s.role(asShipper, s.assistantProgress)))
-	mux.HandleFunc("POST /ui/api/assistant/turn", s.authed(s.role(asShipper, s.assistantTurn)))
-	mux.HandleFunc("POST /ui/api/assistant/send", s.authed(s.role(asShipper, s.assistantSend)))
-	mux.HandleFunc("POST /ui/api/assistant/discard", s.authed(s.role(asShipper, s.assistantDiscard)))
 	mux.HandleFunc("GET /ui/api/inbox", s.authed(s.role(asShipper, s.inbox)))
 	mux.HandleFunc("GET /ui/api/inbox/draft", s.authed(s.role(asShipper, s.inboxDraft)))
 	mux.HandleFunc("POST /ui/api/inbox/send", s.authed(s.role(asShipper, s.inboxSend)))
@@ -529,11 +533,55 @@ type MeResponse struct {
 	Sides     []string `json:"sides"`
 	Demo      bool     `json:"demo"`
 	Assistant bool     `json:"assistant"` // the persona has the shipper's assistant
+	// Assistants are the sides the persona has an assistant on.
+	Assistants []string `json:"assistants"`
 }
 
 func (s *server) me(w http.ResponseWriter, _ *http.Request, p Persona) {
+	sides := s.assistantSides(p)
 	control.Answer(w, http.StatusOK, MeResponse{Company: s.cfg.Company, Domain: s.cfg.Domain, Persona: p, Sides: p.Sides(), Demo: s.cfg.Google == nil,
-		Assistant: s.cfg.NewAssistant != nil && slices.Contains(p.Roles, RoleShipper)})
+		Assistant: slices.Contains(sides, SideCustomer), Assistants: sides})
+}
+
+// assistantSides are the sides p has an assistant on: the customer side's
+// is the shipper role's, the operator side's the carrier's.
+func (s *server) assistantSides(p Persona) []string {
+	out := []string{}
+	if s.cfg.NewAssistant == nil {
+		return out
+	}
+	for _, side := range s.cfg.AssistantSides {
+		if slices.Contains(p.Roles, assistantRoles[side]) {
+			out = append(out, side)
+		}
+	}
+	return out
+}
+
+// The sides an assistant serves.
+const (
+	SideCustomer = activity.SideCustomer
+	SideOperator = activity.SideOperator
+)
+
+// assistantRoles is the role each side's assistant needs.
+var assistantRoles = map[string]string{SideCustomer: RoleShipper, SideOperator: RoleOperator}
+
+// sideOf is the side an assistant request is for: ?side=operator, or the
+// customer side.
+func sideOf(r *http.Request) string {
+	if r.URL.Query().Get("side") == SideOperator {
+		return SideOperator
+	}
+	return SideCustomer
+}
+
+// assistantRole lets h run only for a persona with the role of the side's
+// assistant.
+func (s *server) assistantRole(h func(http.ResponseWriter, *http.Request, Persona)) func(http.ResponseWriter, *http.Request, Persona) {
+	return func(w http.ResponseWriter, r *http.Request, p Persona) {
+		s.role([]string{assistantRoles[sideOf(r)]}, h)(w, r, p)
+	}
 }
 
 // forward passes the request to the control API's path (its {wildcards}

@@ -311,10 +311,12 @@ type draftInput struct {
 // DraftResult is what draft_booking returns to the model, and what the
 // confirmation dialog shows.
 type DraftResult struct {
-	DraftID string                     `json:"draftId"`
-	Sent    bool                       `json:"sent"` // always false
-	To      string                     `json:"to"`
-	Request intents.BookingRequestBody `json:"request"`
+	DraftID string                      `json:"draftId"`
+	Sent    bool                        `json:"sent"` // always false
+	To      string                      `json:"to,omitempty"`
+	Request *intents.BookingRequestBody `json:"request,omitempty"` // a booking's
+	// Disruption is a carrier's drafted delay, instead of a booking.
+	Disruption *Disruption `json:"disruption,omitempty"`
 	// NotSent is the private part of the draft, which stays here.
 	NotSent map[string]string `json:"notSent,omitempty"`
 	// NewPartner: the carrier isn't in our address book, and we've never
@@ -388,7 +390,14 @@ func (a *Assistant) draft(ctx context.Context, c *Conversation, raw json.RawMess
 
 // Result is the draft as draft_booking returns it and the dialog shows it.
 func (d Draft) Result() DraftResult {
-	out := DraftResult{DraftID: d.ID, To: d.Operator, Request: d.Request, NewPartner: d.NewPartner, NewConsignee: d.NewConsignee,
+	if d.Disruption != nil {
+		dis := *d.Disruption
+		dis.Bookings = slices.Clone(dis.Bookings)
+		return DraftResult{DraftID: d.ID, Disruption: &dis,
+			Next: "Nothing has been published. Tell the user the delay is ready for them to review and confirm; only they can publish it."}
+	}
+	req := d.Request
+	out := DraftResult{DraftID: d.ID, To: d.Operator, Request: &req, NewPartner: d.NewPartner, NewConsignee: d.NewConsignee,
 		Next: "Nothing has been sent. Tell the user the draft is ready for them to review and confirm; only they can send it."}
 	if d.RequiredBy != "" {
 		out.NotSent = map[string]string{"requiredBy": d.RequiredBy}

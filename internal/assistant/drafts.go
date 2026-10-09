@@ -38,7 +38,10 @@ type Draft struct {
 	NewPartner bool
 	// NewConsignee: a consignee domain not in the address book.
 	NewConsignee bool
-	Created      time.Time
+	// Disruption, if set, makes this a carrier's drafted delay instead of
+	// a booking (Operator and Request are then unused).
+	Disruption *Disruption
+	Created    time.Time
 }
 
 // Drafts holds a session's drafts. Taking one removes it, so a draft is
@@ -69,6 +72,11 @@ func (d *Drafts) add(dr Draft) (Draft, error) {
 		d.drafts = map[string]Draft{}
 	}
 	d.next++
+	if dr.Disruption != nil {
+		dr.ID = fmt.Sprintf("DD-%04d", d.next)
+		d.drafts[dr.ID] = dr
+		return dr, nil
+	}
 	prefix := d.Prefix
 	if prefix == "" {
 		prefix = "BD"

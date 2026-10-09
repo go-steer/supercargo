@@ -24,7 +24,7 @@ const API = 'api/';
 const state = {
   me: null, activeSide: null, tab: {}, msgFilter: 'all', actFilter: 'all',
   messages: [], lastSeq: 0, entries: [], open: new Set(), events: null, gen: 0,
-  chat: null, thinking: false, poll: null, streamOpen: false,
+  chats: {}, thinking: false, poll: null, streamOpen: false,
   initialSeq: null, alertCounts: {}, summaries: [],
 };
 
@@ -490,15 +490,15 @@ function renderBanner() {
 // ── left panel: what the active role tab shows ───────────────────────
 const VIEWS = {
   customer: { label: 'As shipper', tabs: [['Assistant', 'assistant'], ['Shipments', 'shipments']] },
-  operator: { label: 'As carrier', tabs: [['Bookings', 'bookings']] },
+  operator: { label: 'As carrier', tabs: [['Bookings', 'bookings'], ['Assistant', 'assistant']] },
 };
-const tabsFor = (side) => VIEWS[side].tabs.filter(([, k]) => k !== 'assistant' || state.me.assistant);
+const tabsFor = (side) => VIEWS[side].tabs.filter(([, k]) => k !== 'assistant' || (state.me.assistants || []).includes(side));
 const currentTab = () => state.tab[state.activeSide] || tabsFor(state.activeSide)[0][1];
 
 const loadLeft = latest(async () => {
   const view = VIEWS[state.activeSide];
   if (!view) return;
-  if (currentTab() === 'assistant') { state.chat ? renderChat() : await loadChat(); return; }
+  if (currentTab() === 'assistant') { state.chats[state.activeSide] ? renderChat() : await loadChat(); return; }
   const gen = state.gen, side = state.activeSide, tab = currentTab();
   const left = $('left');
   try {
@@ -560,7 +560,7 @@ const loadLeft = latest(async () => {
 });
 
 function renderLeftNow() {
-  if (currentTab() === 'assistant') { state.chat ? renderChat() : loadChat(); } else { loadLeft(); }
+  if (currentTab() === 'assistant') { state.chats[state.activeSide] ? renderChat() : loadChat(); } else { loadLeft(); }
 }
 
 // ── the assistant ────────────────────────────────────────────────────
@@ -649,36 +649,57 @@ function toolView(tool, running) {
   return c;
 }
 
+// Each side the persona acts in may have its own assistant: the
+// shipper's on the customer side, the carrier's on the operator side,
+// each with its own conversation (state.chats[side]).
+const ASSISTANT = {
+  customer: { hint: 'shipper role · it drafts; you decide', empty: 'Ask about a carrier, book a shipment, or check on one.',
+    placeholder: 'Ask about a carrier, book a shipment, or check on one…' },
+  operator: { hint: 'carrier role · it drafts; you decide', empty: 'Ask about our bookings and voyages, or prepare a delay.',
+    placeholder: 'Ask about bookings or a voyage, or prepare a delay…' },
+};
+// aq is an assistant route for side.
+const aq = (side, path = '') => 'assistant' + path + (side === 'operator' ? '?side=operator' : '');
+
 async function loadChat() {
-  try { state.chat = await api('assistant'); renderChat(); } catch (e) { setStatus('bad', e.message); }
+  const side = state.activeSide;
+  try { state.chats[side] = await api(aq(side)); renderChat(); } catch (e) { setStatus('bad', e.message); }
+}
+
+// draftDialog opens a draft's confirmation dialog: a booking or a delay.
+function draftDialog(d, side) {
+  if (d.disruption) disruptionDraftDialog(d, side); else bookingDialog(d, chatVia(side));
 }
 
 function renderChat() {
   if (currentTab() !== 'assistant') return;
+  const side = state.activeSide, chat = state.chats[side], words = ASSISTANT[side];
+  if (!chat || !words) return;
+  const busy = state.thinking === side;
   const left = $('left');
   const keep = left.querySelector('textarea')?.value || '';
   left.className = 'panel tall ai';
   const bar = el('div', 'panel-bar');
-  bar.append(el('span', 'panel-title', 'Assistant'), el('span', 'hint', 'shipper role · it drafts; you decide'));
+  bar.append(el('span', 'panel-title', 'Assistant'), el('span', 'hint', words.hint));
   const body = el('div', 'panel-body chat');
-  const lines = state.chat.lines || [];
-  const inbox = inboxView();
+  const lines = chat.lines || [];
+  const inbox = side === 'customer' ? inboxView() : null;
   if (inbox) body.appendChild(inbox);
-  if (!lines.length) body.appendChild(el('div', 'empty', 'Ask about a carrier by its domain, book a shipment, or check on one.'));
+  if (!lines.length) body.appendChild(el('div', 'empty', words.empty));
   for (const l of lines) {
     const t = el('div', 'turn ' + (l.who === 'you' ? 'you' : l.who === 'note' ? 'note' : 'ai'));
     if (l.who !== 'note') t.appendChild(el('div', 'who', (l.who === 'you' ? 'YOU' : 'ASSISTANT') + ' · ' + clock(l.time)[0]));
     for (const tool of l.tools || []) t.appendChild(toolView(tool, false));
     t.appendChild(l.who === 'assistant' ? markdown(l.text) : el('div', 'text', l.text));
     for (const d of l.drafts || []) {
-      if (!(state.chat.drafts || []).some((x) => x.draftId === d.draftId)) continue;
+      if (!(chat.drafts || []).some((x) => x.draftId === d.draftId)) continue;
       const b = el('button', 'draftlink', `Review draft ${d.draftId}…`);
-      b.onclick = () => bookingDialog(d);
+      b.onclick = () => draftDialog(d, side);
       t.appendChild(b);
     }
     body.appendChild(t);
   }
-  if (state.thinking) {
+  if (busy) {
     // What the assistant is doing: the calls so far, the one running, or
     // (between them) the model thinking.
     const p = state.progress || {};
@@ -690,32 +711,32 @@ function renderChat() {
   }
   const comp = el('div', 'composer');
   const ta = el('textarea');
-  ta.placeholder = 'Ask about a carrier, book a shipment, or check on one…  (Enter sends, Shift+Enter: new line)';
+  ta.placeholder = words.placeholder + '  (Enter sends, Shift+Enter: new line)';
   ta.value = keep;
-  ta.disabled = state.thinking;
+  ta.disabled = busy;
   ta.maxLength = 4000;
   const send = el('button', null, 'Send');
-  send.disabled = state.thinking;
+  send.disabled = busy;
   const go = () => { const v = ta.value.trim(); if (v) { ta.value = ''; chatTurn(v); } };
   send.onclick = go;
   ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); go(); } };
   comp.append(ta, send);
   left.replaceChildren(bar, body, comp);
   body.scrollTop = body.scrollHeight;
-  if (!state.thinking) ta.focus();
+  if (!busy) ta.focus();
 }
 
-// watchProgress polls what the assistant is doing while a turn runs, and
-// redraws the chat when it changes. It stops when the turn is over.
-function watchProgress() {
+// watchProgress polls what side's assistant is doing while a turn runs,
+// and redraws the chat when it changes. It stops when the turn is over.
+function watchProgress(side) {
   state.progress = null;
   const turn = state.turnSeq = (state.turnSeq || 0) + 1;
-  const live = () => state.thinking && state.turnSeq === turn; // this turn, not a later one
+  const live = () => state.thinking === side && state.turnSeq === turn; // this turn, not a later one
   let last = '';
   const tick = async () => {
     if (!live()) return;
     try {
-      const p = await api('assistant/progress');
+      const p = await api(aq(side, '/progress'));
       const key = JSON.stringify(p);
       if (live() && p.working && key !== last) { last = key; state.progress = p; renderChat(); }
     } catch { return; /* signed out, say: the turn itself reports failures */ }
@@ -725,22 +746,24 @@ function watchProgress() {
 }
 
 async function chatTurn(text) {
-  state.thinking = true;
-  watchProgress();
-  state.chat.lines = [...(state.chat.lines || []), { who: 'you', text, time: new Date().toISOString() }];
+  const side = state.activeSide;
+  const chat = state.chats[side];
+  state.thinking = side;
+  watchProgress(side);
+  chat.lines = [...(chat.lines || []), { who: 'you', text, time: new Date().toISOString() }];
   renderChat();
   try {
-    state.chat = await api('assistant/turn', { method: 'POST', body: JSON.stringify({ text }) });
+    state.chats[side] = await api(aq(side, '/turn'), { method: 'POST', body: JSON.stringify({ text }) });
   } catch (e) {
-    state.chat.lines.push({ who: 'note', text: e.message, time: new Date().toISOString() });
+    chat.lines.push({ who: 'note', text: e.message, time: new Date().toISOString() });
   } finally {
     state.thinking = false;
     state.progress = null;
     renderChat();
   }
   // A new draft opens its dialog, as in ulpchat.
-  const newest = (state.chat.drafts || []).at(-1);
-  if (newest && !state.shownDrafts?.has(newest.draftId)) { (state.shownDrafts ??= new Set()).add(newest.draftId); bookingDialog(newest); }
+  const newest = (state.chats[side].drafts || []).at(-1);
+  if (newest && !state.shownDrafts?.has(newest.draftId)) { (state.shownDrafts ??= new Set()).add(newest.draftId); draftDialog(newest, side); }
 }
 
 // modal shows a dialog whose confirm button arms after a delay: a click
@@ -794,14 +817,26 @@ async function loadInbox() {
   } catch { /* no inbox, or not this persona's */ }
 }
 
-// How a booking dialog sends and discards: the assistant's drafts, or the
-// inbox's.
-const CHAT = {
-  discard: async (d) => { state.chat = await api('assistant/discard', { method: 'POST', body: JSON.stringify({ draftId: d.draftId }) }); renderChat(); },
-  send: async (d) => {
-    try { state.chat = await api('assistant/send', { method: 'POST', body: JSON.stringify({ draftId: d.draftId }) }); } finally { await loadChat(); }
+// reloadChat fetches side's chat again (after a send) and redraws it if
+// it's the one on screen.
+async function reloadChat(side) {
+  try { state.chats[side] = await api(aq(side)); if (side === state.activeSide) renderChat(); } catch (e) { setStatus('bad', e.message); }
+}
+
+// A draft dialog sends and discards through a "via": a side's assistant
+// chat (chatVia), or the inbox of drafts from outside agents (INBOX).
+const chatVia = (side) => ({
+  discard: async (d) => {
+    state.chats[side] = await api(aq(side, '/discard'), { method: 'POST', body: JSON.stringify({ draftId: d.draftId }) });
+    if (side === state.activeSide) renderChat();
   },
-};
+  // The node sends it; then the chat shows the outcome and the assistant's report.
+  send: async (d) => {
+    try {
+      state.chats[side] = await api(aq(side, '/send'), { method: 'POST', body: JSON.stringify({ draftId: d.draftId }) });
+    } finally { await reloadChat(side); }
+  },
+});
 const INBOX = {
   discard: async (d) => { state.inbox = (await api('inbox/discard', { method: 'POST', body: JSON.stringify({ draftId: d.draftId }) })).drafts || []; renderChat(); },
   send: async (d) => {
@@ -839,7 +874,36 @@ function inboxView() {
   return box;
 }
 
-function bookingDialog(d, via = CHAT) {
+// discardLink is a draft dialog's "Discard this draft".
+function discardLink(d, via, close) {
+  const discard = el('div', 'fineprint');
+  const link = el('button', null, 'Discard this draft');
+  link.onclick = async () => {
+    try { await via.discard(d); close(); } catch (e) { discard.lastChild.textContent = e.message; }
+  };
+  discard.append(link, el('span'));
+  return discard;
+}
+
+// disruptionDraftDialog is a drafted delay's confirmation: exactly what
+// goes to each customer, and which bookings it reaches.
+function disruptionDraftDialog(d, side) {
+  const x = d.disruption;
+  const scope = x.voyage ? `the whole voyage: ${x.vessel || ''} ${x.voyage}`.replace('  ', ' ') : `booking ${x.bookingRef}`;
+  const rows = [
+    ['Delay:', scope], ['How long:', x.delay.replace(/0m0s$/, '').replace(/h$/, ' hours')], ['Reason:', x.reason],
+    ['Bookings:', (x.bookings || []).join(', ')],
+    ['', x.voyage ? 'Each customer gets a signed delay alert with this reason; the node delays only bookings still under way.'
+      : 'The customer gets a signed delay alert with this reason, and the arrival estimate moves.', 'notsent'],
+  ];
+  let dlg = null;
+  const via = chatVia(side);
+  const discard = discardLink(d, via, () => dlg.close());
+  dlg = modal(`Delay draft ${d.draftId}`, rows, 'Publish this delay? Your node signs and sends the alerts.',
+    'Publish delay', () => via.send(d), [discard]);
+}
+
+function bookingDialog(d, via = chatVia('customer')) {
   const q = d.request || {};
   const eq = (q.containers || []).map((c) => `${c.count} × ${c.equipment_size_type}, ${c.gross_weight_kg} kg each`).join('; ');
   const rows = [
@@ -854,13 +918,9 @@ function bookingDialog(d, via = CHAT) {
   if (d.newConsignee) rows.push(['', 'A consignee not in your address book. Check the domain: it goes to the carrier.', 'newpartner']);
   if (q.subscription) rows.push(['Updates:', `${(q.subscription.intents || []).join(', ')} → ${q.subscription.endpoint}`]);
   for (const [k, v] of Object.entries(d.notSent || {})) rows.push(['Not sent:', `your ${k === 'requiredBy' ? 'deadline' : k}, ${v} (it stays with us)`, 'notsent']);
-  const discard = el('div', 'fineprint');
-  const link = el('button', null, 'Discard this draft');
-  link.onclick = async () => {
-    try { await via.discard(d); dlg.close(); } catch (e) { discard.lastChild.textContent = e.message; }
-  };
-  discard.append(link, el('span'));
-  const dlg = modal(`Booking draft ${d.draftId}`, rows, 'Send this booking request? It is signed by your node and sent to ' + d.to + '.',
+  let dlg = null;
+  const discard = discardLink(d, via, () => dlg.close());
+  dlg = modal(`Booking draft ${d.draftId}`, rows, 'Send this booking request? It is signed by your node and sent to ' + d.to + '.',
     'Send booking request', () => via.send(d), [discard]);
 }
 
@@ -983,7 +1043,7 @@ async function signIn(id) {
 async function start() {
   state.me = await api('me');
   state.gen++;
-  state.messages = []; state.lastSeq = 0; state.entries = []; state.open.clear(); state.chat = null; state.tab = {}; state.shownDrafts = new Set();
+  state.messages = []; state.lastSeq = 0; state.entries = []; state.open.clear(); state.chats = {}; state.tab = {}; state.shownDrafts = new Set();
   state.initialSeq = null; state.alertCounts = {}; state.summaries = []; state.inbox = []; state.openedLink = false; $('banner').hidden = true;
   const { me } = state;
   $('company').textContent = me.company;

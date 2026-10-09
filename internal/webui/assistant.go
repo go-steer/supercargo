@@ -195,7 +195,7 @@ func (s *server) chatFor(r *http.Request) (*chat, error) {
 	var c *chat
 	var persona string
 	if ok {
-		c, persona = sess.chat, sess.persona.ID
+		c, persona = sess.chats[sideOf(r)], sess.persona.ID
 	}
 	s.mu.Unlock()
 	if !ok {
@@ -205,7 +205,7 @@ func (s *server) chatFor(r *http.Request) (*chat, error) {
 		return c, nil
 	}
 	// Made outside the lock: it reads the skills and business files.
-	a, err := s.cfg.NewAssistant()
+	a, err := s.cfg.NewAssistant(sideOf(r))
 	if err != nil {
 		return nil, err
 	}
@@ -232,10 +232,14 @@ func (s *server) chatFor(r *http.Request) (*chat, error) {
 	if !ok {
 		return nil, errors.New("sign in first")
 	}
-	if sess.chat == nil { // another request may have made one meanwhile
-		sess.chat = c
+	side := sideOf(r)
+	if sess.chats == nil {
+		sess.chats = map[string]*chat{}
 	}
-	return sess.chat, nil
+	if sess.chats[side] == nil { // another request may have made one meanwhile
+		sess.chats[side] = c
+	}
+	return sess.chats[side], nil
 }
 
 func (s *server) assistantState(w http.ResponseWriter, r *http.Request, _ Persona) {
@@ -398,16 +402,12 @@ func (s *server) assistantSend(w http.ResponseWriter, r *http.Request, _ Persona
 		return
 	}
 	c.close(req.DraftID)
-	status, ref := "", ""
-	if sent.Confirmation != nil {
-		status, ref = sent.Confirmation.Status, sent.Confirmation.BookingRef
-	}
-	c.add(Line{Who: "note", Text: strings.TrimSpace("Sent " + req.DraftID + " to " + sent.Draft.Operator + ", signed. Answer: " + status + " " + ref),
-		Time: s.cfg.Now()})
+	outcome := sentOutcome(sent)
+	c.add(Line{Who: "note", Text: outcome, Time: s.cfg.Now()})
 	if reply, err := c.a.Report(ctx, c.conv, sent); err == nil {
 		c.add(Line{Who: "assistant", Text: reply.Text, Time: s.cfg.Now()})
 	} else {
-		_ = c.conv.Note("Draft " + req.DraftID + " was sent: " + status + " " + ref + ".")
+		_ = c.conv.Note(outcome)
 	}
 	control.Answer(w, http.StatusOK, c.state(s.cfg.Now()))
 }
@@ -469,4 +469,39 @@ func (s *server) disrupt(w http.ResponseWriter, r *http.Request, _ Persona) {
 	r2, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, "/disrupt", bytes.NewReader(b))
 	r2.Header.Set("Content-Type", "application/json")
 	s.cfg.Control.ServeHTTP(w, r2)
+}
+
+// sentOutcome is the transcript's note on a send: the carrier's answer to
+// a booking, or a delay's alerts.
+func sentOutcome(sent *assistant.Sent) string {
+	id := sent.Draft.ID
+	if d := sent.Disrupted; d != nil {
+		if d.Alert != nil {
+			return "Published " + id + ": alert " + d.Alert.AlertID + ", ETA " + d.Alert.PreviousETA + " → " + d.Alert.NewETA + "."
+		}
+		var sentTo, failed []string
+		for _, a := range d.Alerts {
+			switch {
+			case a.Alert != nil:
+				sentTo = append(sentTo, a.BookingRef)
+			case a.Applied:
+				failed = append(failed, a.BookingRef+" DELAYED, alert not sent (don't publish again)")
+			default:
+				failed = append(failed, a.BookingRef+" not delayed")
+			}
+		}
+		out := "Published " + id + ": signed alerts for " + strings.Join(sentTo, ", ") + "."
+		if len(sentTo) == 0 {
+			out = "Published " + id + ": no alerts went out."
+		}
+		if len(failed) > 0 {
+			out += " " + strings.Join(failed, "; ") + "."
+		}
+		return out
+	}
+	status, ref := "", ""
+	if sent.Confirmation != nil {
+		status, ref = sent.Confirmation.Status, sent.Confirmation.BookingRef
+	}
+	return strings.TrimSpace("Sent " + id + " to " + sent.Draft.Operator + ", signed. Answer: " + status + " " + ref)
 }

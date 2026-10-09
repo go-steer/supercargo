@@ -91,7 +91,8 @@ func assistantUI(t *testing.T) (http.Handler, *node, *echo, *time.Time) {
 	clock := func() time.Time { return now }
 	n, ctl := &node{}, &echo{}
 	h := Handler(Config{Company: "Cymbal Shoes", Domain: "cymbal-shoes.example", Personas: personas, Control: ctl, Now: clock,
-		NewAssistant: func() (*assistant.Assistant, error) {
+		AssistantSides: []string{SideCustomer},
+		NewAssistant: func(string) (*assistant.Assistant, error) {
 			return &assistant.Assistant{Model: assistant.FakeModel(clock), Node: n, Drafts: &assistant.Drafts{}, Now: clock,
 				Self: assistant.Self{Domain: "cymbal-shoes.example", Name: "Cymbal Shoes"},
 				OnModelCall: func(m activity.Model) {
@@ -346,7 +347,7 @@ func TestSendFailures(t *testing.T) {
 
 func TestAssistantUnavailable(t *testing.T) {
 	broken := Handler(Config{Domain: "cymbal-shoes.example", Personas: personas, Control: &echo{},
-		NewAssistant: func() (*assistant.Assistant, error) { return nil, errors.New("no model configured") }})
+		AssistantSides: []string{SideCustomer}, NewAssistant: func(string) (*assistant.Assistant, error) { return nil, errors.New("no model configured") }})
 	c := login(t, broken, "alex")
 	if rec := do(broken, http.MethodGet, "/ui/api/assistant", "", c); rec.Code != http.StatusInternalServerError {
 		t.Errorf("state with a broken assistant: HTTP %d", rec.Code)
@@ -458,7 +459,7 @@ func TestChatEndsWithSession(t *testing.T) {
 // every turn slot is taken, a turn waits for none of them.
 func TestTurnLimits(t *testing.T) {
 	failing := Handler(Config{Domain: "cymbal-shoes.example", Personas: personas, Control: &echo{},
-		NewAssistant: func() (*assistant.Assistant, error) {
+		AssistantSides: []string{SideCustomer}, NewAssistant: func(string) (*assistant.Assistant, error) {
 			return &assistant.Assistant{Model: &fake.Model{Respond: func(llm.GenerateRequest) (llm.GenerateResponse, error) {
 				return llm.GenerateResponse{}, errors.New("model unavailable")
 			}}, Node: &node{}, Drafts: &assistant.Drafts{}}, nil
