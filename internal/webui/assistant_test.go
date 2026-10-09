@@ -300,6 +300,12 @@ func TestAssistantGates(t *testing.T) {
 		ctl.got.URL.Path != "/disrupt" || ctl.got.Header.Get("Cookie") != "" {
 		t.Errorf("disrupt: HTTP %d, control saw %+v", code, ctl.got)
 	}
+	// A whole voyage goes through as one: the node picks the bookings.
+	voyage := map[string]string{"vessel": "Ocean Blue Aurora", "voyage": "42W", "delay": "24h", "reason": "Strike."}
+	if code, _ := post(h, "/ui/api/disrupt", voyage, sam); code != http.StatusOK ||
+		string(ctl.body) != `{"vessel":"Ocean Blue Aurora","voyage":"42W","delay":"24h","reason":"Strike."}` {
+		t.Errorf("a voyage disrupt: HTTP %d, control got %s", code, ctl.body)
+	}
 	// A node without an assistant says so, and has none to drive.
 	plain, _, _ := newUI(t)
 	c := login(t, plain, "alex")

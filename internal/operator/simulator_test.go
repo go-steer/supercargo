@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -239,6 +240,63 @@ func TestDisrupt(t *testing.T) {
 }
 
 // TestDisruptTotalCapped: delays add up to at most 30 days per voyage.
+// TestDisruptVoyage: one decision delays every booking under way on the
+// voyage, each with its own estimate and alert; an arrived booking is
+// left alone, one that can't take the delay is reported, and a voyage
+// with nothing under way is refused.
+func TestDisruptVoyage(t *testing.T) {
+	s := newSimulated(t)
+	arrived := s.book(t, 1)
+	s.advance(200 * time.Second) // well past its arrival
+	a, b := s.book(t, 1), s.book(t, 1)
+	s.advance(2 * time.Second)
+	if _, err := s.sim.Disrupt(b, 29*24*time.Hour, "Earlier trouble."); err != nil {
+		t.Fatal(err)
+	}
+	before := len(s.pub.list())
+	out, err := s.sim.DisruptVoyage("Ocean Blue Aurora", "42W", 48*time.Hour, "Engine repair, unscheduled call at Halifax.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := []string{a, b}
+	sort.Strings(refs)
+	if len(out) != 2 || out[0].BookingRef != refs[0] || out[1].BookingRef != refs[1] {
+		t.Fatalf("outcomes %+v", out)
+	}
+	for _, o := range out {
+		switch o.BookingRef {
+		case a:
+			if o.Alert == nil || o.Error != "" || o.Alert.Summary != "Engine repair, unscheduled call at Halifax." {
+				t.Errorf("%s: %+v", a, o)
+			}
+		case b:
+			if o.Alert != nil || !strings.Contains(o.Error, "at most") {
+				t.Errorf("%s (over the cap): %+v", b, o)
+			}
+		}
+	}
+	if got := s.pub.list()[before:]; len(got) != 2 || summary(got[1]) != "alert delay" {
+		t.Errorf("published %d, want one estimate and one alert", len(got))
+	}
+	_ = arrived
+	for name, call := range map[string]func() error{
+		"another vessel": func() error { _, err := s.sim.DisruptVoyage("Other Ship", "42W", time.Hour, "x"); return err },
+		"another voyage": func() error { _, err := s.sim.DisruptVoyage("", "43E", time.Hour, "x"); return err },
+	} {
+		if err := call(); !errors.Is(err, ErrUnknownVoyage) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for name, call := range map[string]func() error{
+		"no voyage": func() error { _, err := s.sim.DisruptVoyage("", " ", time.Hour, "x"); return err },
+		"no delay":  func() error { _, err := s.sim.DisruptVoyage("", "42W", 0, "x"); return err },
+	} {
+		if err := call(); err == nil || errors.Is(err, ErrUnknownVoyage) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 func TestDisruptTotalCapped(t *testing.T) {
 	s := newSimulated(t)
 	ref := s.book(t, 1)

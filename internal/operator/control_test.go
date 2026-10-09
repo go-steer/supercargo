@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -53,12 +54,17 @@ func TestControlDisrupt(t *testing.T) {
 		host, contentType, body string
 		want                    int
 	}{
-		"unknown booking": {"localhost:9101", "application/json", `{"bookingRef":"OB-BKG-1","delay":"1h","reason":"Late."}`, http.StatusNotFound},
-		"bad delay":       {"[::1]:9101", "application/json", `{"bookingRef":"` + ref + `","delay":"soon","reason":"Late."}`, http.StatusBadRequest},
-		"bad reason":      {"127.0.0.1:9101", "application/json", `{"bookingRef":"` + ref + `","delay":"1h","reason":""}`, http.StatusBadRequest},
-		"unknown field":   {"127.0.0.1:9101", "application/json", `{"bookingRef":"` + ref + `","delay":"1h","reason":"Late.","x":1}`, http.StatusBadRequest},
-		"form post":       {"127.0.0.1:9101", "application/x-www-form-urlencoded", `{"bookingRef":"` + ref + `","delay":"1h","reason":"Late."}`, http.StatusBadRequest},
-		"text/plain":      {"127.0.0.1:9101", "text/plain", `{"bookingRef":"` + ref + `","delay":"1h","reason":"Late."}`, http.StatusBadRequest},
+		"unknown booking":    {"localhost:9101", "application/json", `{"bookingRef":"OB-BKG-1","delay":"1h","reason":"Late."}`, http.StatusNotFound},
+		"bad delay":          {"[::1]:9101", "application/json", `{"bookingRef":"` + ref + `","delay":"soon","reason":"Late."}`, http.StatusBadRequest},
+		"bad reason":         {"127.0.0.1:9101", "application/json", `{"bookingRef":"` + ref + `","delay":"1h","reason":""}`, http.StatusBadRequest},
+		"unknown field":      {"127.0.0.1:9101", "application/json", `{"bookingRef":"` + ref + `","delay":"1h","reason":"Late.","x":1}`, http.StatusBadRequest},
+		"form post":          {"127.0.0.1:9101", "application/x-www-form-urlencoded", `{"bookingRef":"` + ref + `","delay":"1h","reason":"Late."}`, http.StatusBadRequest},
+		"text/plain":         {"127.0.0.1:9101", "text/plain", `{"bookingRef":"` + ref + `","delay":"1h","reason":"Late."}`, http.StatusBadRequest},
+		"booking and voyage": {"127.0.0.1:9101", "application/json", `{"bookingRef":"` + ref + `","voyage":"42W","delay":"1h","reason":"Late."}`, http.StatusBadRequest},
+		"neither":            {"127.0.0.1:9101", "application/json", `{"delay":"1h","reason":"Late."}`, http.StatusBadRequest},
+		"vessel alone":       {"127.0.0.1:9101", "application/json", `{"bookingRef":"` + ref + `","vessel":"Ocean Blue Aurora","delay":"1h","reason":"Late."}`, http.StatusBadRequest},
+		"unknown voyage":     {"127.0.0.1:9101", "application/json", `{"voyage":"43E","delay":"1h","reason":"Late."}`, http.StatusNotFound},
+		"voyage, bad delay":  {"127.0.0.1:9101", "application/json", `{"voyage":"42W","delay":"0s","reason":"Late."}`, http.StatusBadRequest},
 	} {
 		if code, _ := post(t, h, tc.host, tc.contentType, tc.body); code != tc.want {
 			t.Errorf("%s: HTTP %d, want %d", name, code, tc.want)
@@ -73,6 +79,16 @@ func TestControlDisrupt(t *testing.T) {
 	}
 	if alerts != 1 {
 		t.Errorf("%d alerts published, want 1", alerts)
+	}
+	// The whole voyage: each booking under way gets its own alert.
+	other := s.book(t, 1)
+	s.advance(2 * time.Second)
+	code, resp = post(t, h, "127.0.0.1:9101", "application/json", `{"vessel":"Ocean Blue Aurora","voyage":"42W","delay":"24h","reason":"Strike at the port."}`)
+	if code != http.StatusOK || len(resp.Alerts) != 2 || resp.Alerts[0].Alert == nil || resp.Alerts[1].Alert == nil {
+		t.Fatalf("voyage: %d %+v", code, resp)
+	}
+	if got := []string{resp.Alerts[0].BookingRef, resp.Alerts[1].BookingRef}; !slices.Contains(got, ref) || !slices.Contains(got, other) {
+		t.Errorf("voyage alerts for %v", got)
 	}
 	// After arrival: 409.
 	s2 := newSimulated(t)

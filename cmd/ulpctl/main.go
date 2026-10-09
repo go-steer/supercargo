@@ -60,13 +60,18 @@ func disrupt(args []string, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 	path := fs.String("config", "", "the operator node's configuration (YAML); its control socket is used")
 	booking := fs.String("booking", "", "the booking reference, e.g. OB-BKG-1042")
+	voyage := fs.String("voyage", "", "instead of one booking, every booking under way on this voyage, e.g. 42W")
+	vessel := fs.String("vessel", "", "with --voyage: the vessel, if voyage numbers repeat across vessels")
 	delay := fs.Duration("delay", 0, "how much later the vessel arrives, e.g. 72h")
 	reason := fs.String("reason", "", "why, in one line (it is the alert's summary)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *path == "" || *booking == "" || *delay <= 0 || *reason == "" {
-		return errors.New("disrupt: --config, --booking, a positive --delay and --reason are required")
+	if *path == "" || (*booking == "") == (*voyage == "") || *delay <= 0 || *reason == "" {
+		return errors.New("disrupt: --config, --booking or --voyage (one), a positive --delay and --reason are required")
+	}
+	if *vessel != "" && *voyage == "" {
+		return errors.New("disrupt: --vessel goes with --voyage")
 	}
 	socket, err := operatorSocket(*path)
 	if err != nil {
@@ -74,9 +79,29 @@ func disrupt(args []string, stdout, stderr io.Writer) error {
 	}
 	var dr operator.DisruptResponse
 	code, err := control.Call(control.Client(socket, 10*time.Second), "/disrupt",
-		operator.DisruptRequest{BookingRef: *booking, Delay: delay.String(), Reason: *reason}, &dr)
+		operator.DisruptRequest{BookingRef: *booking, Vessel: *vessel, Voyage: *voyage, Delay: delay.String(), Reason: *reason}, &dr)
 	if err != nil {
 		return fmt.Errorf("disrupt: %w", err)
+	}
+	if *voyage != "" {
+		if code != http.StatusOK {
+			return fmt.Errorf("disrupt: HTTP %d: %s", code, dr.Error)
+		}
+		fmt.Fprintf(stdout, "Disrupted voyage %s: %d booking(s) under way.\n", *voyage, len(dr.Alerts))
+		failed := 0
+		for _, va := range dr.Alerts {
+			if va.Alert == nil {
+				failed++
+				fmt.Fprintf(stdout, "  %s: no alert: %s\n", va.BookingRef, va.Error)
+				continue
+			}
+			fmt.Fprintf(stdout, "  %s: %s %s alert %s, ETA %s → %s\n", va.BookingRef, va.Alert.Severity, va.Alert.Kind, va.Alert.AlertID,
+				va.Alert.PreviousETA, va.Alert.NewETA)
+		}
+		if failed > 0 {
+			return fmt.Errorf("disrupt: %d of %d bookings got no alert", failed, len(dr.Alerts))
+		}
+		return nil
 	}
 	if code != http.StatusOK || dr.Alert == nil {
 		return fmt.Errorf("disrupt: HTTP %d: %s", code, dr.Error)

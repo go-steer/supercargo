@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- Voyage-wide disruptions: `ulpctl disrupt --voyage 42W [--vessel …]`, the control API's `POST /disrupt` with `voyage`, and a "this booking or the whole voyage" choice in the carrier's Disrupt dialog. One decision delays every booking under way on the voyage, each with its own estimate and signed alert; a booking that can't take the delay is reported and the rest go ahead.
+
 - `hello-ulp` on a Cloud Workstation says to open each company's address once before the presenter page (the proxy signs you in per address, and its sign-in page won't load in a frame).
 
 - Partners and the directory, MVP1 step 6 (#79): the assistant lists the partners we know (`list_partners`: the company's address book, `addressBook.file`, and the carriers we've booked with) and searches a directory for new ones (`find_partners`, `directory.file`; Google Cloud API hub next), verifying each candidate's profile at its domain; a directory entry is never trust. People can name partners by name: a partner's name in the user's own words counts as naming its domain, for address-book partners and verified finds, and an ambiguous name is asked about. The booking dialog (browser and terminal) marks a carrier we've never booked with and don't list as a new partner. The demo gets an address book and a directory.

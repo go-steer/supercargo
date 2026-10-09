@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -337,6 +338,60 @@ func (s *Simulator) Disrupt(ref string, delay time.Duration, reason string) (*in
 	if !ok {
 		return nil, ErrUnknownBooking
 	}
+	return s.disrupt(tl, delay, reason)
+}
+
+// VoyageAlert is one booking's outcome in a voyage's disruption: its
+// alert, or why it got none.
+type VoyageAlert struct {
+	BookingRef string                `json:"bookingRef"`
+	Alert      *intents.TnTAlertBody `json:"alert,omitempty"`
+	Error      string                `json:"error,omitempty"`
+}
+
+// ErrUnknownVoyage: no booking not yet arrived is on that voyage.
+var ErrUnknownVoyage = errors.New("operator: no booking under way on that voyage")
+
+// DisruptVoyage delays every booking on voyage (of vessel, if not empty)
+// that hasn't arrived, as Disrupt does each: one decision, a signed alert
+// to each booking's subscriber. A booking that can't take the delay is
+// reported and the rest go ahead; the outcomes are in booking order.
+func (s *Simulator) DisruptVoyage(vessel, voyage string, delay time.Duration, reason string) ([]VoyageAlert, error) {
+	s.init()
+	if delay <= 0 || delay > maxDisruptDelay {
+		return nil, fmt.Errorf("operator: a delay must be positive and at most %v", maxDisruptDelay)
+	}
+	if strings.TrimSpace(voyage) == "" {
+		return nil, errors.New("operator: which voyage?")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var refs []string
+	for ref, tl := range s.lines {
+		v, n := tl.booking.Confirmation.Vessel()
+		if n == voyage && (vessel == "" || v == vessel) && !tl.arrived {
+			refs = append(refs, ref)
+		}
+	}
+	if len(refs) == 0 {
+		return nil, ErrUnknownVoyage
+	}
+	sort.Strings(refs)
+	out := make([]VoyageAlert, 0, len(refs))
+	for _, ref := range refs {
+		a := VoyageAlert{BookingRef: ref}
+		alert, err := s.disrupt(s.lines[ref], delay, reason)
+		if err != nil {
+			a.Error = err.Error()
+		}
+		a.Alert = alert
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// disrupt delays one timeline; s.mu is held.
+func (s *Simulator) disrupt(tl *timeline, delay time.Duration, reason string) (*intents.TnTAlertBody, error) {
 	if tl.arrived {
 		return nil, ErrArrived
 	}
