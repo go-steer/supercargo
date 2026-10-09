@@ -392,8 +392,13 @@ func (s *server) assistantSend(w http.ResponseWriter, r *http.Request, _ Persona
 		}
 		if errors.Is(err, assistant.ErrOutcomeUnknown) {
 			// As in ulpchat: the model must not think the draft is unsent.
-			_ = c.conv.Note("Sending draft " + req.DraftID + " failed with an unknown outcome: it may have reached the carrier. " +
-				"The draft is gone; tell the user to check the shipments before booking again.")
+			if strings.HasPrefix(req.DraftID, "DD-") {
+				_ = c.conv.Note("Publishing delay " + req.DraftID + " failed with an unknown outcome: it may have been published. " +
+					"The draft is gone; tell the user to check the bookings, and not to publish the same delay again, which would delay them twice.")
+			} else {
+				_ = c.conv.Note("Sending draft " + req.DraftID + " failed with an unknown outcome: it may have reached the carrier. " +
+					"The draft is gone; tell the user to check the shipments before booking again.")
+			}
 		}
 		c.add(Line{Who: "note", Text: "Draft " + req.DraftID + ": " + assistant.OneLine(err.Error(), 300), Time: s.cfg.Now()})
 		st := c.state(s.cfg.Now())
@@ -478,6 +483,9 @@ func sentOutcome(sent *assistant.Sent) string {
 	if d := sent.Disrupted; d != nil {
 		if d.Alert != nil {
 			return "Published " + id + ": alert " + d.Alert.AlertID + ", ETA " + d.Alert.PreviousETA + " → " + d.Alert.NewETA + "."
+		}
+		if d.Applied {
+			return "Published " + id + ": the delay is applied, but its alert was not sent (don't publish it again)."
 		}
 		var sentTo, failed []string
 		for _, a := range d.Alerts {

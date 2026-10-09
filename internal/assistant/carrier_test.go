@@ -78,6 +78,9 @@ func (n *carrierNode) Disrupt(_ context.Context, req operator.DisruptRequest) (*
 		return &intents.TnTAlertBody{AlertID: "AL-" + ref[len(ref)-4:], Kind: intents.AlertDelay, Severity: intents.SeverityHigh, Summary: req.Reason,
 			PreviousETA: "2026-10-13T08:00:00Z", NewETA: "2026-10-16T08:00:00Z", CauseEventIDs: []string{"EV-1"}}
 	}
+	if req.Reason == "applied." {
+		return &operator.DisruptResponse{Applied: true, Error: "the delay is applied, but its alert was not sent"}, nil
+	}
 	if req.Voyage != "" {
 		return &operator.DisruptResponse{Alerts: []operator.VoyageAlert{{BookingRef: "OB-BKG-1044", Alert: alert("OB-BKG-1044")},
 			{BookingRef: "OB-BKG-1045", Applied: true, Error: "alert not sent"}}}, nil
@@ -168,6 +171,10 @@ func TestCarrierDraftDisruption(t *testing.T) {
 	if len(n.disrupted) != 0 {
 		t.Fatal("a draft published a delay")
 	}
+	if ev, _ := carrierCall(t, a, tools, fake.Call("1", ToolDraftDisruption, `{"voyage":"42w","vessel":"ocean blue aurora","delayHours":1,"reason":"x."}`)); ev.Draft == nil ||
+		ev.Draft.Disruption.Voyage != "42W" || ev.Draft.Disruption.Vessel != "Ocean Blue Aurora" {
+		t.Errorf("a voyage in another case: %+v", ev)
+	}
 	if ev, _ := carrierCall(t, a, tools, fake.Call("1", ToolDraftDisruption, `{"bookingRef":"OB-BKG-1042","delayHours":12,"reason":"Crane failure."}`)); ev.Draft == nil ||
 		strings.Join(ev.Draft.Disruption.Bookings, ",") != "OB-BKG-1042" {
 		t.Errorf("booking draft: %+v", ev)
@@ -237,6 +244,23 @@ func TestCarrierSend(t *testing.T) {
 			t.Errorf("%s: %v, kept %v", name, err, still == nil)
 		}
 	}
+	// One booking delayed without its alert: sent (it happened), and the
+	// report says not to publish again.
+	n.fail = nil
+	ev, _ = carrierCall(t, a, tools, fake.Call("1", ToolDraftDisruption, `{"bookingRef":"OB-BKG-1045","delayHours":1,"reason":"applied."}`))
+	sent, err = a.Send(context.Background(), ev.Draft.DraftID)
+	if err != nil || sent.Disrupted == nil || !sent.Disrupted.Applied {
+		t.Fatalf("applied: %+v, %v", sent, err)
+	}
+	a.Model = FakeCarrierModel()
+	if r, err := a.Report(context.Background(), &Conversation{}, sent); err != nil || !strings.Contains(r.Text, "don't publish it again") {
+		t.Errorf("applied report: %q, %v", r.Text, err)
+	}
+	// A carrier's assistant can't send a booking, even with a draft.
+	bd, _ := a.Drafts.add(Draft{Operator: "ocean-blue.example"})
+	if _, err := a.Send(context.Background(), bd.ID); err == nil {
+		t.Error("a carrier's assistant sent a booking")
+	}
 	// A shipper's assistant can't publish a delay, even with a draft.
 	s, _, _ := newAssistant(nil, &node{})
 	dr, _ := s.Drafts.add(Draft{Disruption: &Disruption{BookingRef: "OB-BKG-1", Delay: "1h0m0s", Reason: "x."}})
@@ -272,7 +296,7 @@ func TestControlCarrierNode(t *testing.T) {
 		t.Errorf("records: %+v, %v", r, err)
 	}
 	var ne *NodeError
-	if _, err := n.BookingRecords(ctx, "OB/../x"); !errors.As(err, &ne) || ne.Status != http.StatusNotFound {
+	if _, err := n.BookingRecords(ctx, "OB/../x"); !errors.As(err, &ne) || ne.Status != http.StatusNotFound || !strings.Contains(err.Error(), "no booking") {
 		t.Errorf("an unknown booking: %v", err)
 	}
 	if r, err := n.Disrupt(ctx, operator.DisruptRequest{Voyage: "42W", Delay: "1h0m0s", Reason: "x."}); err != nil || len(r.Alerts) != 1 || got.Voyage != "42W" {
@@ -306,6 +330,19 @@ func TestFakeCarrierScenes(t *testing.T) {
 	}
 	if r := turn("Delay OB-BKG-1042 by 12 hours"); len(r.Drafts) != 1 || r.Drafts[0].Disruption.Delay != "12h0m0s" || r.Drafts[0].Disruption.Reason != "Operational delay." {
 		t.Errorf("a booking's delay: %+v", r)
+	}
+	if r := turn("Is there a delay on OB-BKG-1045?"); len(r.Drafts) != 0 || !strings.Contains(r.Text, "**OB-BKG-1045**") {
+		t.Errorf("a question about a delay drafted one: %+v", r)
+	}
+	if r := turn("Delay voyage 42W"); len(r.Drafts) != 0 || !strings.Contains(r.Text, "How long") {
+		t.Errorf("a delay with no amount: %+v", r)
+	}
+	if r := turn("Delay: OB-BKG-1045 by 2 days"); len(r.Drafts) != 1 || r.Drafts[0].Disruption.Delay != "48h0m0s" || r.Drafts[0].Disruption.Reason != "Operational delay." {
+		t.Errorf("a colon before the amount: %+v", r.Drafts)
+	}
+	if r := turn("Please prepare a delay of 3 hours for OB-BKG-1045: crane failure"); len(r.Drafts) != 1 || r.Drafts[0].Disruption.Delay != "3h0m0s" ||
+		r.Drafts[0].Disruption.Reason != "Crane failure." {
+		t.Errorf("prepare a delay: %+v", r.Drafts)
 	}
 	if r := turn("hello"); !strings.Contains(r.Text, "prepare a delay") {
 		t.Errorf("hello: %q", r.Text)

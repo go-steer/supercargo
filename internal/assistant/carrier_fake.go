@@ -39,9 +39,12 @@ func FakeCarrierModel() *fake.Model {
 
 var (
 	voyagePattern = regexp.MustCompile(`\b[0-9]{1,3}[A-Z]\b`)
-	delayPattern  = regexp.MustCompile(`(?i)\b([0-9]{1,3}|one|two|three|four|five|six|seven)\s*(day|hour|h\b|d\b)`)
-	reasonPattern = regexp.MustCompile(`(?i)(?:reason[: ]+|: )(.+)$`)
-	delayWord     = regexp.MustCompile(`(?i)\b(?:delay|disrupt)\b`)
+	// delayPattern: an amount with its unit as a word ("3 days", "12
+	// hours"), so a voyage like 12D is never read as 12 days.
+	delayPattern = regexp.MustCompile(`(?i)\b([0-9]{1,3}|one|two|three|four|five|six|seven)\s+(days?|hours?|hrs?)\b`)
+	// delayWord: asked for, not asked about: a sentence starting "Delay…"
+	// or "Disrupt…", or "prepare/draft a delay".
+	delayWord = regexp.MustCompile(`(?i)(?:^|[.!?]\s+)(?:please\s+)?(?:delay|disrupt)\b|\b(?:prepare|draft)\b[^.?!]*\b(?:delay|disruption)\b`)
 )
 
 func carrierStep(msgs []llm.Message, user string, done []step) llm.GenerateResponse {
@@ -62,6 +65,9 @@ func carrierStep(msgs []llm.Message, user string, done []step) llm.GenerateRespo
 			return disruptionDraftReply(last.result.Content)
 		}
 		in := map[string]any{"delayHours": delayHours(user), "reason": reasonFrom(user)}
+		if delayPattern.FindString(user) == "" {
+			return say("How long is the delay? Tell me in days or hours.")
+		}
 		if ref != "" {
 			in["bookingRef"] = ref
 		} else {
@@ -101,13 +107,18 @@ func delayHours(user string) int {
 	return n
 }
 
+// reasonFrom is the text after the first colon that follows the delay's
+// amount ("by 3 days: engine repair"), else a plain one.
 func reasonFrom(user string) string {
-	if m := reasonPattern.FindStringSubmatch(user); m != nil {
-		r := strings.TrimSpace(m[1])
-		if !strings.HasSuffix(r, ".") {
-			r += "."
+	if loc := delayPattern.FindStringIndex(user); loc != nil {
+		if i := strings.Index(user[loc[1]:], ":"); i >= 0 {
+			if r := strings.TrimSpace(user[loc[1]+i+1:]); r != "" {
+				if !strings.HasSuffix(r, ".") {
+					r += "."
+				}
+				return strings.ToUpper(r[:1]) + r[1:]
+			}
 		}
-		return strings.ToUpper(r[:1]) + r[1:]
 	}
 	return "Operational delay."
 }
@@ -156,8 +167,13 @@ func disruptionReport(result string) llm.GenerateResponse {
 		return say("Done.")
 	}
 	alerts := r.Outcome.Alerts
-	if r.Outcome.Alert != nil {
+	switch {
+	case r.Outcome.Alert != nil:
 		return say("Published: alert %s, ETA %s → %s.", r.Outcome.Alert.AlertID, r.Outcome.Alert.PreviousETA, r.Outcome.Alert.NewETA)
+	case r.Outcome.Applied:
+		return say("The delay is applied, but its alert didn't go out: don't publish it again.")
+	case len(alerts) == 0:
+		return say("Published, but nothing came back about the bookings: check them.")
 	}
 	var sent, failed []string
 	for _, a := range alerts {

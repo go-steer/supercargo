@@ -65,7 +65,7 @@ func (n ControlCarrierNode) Bookings(ctx context.Context) ([]store.Summary, erro
 func (n ControlCarrierNode) BookingRecords(ctx context.Context, ref string) (*operator.BookingRecordsResponse, error) {
 	var r operator.BookingRecordsResponse
 	if err := n.node().do(ctx, http.MethodGet, "/bookings/"+url.PathEscape(ref)+"/events", nil, &r); err != nil {
-		return nil, err
+		return nil, withMessage(err, r.Error)
 	}
 	return &r, nil
 }
@@ -74,7 +74,7 @@ func (n ControlCarrierNode) BookingRecords(ctx context.Context, ref string) (*op
 func (n ControlCarrierNode) Disrupt(ctx context.Context, req operator.DisruptRequest) (*operator.DisruptResponse, error) {
 	var r operator.DisruptResponse
 	if err := n.node().do(ctx, http.MethodPost, "/disrupt", req, &r); err != nil {
-		return nil, err
+		return nil, withMessage(err, r.Error)
 	}
 	return &r, nil
 }
@@ -95,7 +95,7 @@ var CarrierTools = []llm.Tool{
 			`"voyage":{"type":"string","maxLength":16,"description":"e.g. 42W"},` +
 			`"port":{"type":"string","maxLength":5,"description":"UN/LOCODE of the port of loading or discharge, e.g. NLRTM"},` +
 			`"arrivingBefore":{"type":"string","maxLength":10,"description":"YYYY-MM-DD: the ETA is before this day"},` +
-			`"delayed":{"type":"boolean","description":"only bookings with a delay alert"}` +
+			`"delayed":{"type":"boolean","description":"only bookings with an alert published"}` +
 			`},"additionalProperties":false}`)},
 	{Name: ToolGetBooking, Description: "One of our bookings: the summary and what we published for it (events and alerts), oldest first, the latest 30.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"bookingRef":{"type":"string","maxLength":64}},"required":["bookingRef"],"additionalProperties":false}`)},
@@ -215,8 +215,14 @@ func (a *Assistant) draftDisruption(ctx context.Context, raw json.RawMessage) (a
 	d := Disruption{BookingRef: in.BookingRef, Vessel: in.Vessel, Voyage: in.Voyage, Delay: delay.String(), Reason: fold(in.Reason), Bookings: []string{}}
 	for _, s := range all {
 		switch {
-		case in.BookingRef != "" && s.Ref == in.BookingRef,
-			in.Voyage != "" && s.Voyage == in.Voyage && (in.Vessel == "" || s.Vessel == in.Vessel) && !arrived(s):
+		case in.BookingRef != "" && s.Ref == in.BookingRef:
+			d.Bookings = append(d.Bookings, s.Ref)
+		case in.Voyage != "" && strings.EqualFold(s.Voyage, in.Voyage) && (in.Vessel == "" || strings.EqualFold(s.Vessel, in.Vessel)) && !arrived(s):
+			// As list_bookings matches; the node matches the stored spelling.
+			d.Voyage = s.Voyage
+			if in.Vessel != "" {
+				d.Vessel = s.Vessel
+			}
 			d.Bookings = append(d.Bookings, s.Ref)
 		}
 	}

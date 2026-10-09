@@ -93,6 +93,13 @@ func TestCarrierAssistant(t *testing.T) {
 	if rec := do(h, http.MethodGet, "/ui/api/assistant/progress?side=operator", "", alex); rec.Code != http.StatusForbidden {
 		t.Errorf("a shipper reading the carrier's progress: HTTP %d", rec.Code)
 	}
+	// Only side=operator is the operator side; anything else is the
+	// customer side, and needs the shipper role.
+	for _, q := range []string{"?side=Operator", "?side=", "?side=customer&side=operator", ""} {
+		if code, _ := post(h, "/ui/api/assistant/turn"+q, map[string]string{"text": "hi"}, sam); code != http.StatusForbidden {
+			t.Errorf("sam on %q: HTTP %d", q, code)
+		}
+	}
 	code, st := post(h, "/ui/api/assistant/turn?side=operator", map[string]string{"text": "Delay voyage 42W by 3 days: engine repair"}, sam)
 	if code != http.StatusOK || len(st.Drafts) != 1 || st.Drafts[0].Disruption == nil || st.Drafts[0].DraftID != "DD-0001" {
 		t.Fatalf("draft: HTTP %d %+v", code, st)
@@ -116,6 +123,10 @@ func TestCarrierAssistant(t *testing.T) {
 	if note := st.Lines[len(st.Lines)-2].Text; note != "Published DD-0001: signed alerts for OB-BKG-1." {
 		t.Errorf("the transcript's note: %q", note)
 	}
+	// A booking draft's ID on the operator side: no such draft there.
+	if code, _ := post(h, "/ui/api/assistant/send?side=operator", SendRequest{DraftID: "BD-0001"}, sam); code != http.StatusNotFound {
+		t.Errorf("a booking draft through the operator side: HTTP %d", code)
+	}
 	// Jo has a conversation on each side, apart.
 	_, cs := post(h, "/ui/api/assistant/turn", map[string]string{"text": "hello"}, jo)
 	_, os := post(h, "/ui/api/assistant/turn?side=operator", map[string]string{"text": "hello"}, jo)
@@ -128,6 +139,8 @@ func TestSentOutcome(t *testing.T) {
 	alert := &intents.TnTAlertBody{AlertID: "AL-9", PreviousETA: "a", NewETA: "b"}
 	for want, s := range map[string]*assistant.Sent{
 		"Published DD-0002: alert AL-9, ETA a → b.": {Draft: assistant.Draft{ID: "DD-0002"}, Disrupted: &operator.DisruptResponse{Alert: alert}},
+		"Published DD-0005: the delay is applied, but its alert was not sent (don't publish it again).": {Draft: assistant.Draft{ID: "DD-0005"},
+			Disrupted: &operator.DisruptResponse{Applied: true}},
 		"Published DD-0003: no alerts went out. OB-1 not delayed.": {Draft: assistant.Draft{ID: "DD-0003"},
 			Disrupted: &operator.DisruptResponse{Alerts: []operator.VoyageAlert{{BookingRef: "OB-1"}}}},
 		"Published DD-0004: signed alerts for OB-1. OB-2 DELAYED, alert not sent (don't publish again).": {Draft: assistant.Draft{ID: "DD-0004"},

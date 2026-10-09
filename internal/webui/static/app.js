@@ -675,7 +675,9 @@ function renderChat() {
   if (currentTab() !== 'assistant') return;
   const side = state.activeSide, chat = state.chats[side], words = ASSISTANT[side];
   if (!chat || !words) return;
-  const busy = state.thinking === side;
+  // One turn at a time in this page: every side's composer waits, and the
+  // turn's own side shows its progress.
+  const busy = !!state.thinking, mine = state.thinking === side;
   const left = $('left');
   const keep = left.querySelector('textarea')?.value || '';
   left.className = 'panel tall ai';
@@ -699,7 +701,7 @@ function renderChat() {
     }
     body.appendChild(t);
   }
-  if (busy) {
+  if (mine) {
     // What the assistant is doing: the calls so far, the one running, or
     // (between them) the model thinking.
     const p = state.progress || {};
@@ -746,21 +748,28 @@ function watchProgress(side) {
 }
 
 async function chatTurn(text) {
-  const side = state.activeSide;
+  const side = state.activeSide, gen = state.gen;
   const chat = state.chats[side];
+  if (state.thinking || !chat) return;
   state.thinking = side;
   watchProgress(side);
   chat.lines = [...(chat.lines || []), { who: 'you', text, time: new Date().toISOString() }];
   renderChat();
   try {
-    state.chats[side] = await api(aq(side, '/turn'), { method: 'POST', body: JSON.stringify({ text }) });
+    const r = await api(aq(side, '/turn'), { method: 'POST', body: JSON.stringify({ text }) });
+    if (gen !== state.gen) return; // signed out meanwhile: not this session's
+    state.chats[side] = r;
   } catch (e) {
+    if (gen !== state.gen) return;
     chat.lines.push({ who: 'note', text: e.message, time: new Date().toISOString() });
   } finally {
-    state.thinking = false;
-    state.progress = null;
-    renderChat();
+    if (gen === state.gen) {
+      state.thinking = false;
+      state.progress = null;
+      renderChat();
+    }
   }
+  if (gen !== state.gen) return;
   // A new draft opens its dialog, as in ulpchat.
   const newest = (state.chats[side].drafts || []).at(-1);
   if (newest && !state.shownDrafts?.has(newest.draftId)) { (state.shownDrafts ??= new Set()).add(newest.draftId); draftDialog(newest, side); }
@@ -892,9 +901,9 @@ function disruptionDraftDialog(d, side) {
   const scope = x.voyage ? `the whole voyage: ${x.vessel || ''} ${x.voyage}`.replace('  ', ' ') : `booking ${x.bookingRef}`;
   const rows = [
     ['Delay:', scope], ['How long:', x.delay.replace(/0m0s$/, '').replace(/h$/, ' hours')], ['Reason:', x.reason],
-    ['Bookings:', (x.bookings || []).join(', ')],
-    ['', x.voyage ? 'Each customer gets a signed delay alert with this reason; the node delays only bookings still under way.'
-      : 'The customer gets a signed delay alert with this reason, and the arrival estimate moves.', 'notsent'],
+    ['Bookings:', (x.bookings || []).join(', ') + (x.voyage ? '  (as of the draft)' : '')],
+    ['', x.voyage ? 'When you publish, the node delays every booking still under way on this voyage, and each customer gets a signed alert with this reason.'
+      : 'The customer gets a signed delay alert with this reason, and the arrival estimate moves.', 'scope'],
   ];
   let dlg = null;
   const via = chatVia(side);

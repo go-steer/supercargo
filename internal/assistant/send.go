@@ -71,6 +71,10 @@ func (a *Assistant) Send(ctx context.Context, id string) (sent *Sent, err error)
 	if d.Disruption != nil {
 		return a.sendDisruption(ctx, d)
 	}
+	if a.Node == nil {
+		a.Drafts.Put(d)
+		return nil, errors.New("not sent: this assistant can't send bookings")
+	}
 	resp, err := a.Node.Book(ctx, shipper.BookRequest{Operator: d.Operator, Request: d.Request})
 	if err != nil {
 		return nil, a.notSent(d, err)
