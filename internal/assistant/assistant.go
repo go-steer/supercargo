@@ -336,10 +336,10 @@ func (a *Assistant) generate(ctx context.Context, c *Conversation, round int) (l
 		InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens,
 		LatencyMS: time.Since(start).Round(time.Millisecond).Milliseconds(), Outcome: "ok", Skills: skillIDs}
 	if err != nil {
-		m.Outcome, m.Reason = "error", err.Error()
-	}
-	for _, tc := range resp.ToolCalls {
-		m.Tools = append(m.Tools, OneLine(tc.Name, 64))
+		// One capped line: a provider's error can carry a whole response.
+		m.Outcome, m.Reason = "error", OneLine(err.Error(), 200)
+	} else {
+		m.Tools = toolNames(resp.ToolCalls)
 	}
 	span.End(resp, m.Outcome)
 	if a.OnModelCall != nil {
@@ -492,4 +492,24 @@ func toolStatus(err error) string {
 		return "refused"
 	}
 	return "failed"
+}
+
+// toolNames are the tools a reply asked for, as the node's activity shows
+// them: a model's name for a tool is its output, so only declared tools
+// are named (anything else could carry the conversation onto the shared
+// stream), at most MaxCallsPerRound of them.
+func toolNames(calls []llm.ToolCall) []string {
+	var out []string
+	for i, c := range calls {
+		if i == MaxCallsPerRound {
+			out = append(out, fmt.Sprintf("+%d more", len(calls)-i))
+			break
+		}
+		name := "(unknown tool)"
+		if slices.ContainsFunc(Tools, func(t llm.Tool) bool { return t.Name == c.Name }) {
+			name = c.Name
+		}
+		out = append(out, name)
+	}
+	return out
 }

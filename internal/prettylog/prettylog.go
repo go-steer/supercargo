@@ -287,7 +287,12 @@ func (h *Handler) model(rec record) string {
 	if a := rec.get("agent"); a != "" {
 		line += a + "  "
 	}
-	line += fmt.Sprintf("%s  %s  %s  %s→%s tokens", rec.get("model"), rec.get("booking"), rec.get("latency"), rec.get("inputTokens"), rec.get("outputTokens"))
+	for _, p := range []string{rec.get("model"), rec.get("booking"), rec.get("latency")} {
+		if p != "" {
+			line += p + "  "
+		}
+	}
+	line += fmt.Sprintf("%s→%s tokens", rec.get("inputTokens"), rec.get("outputTokens"))
 	if t := rec.get("tools"); t != "" && t != "[]" {
 		line += "  tools " + t
 	}

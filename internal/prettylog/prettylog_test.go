@@ -66,7 +66,7 @@ func story(l *slog.Logger) {
 		{Envelope: &activity.Envelope{Direction: "in", Intent: "ulp.tnt.event", Sender: "ocean-blue.example", KID: "ob-demo-1", Outcome: "rejected", Code: "bad_signature", Reason: "signature does not verify"}},
 		{Envelope: &activity.Envelope{Direction: "in", Outcome: "malformed", Reason: "not a JWS"}},
 		{Model: &activity.Model{Booking: "OB-BKG-1042", Attempt: 2, Model: "anthropic:claude", LatencyMS: 1500, Outcome: "invalid", Reason: "cites EV-9"}},
-		{Model: &activity.Model{Agent: "assistant · alex", Tools: []string{"find_partners", "list_partners"}, Booking: "OB-BKG-1042", Attempt: 2, Model: "anthropic:claude", Outcome: "error", Reason: "timeout"}},
+		{Model: &activity.Model{Agent: "assistant · alex", Tools: []string{"find_partners", "list_partners"}, Attempt: 2, Model: "anthropic:claude", Outcome: "error", Reason: "timeout"}},
 		{Summary: &activity.Summary{Booking: "OB-BKG-1", Impact: "unknown", GeneratedBy: "template", Text: "Customs hold.\u001b[2J\nNext",
 			UnheldCauses: []string{"EV-404"}}},
 		// Refused after verifying, but not by authorization: REFUSED.
