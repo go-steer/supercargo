@@ -80,7 +80,7 @@ def seal(payload: bytes, key, alg=ALG, kid=KID, typ=TYP):
 def header(intent, sender, receiver, booking_ref=None, in_reply_to=None, correlation_id=None):
     mid = str(uuid.uuid4())
     return {
-        "ulpVersion": "0.3-demo",
+        "ulpVersion": "0.4-demo",
         "intent": intent,
         "messageId": mid,
         "correlationId": correlation_id or mid,

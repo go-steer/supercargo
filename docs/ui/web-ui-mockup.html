@@ -468,7 +468,7 @@ function messageRow(m) {
     const header = { ulpVersion: '0.3-demo', intent, messageId: '4fb028ff-96d9-4d5d-8930-5a9fe33a069e', correlationId: '9e1c…',
       sender: dir === 'out' ? views[current].domain : peer, receiver: dir === 'out' ? peer : views[current].domain,
       sentAt: '2026-10-08T' + time.slice(0, 8) + 'Z', bookingRef: 'OB-BKG-1042',
-      dialect: family(intent) === 'tnt' || family(intent) === 'alert' ? null : intent.includes('confirmation') ? { standard: 'DCSA_OCEAN_CONTAINER', version: '0.0.1' } : null };
+      dialect: family(intent) === 'tnt' || family(intent) === 'alert' ? null : intent.includes('confirmation') ? { standard: 'DCSA_OCEAN_CONTAINER', version: '2.0.0' } : null };
     const views3 = { payload: jsonBlock(body), header: jsonBlock(header), raw };
     let shown = views3.payload; detail.appendChild(shown);
     for (const [b, k] of [[bPay, 'payload'], [bHdr, 'header'], [bRaw, 'raw']]) {

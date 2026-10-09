@@ -116,7 +116,7 @@ if $tmux; then
   echo "the sentences); answer y in the dialog. Once Cymbal's log (bottom left) shows"
   echo "the departure, press Enter in the bottom-right pane to disrupt, then ask the"
   echo "assistant: Ask ocean-blue.example why OB-BKG-1042 is delayed."
-  echo "Browser UIs: $ob_ui (Sam) and $cy_ui (Alex)."
+  echo "Browser UIs: $ob_ui (Sam) and $cy_ui (Alex); presenter: $(web_origin "$OP_PORT")/ui/presenter.$proxy_note"
   [[ -n "${HELLO_ULP_NO_ATTACH:-}" ]] && exit 0 # tests
   exec tmux attach -t "$session"
 fi

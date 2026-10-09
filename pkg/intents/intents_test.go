@@ -17,6 +17,7 @@ package intents
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -129,6 +130,48 @@ func TestDecodeConfirmationAndError(t *testing.T) {
 	if _, err := Decode(withRef); err != nil {
 		t.Errorf("an error may name a booking: %v", err)
 	}
+	// A confirmation's dialect is exactly the eBL's: absent, another
+	// version or another standard is refused.
+	for name, d := range map[string]*envelope.Dialect{
+		"no dialect":       nil,
+		"another version":  {Standard: DialectDCSAEBL.Standard, Version: "0.0.1", SchemaURL: DialectDCSAEBL.SchemaURL},
+		"another standard": {Standard: DialectDCSATnT.Standard, Version: DialectDCSAEBL.Version, SchemaURL: DialectDCSAEBL.SchemaURL},
+	} {
+		env := confirmation(confirmationJSON)
+		env.Header.Dialect = d
+		if _, err := Decode(env); !errors.Is(err, ErrInvalidBody) || !strings.Contains(err.Error(), "dialect") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// TestGoldenMatchesCode: the golden vectors carry this code's protocol
+// version and eBL dialect, so regenerating them can't be forgotten.
+func TestGoldenMatchesCode(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/golden/envelope.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Vectors []struct{ Name, Payload string }
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range file.Vectors {
+		if v.Name != "confirmation_numbers" {
+			continue
+		}
+		var p struct{ Header envelope.Header }
+		if err := json.Unmarshal([]byte(v.Payload), &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Header.ULPVersion != envelope.Version || p.Header.Dialect == nil || *p.Header.Dialect != DialectDCSAEBL {
+			t.Errorf("golden confirmation: version %q, dialect %+v; the code says %q, %+v", p.Header.ULPVersion, p.Header.Dialect, envelope.Version, DialectDCSAEBL)
+		}
+		return
+	}
+	t.Fatal("no confirmation_numbers vector")
 }
 
 func TestSupported(t *testing.T) {

@@ -304,7 +304,7 @@ It is deliberately not an "allow private networks" switch: only the listed domai
 
 ```json
 {
-  "protocolVersion": "0.3-demo",
+  "protocolVersion": "0.4-demo",
   "party": { "domain": "ocean-blue.example", "name": "Ocean Blue", "roles": ["operator"] },
   "services": [{
     "name": "ulp.freight",
@@ -312,9 +312,9 @@ It is deliberately not an "allow private networks" switch: only the listed domai
     "extensions": []
   }],
   "capabilities": [
-    { "name": "dev.ulp.logistics.shipment", "version": "0.3-demo",
+    { "name": "dev.ulp.logistics.shipment", "version": "0.4-demo",
       "tags": ["ulp:service", "ulp:dcsa:container-booking", "ulp:transport:rest"] },
-    { "name": "dev.ulp.logistics.tracking", "version": "0.3-demo",
+    { "name": "dev.ulp.logistics.tracking", "version": "0.4-demo",
       "spec_url": "https://dcsa.org/standards/track-and-trace",
       "tags": ["ulp:service", "ulp:dcsa:track-and-trace", "ulp:transport:rest", "ulp:transport:a2a"] }
   ],
@@ -379,7 +379,7 @@ The **payload** (base64url JSON) is the envelope content:
 ```json
 {
   "header": {
-    "ulpVersion": "0.3-demo",
+    "ulpVersion": "0.4-demo",
     "intent": "ulp.tnt.inquiry",
     "messageId": "8f1c2e9a-5b7d-4f0e-9c3a-2d6b8e1f4a77",
     "correlationId": "8f1c2e9a-…",

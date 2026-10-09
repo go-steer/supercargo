@@ -53,7 +53,7 @@ func profileMap(t testing.TB, kids ...string) map[string]any {
 		keys = append(keys, m)
 	}
 	return map[string]any{
-		"protocolVersion": "0.3-demo",
+		"protocolVersion": "0.4-demo",
 		"party":           map[string]any{"domain": domain, "name": "Ocean Blue", "roles": []any{"operator"}},
 		"services": []any{map[string]any{
 			"name":       "ulp.freight",
@@ -61,9 +61,9 @@ func profileMap(t testing.TB, kids ...string) map[string]any {
 			"extensions": []any{},
 		}},
 		"capabilities": []any{
-			map[string]any{"name": "dev.ulp.logistics.shipment", "version": "0.3-demo",
+			map[string]any{"name": "dev.ulp.logistics.shipment", "version": "0.4-demo",
 				"tags": []any{"ulp:service", "ulp:dcsa:container-booking", "ulp:transport:rest"}},
-			map[string]any{"name": "dev.ulp.logistics.tracking", "version": "0.3-demo",
+			map[string]any{"name": "dev.ulp.logistics.tracking", "version": "0.4-demo",
 				"spec_url": "https://dcsa.org/standards/track-and-trace", "tags": []any{"ulp:service", "ulp:transport:a2a"}},
 		},
 		"supported_dialects": []any{"DCSA_OCEAN_CONTAINER", "DCSA_TNT"},
@@ -260,7 +260,7 @@ func TestParseProfileRejects(t *testing.T) {
 	}
 	good := encode(t, profileMap(t))
 	for name, in := range map[string][]byte{
-		"duplicate member": []byte(strings.Replace(string(good), `"protocolVersion":"0.3-demo"`, `"protocolVersion":"0.1","protocolVersion":"0.3-demo"`, 1)),
+		"duplicate member": []byte(strings.Replace(string(good), `"protocolVersion":"0.4-demo"`, `"protocolVersion":"0.1","protocolVersion":"0.4-demo"`, 1)),
 		"not JSON":         []byte("profile"),
 		"oversize":         append(good[:len(good)-1], []byte(`,"pad":"`+strings.Repeat("x", MaxProfileSize)+`"}`)...),
 	} {

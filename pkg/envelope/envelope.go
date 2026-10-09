@@ -48,7 +48,7 @@ import (
 
 const (
 	// Version is the ulpVersion this package produces and accepts.
-	Version = "0.3-demo"
+	Version = "0.4-demo"
 
 	// Type is the JWS "typ" of an envelope. A distinct typ keeps any other
 	// JWS, a delegation token in particular, from being taken for one.
