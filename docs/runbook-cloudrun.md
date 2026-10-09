@@ -110,6 +110,12 @@ in your project:
   Manager and Vertex AI.
 - **Service accounts:** creates `ulp-ocean-blue@…` and `ulp-cymbal-shoes@…`.
   Each gets `roles/aiplatform.user`, and can read only its own secrets.
+  A new account takes up to a couple of minutes to be usable in IAM, so
+  the script retries those bindings.
+- **Cloud Build:** grants Cloud Build's account
+  (`<project number>-compute@developer.gserviceaccount.com`) what it needs
+  to push the image and write its logs. New projects no longer give that
+  account Editor.
 - **Signing keys:** makes each company's Ed25519 signing key locally, puts
   it straight into Secret Manager (`ulp-ob-signing-key`,
   `ulp-cy-signing-key`), and deletes the local copy. A re-run never

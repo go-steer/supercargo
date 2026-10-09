@@ -47,11 +47,14 @@ func googleClient(cfg *config.Config) (*googleauth.Client, error) {
 	return &googleauth.Client{ID: g.ClientID, Secret: secret}, nil
 }
 
-// secretFrom reads a secret from its environment variable, or from its
-// file, which must be its owner's alone. from names where it came from.
+// secretFrom reads a secret from its environment variable (then unset, so
+// no process the node starts inherits it), or from its file, which must be
+// its owner's alone. from names where it came from.
 func secretFrom(env, file string) (secret, from string, err error) {
 	if env != "" {
-		return os.Getenv(env), env, nil
+		secret = os.Getenv(env)
+		_ = os.Unsetenv(env)
+		return secret, env, nil
 	}
 	fi, err := os.Stat(file)
 	if err != nil {

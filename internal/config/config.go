@@ -51,7 +51,8 @@ const (
 	TLSInsecureDev = "insecure-dev" // plain HTTP everywhere: nothing ties a profile to its domain
 	// TLSProxy serves plain HTTP on the listener, behind a proxy that
 	// serves https at the node's domain (Cloud Run, #38); outbound is https,
-	// verified against the system roots (or caFile).
+	// verified against the system roots (or caFile). Only ever behind such
+	// a proxy: the listener itself has no TLS.
 	TLSProxy = "proxy"
 )
 
@@ -935,8 +936,10 @@ func LoadSigningKey(path string) (ed25519.PrivateKey, error) {
 }
 
 // LoadSigningKeyEnv reads the node's Ed25519 private key, a PKCS#8 PEM
-// block, from environment variable name, and then removes the variable,
-// so nothing the node starts later inherits it.
+// block, from environment variable name, and then unsets the variable, so
+// no process the node starts inherits it. (The process's initial
+// environment, /proc/self/environ, still holds it: only its own user can
+// read that.)
 func LoadSigningKeyEnv(name string) (ed25519.PrivateKey, error) {
 	data, ok := os.LookupEnv(name)
 	if !ok || data == "" {

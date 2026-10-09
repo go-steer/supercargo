@@ -45,13 +45,17 @@ LLM_LOCATION="${LLM_LOCATION:-global}"
 LLM_MODEL="${LLM_MODEL:-gemini-3.8-flash}"
 HPS="${HOURS_PER_SECOND:-1}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TAG="${TAG:-$(git -C "$root" rev-parse --short HEAD)}"
+if [[ -z "${TAG:-}" ]]; then
+  TAG="$(git -C "$root" rev-parse --short HEAD)"
+  git -C "$root" diff --quiet HEAD || TAG+="-dirty"
+fi
 
 [[ $PROJECT =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || { echo "PROJECT $PROJECT is not a project ID" >&2; exit 1; }
 [[ $REGION =~ ^[a-z]+-[a-z]+[0-9]$ ]] || { echo "REGION $REGION is not a region" >&2; exit 1; }
 [[ $GOOGLE_CLIENT_ID =~ ^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$ ]] || { echo "GOOGLE_CLIENT_ID is not an OAuth client ID" >&2; exit 1; }
 [[ $LLM_MODEL =~ ^[a-z0-9.-]+$ && $LLM_LOCATION =~ ^[a-z0-9-]+$ && $HPS =~ ^[0-9]+$ ]] || { echo "LLM_MODEL, LLM_LOCATION or HOURS_PER_SECOND is malformed" >&2; exit 1; }
 members=""
+[[ $MEMBERS != *$'\n'* ]] || { echo "MEMBERS: one line, comma-separated" >&2; exit 1; }
 IFS=',' read -ra list <<<"$MEMBERS"
 for m in "${list[@]}"; do
   m="$(echo "$m" | tr -d ' ' | tr '[:upper:]' '[:lower:]')"
@@ -60,6 +64,17 @@ for m in "${list[@]}"; do
 done
 
 gc() { gcloud --project "$PROJECT" --quiet "$@"; }
+# retry CMD...: CMD, again every 10 s for up to 2 minutes (IAM is eventually
+# consistent: a new service account isn't usable at once).
+retry() {
+  local i
+  for i in $(seq 12); do
+    "$@" >/dev/null 2>"$work/retry.err" && return 0
+    sleep 10
+  done
+  cat "$work/retry.err" >&2
+  return 1
+}
 step() { printf '\n\033[1m▸ %s\033[0m\n' "$*"; }
 
 number="${PROJECT_NUMBER:-}"
@@ -169,7 +184,14 @@ for svc in ocean-blue cymbal-shoes; do
   sa="ulp-$svc@$PROJECT.iam.gserviceaccount.com"
   gc iam service-accounts describe "$sa" >/dev/null 2>&1 ||
     gc iam service-accounts create "ulp-$svc" --display-name "supercargo $svc node"
-  gc projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$sa" --role roles/aiplatform.user --condition None >/dev/null
+  # A new account takes a while to be usable in IAM bindings.
+  retry gc projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$sa" --role roles/aiplatform.user --condition None
+done
+
+step "Cloud Build's account (pushes the image, writes its logs)"
+build_sa="$number-compute@developer.gserviceaccount.com"
+for role in roles/artifactregistry.writer roles/logging.logWriter roles/storage.objectViewer; do
+  retry gc projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$build_sa" --role "$role" --condition None
 done
 
 # grant NAME SVC...: the services' accounts may read secret NAME.
@@ -177,8 +199,8 @@ grant() {
   local name=$1 svc
   shift
   for svc in "$@"; do
-    gc secrets add-iam-policy-binding "$name" --member "serviceAccount:ulp-$svc@$PROJECT.iam.gserviceaccount.com" \
-      --role roles/secretmanager.secretAccessor >/dev/null
+    retry gc secrets add-iam-policy-binding "$name" --member "serviceAccount:ulp-$svc@$PROJECT.iam.gserviceaccount.com" \
+      --role roles/secretmanager.secretAccessor
   done
 }
 
@@ -189,8 +211,11 @@ secret() {
   shift 2
   if ! gc secrets describe "$name" >/dev/null 2>&1; then
     gc secrets create "$name" --replication-policy automatic --data-file "$file" >/dev/null
-  elif ! cmp -s "$file" <(gc secrets versions access latest --secret "$name"); then
-    gc secrets versions add "$name" --data-file "$file" >/dev/null
+  else
+    rm -f "$work/current"
+    gc secrets versions access latest --secret "$name" --out-file "$work/current"
+    cmp -s "$file" "$work/current" || gc secrets versions add "$name" --data-file "$file" >/dev/null
+    rm -f "$work/current"
   fi
   grant "$name" "$@"
 }
@@ -208,7 +233,9 @@ done
 
 step "The OAuth client's secret"
 if ! gc secrets describe ulp-google-client-secret >/dev/null 2>&1; then
-  read -rsp "Paste the OAuth client's secret (not echoed): " client_secret
+  [[ -t 0 ]] || { echo "the OAuth client's secret isn't in Secret Manager yet: run this interactively once to paste it" >&2; exit 1; }
+  client_secret=""
+  read -rsp "Paste the OAuth client's secret (not echoed): " client_secret || true
   echo
   [[ -n $client_secret ]] || { echo "no secret given" >&2; exit 1; }
   (umask 077 && printf '%s' "$client_secret" >"$work/client-secret")
