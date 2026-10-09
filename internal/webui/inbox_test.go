@@ -63,8 +63,22 @@ func TestInbox(t *testing.T) {
 	if len(r.Drafts) != 1 || r.Drafts[0].DraftID != "MD-0001" {
 		t.Fatalf("inbox: %+v", r)
 	}
+	// Listing the inbox, or another session's dialog, starts nothing for
+	// this session; only its own dialog's fetch does.
+	jo := login(t, h, "jo")
+	_ = do(h, http.MethodGet, "/ui/api/inbox/draft?id=MD-0001", "", jo)
+	*now = now.Add(ArmDelay)
+	if code, _ := inboxPost(h, "/ui/api/inbox/send", "MD-0001", alex); code != http.StatusTooEarly {
+		t.Errorf("a send armed by another page: HTTP %d", code)
+	}
+	if rec := do(h, http.MethodGet, "/ui/api/inbox/draft?id=MD-0001", "", alex); rec.Code != http.StatusOK {
+		t.Fatalf("the dialog's fetch: HTTP %d", rec.Code)
+	}
 	if code, _ := inboxPost(h, "/ui/api/inbox/send", "MD-0001", alex); code != http.StatusTooEarly {
 		t.Errorf("a send at once: HTTP %d", code)
+	}
+	if rec := do(h, http.MethodGet, "/ui/api/inbox/draft?id=MD-0099", "", alex); rec.Code != http.StatusNotFound {
+		t.Errorf("an unknown draft's fetch: HTTP %d", rec.Code)
 	}
 	*now = now.Add(ArmDelay)
 	for name, c := range map[string]struct {
@@ -106,7 +120,7 @@ func TestInbox(t *testing.T) {
 	// A failed send says so.
 	n.fail = &assistant.NodeError{Status: http.StatusBadRequest, Message: "refused"}
 	inbox.RunTool(context.Background(), assistant.NewExternal(), assistant.ToolDraftBooking, draft)
-	_ = do(h, http.MethodGet, "/ui/api/inbox", "", alex)
+	_ = do(h, http.MethodGet, "/ui/api/inbox/draft?id=MD-0003", "", alex)
 	*now = now.Add(ArmDelay)
 	if code, r := inboxPost(h, "/ui/api/inbox/send", "MD-0003", alex); code != http.StatusBadGateway || r.Error == "" {
 		t.Errorf("a refused send: HTTP %d %+v", code, r)
@@ -128,5 +142,8 @@ func TestInbox(t *testing.T) {
 	}
 	if code, _ := inboxPost(plain, "/ui/api/inbox/send", "MD-0001", c); code != http.StatusConflict {
 		t.Errorf("a send with no inbox: HTTP %d", code)
+	}
+	if rec := do(plain, http.MethodGet, "/ui/api/inbox/draft?id=MD-0001", "", c); rec.Code != http.StatusNotFound {
+		t.Errorf("a draft with no inbox: HTTP %d", rec.Code)
 	}
 }

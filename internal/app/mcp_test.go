@@ -81,7 +81,7 @@ web:
 	cancel()
 	found := false
 	for _, e := range past {
-		if e.Kind == activity.KindTool && e.Tool.Outcome == "drafted" && e.Tool.Draft == "MD-0001" && e.Side == activity.SideCustomer {
+		if e.Kind == activity.KindTool && e.Tool.Outcome == "drafted" && strings.HasPrefix(e.Tool.Draft, "MD") && e.Side == activity.SideCustomer {
 			found = true
 		}
 	}
@@ -104,12 +104,14 @@ web:
 	cookie := ui(http.MethodPost, "/ui/api/login", `{"persona":"alex"}`, nil).Result().Cookies()[0]
 	var inbox webui.InboxResponse
 	_ = json.Unmarshal(ui(http.MethodGet, "/ui/api/inbox", "", cookie).Body.Bytes(), &inbox)
-	if len(inbox.Drafts) != 1 || inbox.Drafts[0].DraftID != "MD-0001" {
+	if len(inbox.Drafts) != 1 || !strings.HasPrefix(inbox.Drafts[0].DraftID, "MD") || !strings.HasSuffix(inbox.Drafts[0].DraftID, "-0001") {
 		t.Fatalf("inbox: %+v", inbox)
 	}
-	rec := ui(http.MethodPost, "/ui/api/inbox/send", `{"draftId":"MD-0001"}`, cookie)
+	id := inbox.Drafts[0].DraftID
+	_ = ui(http.MethodGet, "/ui/api/inbox/draft?id="+id, "", cookie) // the dialog opens
+	rec := ui(http.MethodPost, "/ui/api/inbox/send", `{"draftId":"`+id+`"}`, cookie)
 	_ = json.Unmarshal(rec.Body.Bytes(), &inbox)
-	if rec.Code != http.StatusOK || !strings.Contains(inbox.Note, "Sent MD-0001 to ocean-blue.example") || len(inbox.Drafts) != 0 {
+	if rec.Code != http.StatusOK || !strings.Contains(inbox.Note, "Sent "+id+" to ocean-blue.example") || len(inbox.Drafts) != 0 {
 		t.Fatalf("send: HTTP %d %+v", rec.Code, inbox)
 	}
 	if p.operator.Carrier.Bookings.Len() != 1 || p.shipper.Customer.Bookings.Len() != 1 {

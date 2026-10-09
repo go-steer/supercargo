@@ -17,8 +17,6 @@ package assistant
 import (
 	"context"
 	"encoding/json"
-	"sync"
-	"time"
 
 	"github.com/go-steer/supercargo/internal/llm"
 )
@@ -33,22 +31,13 @@ import (
 // caller it gives way to what already guards every effect: tools only
 // draft, a person confirms each draft in the node's own UI (which marks a
 // partner new to us), and a question goes only to the carrier of one of
-// our bookings. Questions to carriers are also rate-limited per session.
-
-// MaxExternalAsks bounds the questions to carriers one outside session
-// sends in ExternalAskWindow.
-const (
-	MaxExternalAsks   = 10
-	ExternalAskWindow = 10 * time.Minute
-)
+// our bookings. The caller bounds the calls that reach other companies.
 
 // External is an outside agent's session: its own conversation state (the
-// partners it found) and its own rate limit.
+// partners it found). How much it may reach other companies is the
+// caller's to bound, node-wide (internal/mcpserver).
 type External struct {
-	conv  Conversation
-	askMu sync.Mutex // one question at a time, so the count holds
-	mu    sync.Mutex
-	asks  []time.Time
+	conv Conversation
 }
 
 // NewExternal starts an outside agent's session.
@@ -59,11 +48,15 @@ func NewExternal() *External {
 }
 
 // ToolOutcome is one tool call run for an outside agent: the result (or
-// the refusal, IsError) as the model would see it, and the draft it made.
+// the refusal, IsError) as the model would see it, the draft it made, and
+// a refusal's category (Status: bad_input, unknown_tool, refused or
+// failed), which is all a log may record: the refusal's text can quote
+// the call's arguments, or a private date it mentioned.
 type ToolOutcome struct {
 	Content string
 	IsError bool
 	Draft   *DraftResult
+	Status  string
 }
 
 // ToolList is this assistant's tools, for an outside agent to call.
@@ -71,35 +64,19 @@ func (a *Assistant) ToolList() []llm.Tool { return Tools }
 
 // RunTool runs one tool call for an outside agent's session e.
 func (a *Assistant) RunTool(ctx context.Context, e *External, name string, input json.RawMessage) ToolOutcome {
-	if name == ToolAsk {
-		// One question at a time per session, counted once it went out.
-		e.askMu.Lock()
-		defer e.askMu.Unlock()
-		if !e.roomToAsk(a.now()) {
-			return ToolOutcome{Content: "refused: at most 10 questions to carriers in 10 minutes from one session; try again later", IsError: true}
-		}
-	}
 	call := llm.ToolCall{ID: "mcp-1", Name: name, Input: input}
 	t := &turnState{asked: map[string]bool{}, statused: map[string]bool{}}
 	res := a.call(ctx, &e.conv, t, call, 0, false)
-	if name == ToolAsk && !res.IsError {
-		e.mu.Lock()
-		e.asks = append(e.asks, a.now())
-		e.mu.Unlock()
-	}
-	return ToolOutcome{Content: res.Content, IsError: res.IsError, Draft: res.draft}
+	return ToolOutcome{Content: res.Content, IsError: res.IsError, Draft: res.draft, Status: res.status}
 }
 
-// roomToAsk: fewer than MaxExternalAsks questions went out in the window.
-func (e *External) roomToAsk(now time.Time) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	kept := e.asks[:0]
-	for _, t := range e.asks {
-		if now.Sub(t) < ExternalAskWindow {
-			kept = append(kept, t)
-		}
+// Outbound reports whether a tool reaches another company (a signed
+// request, or a profile fetch): the ones an outside agent's calls must be
+// bounded on.
+func Outbound(name string) bool {
+	switch name {
+	case ToolAsk, ToolStatus, ToolGetProfile, ToolFind:
+		return true
 	}
-	e.asks = kept
-	return len(e.asks) < MaxExternalAsks
+	return false
 }

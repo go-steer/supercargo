@@ -28,8 +28,9 @@ import (
 // The inbox: drafts the company's outside agents made over MCP
 // (internal/mcpserver). Nothing an outside agent does sends anything; a
 // person confirms each draft here, in the same dialog as the assistant's,
-// behind the same arming delay, counted from when the node first handed
-// the draft to a page.
+// behind the same arming delay, counted from when that person's dialog
+// fetched that draft (GET /ui/api/inbox/draft), not from when any page
+// listed the inbox.
 
 // InboxResponse is the inbox: the open drafts, oldest first.
 type InboxResponse struct {
@@ -40,20 +41,51 @@ type InboxResponse struct {
 }
 
 func (s *server) inboxState() InboxResponse {
-	now := s.cfg.Now()
 	r := InboxResponse{Drafts: []assistant.DraftResult{}}
+	for _, d := range s.cfg.Inbox.Drafts.Open() {
+		r.Drafts = append(r.Drafts, d.Result())
+	}
+	return r
+}
+
+// shownKey is a draft as shown to one session.
+func shownKey(session, id string) string { return session + "\x00" + id }
+
+// inboxDraft hands one draft to this session's dialog, and starts its
+// arming delay for this session (once).
+func (s *server) inboxDraft(w http.ResponseWriter, r *http.Request, _ Persona) {
+	if s.cfg.Inbox == nil {
+		control.Answer(w, http.StatusNotFound, InboxResponse{Error: "this node has no MCP inbox"})
+		return
+	}
+	id := r.URL.Query().Get("id")
+	d, err := s.cfg.Inbox.Drafts.Get(id)
+	if err != nil {
+		control.Answer(w, http.StatusNotFound, InboxResponse{Error: "no open draft " + assistant.OneLine(id, 32)})
+		return
+	}
+	key := shownKey(s.sessionID(r), id)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.inboxShown == nil {
 		s.inboxShown = map[string]time.Time{}
 	}
-	for _, d := range s.cfg.Inbox.Drafts.Open() {
-		r.Drafts = append(r.Drafts, d.Result())
-		if _, ok := s.inboxShown[d.ID]; !ok {
-			s.inboxShown[d.ID] = now
+	if _, ok := s.inboxShown[key]; !ok {
+		s.inboxShown[key] = s.cfg.Now()
+	}
+	s.mu.Unlock()
+	control.Answer(w, http.StatusOK, InboxResponse{Drafts: []assistant.DraftResult{d.Result()}})
+}
+
+// forgetShown drops every session's shown time for draft id (sent,
+// discarded, or its outcome unknown).
+func (s *server) forgetShown(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k := range s.inboxShown {
+		if strings.HasSuffix(k, "\x00"+id) {
+			delete(s.inboxShown, k)
 		}
 	}
-	return r
 }
 
 func (s *server) inbox(w http.ResponseWriter, _ *http.Request, _ Persona) {
@@ -93,7 +125,7 @@ func (s *server) inboxSend(w http.ResponseWriter, r *http.Request, _ Persona) {
 		return
 	}
 	s.mu.Lock()
-	shown, wasShown := s.inboxShown[id]
+	shown, wasShown := s.inboxShown[shownKey(s.sessionID(r), id)]
 	s.mu.Unlock()
 	if !wasShown || s.cfg.Now().Sub(shown) < ArmDelay {
 		control.Answer(w, http.StatusTooEarly, InboxResponse{Error: "the dialog has to be on screen a moment before it can be confirmed"})
@@ -104,9 +136,7 @@ func (s *server) inboxSend(w http.ResponseWriter, r *http.Request, _ Persona) {
 	defer cancel()
 	sent, err := s.cfg.Inbox.Send(ctx, id)
 	if _, still := s.cfg.Inbox.Drafts.Get(id); still != nil {
-		s.mu.Lock()
-		delete(s.inboxShown, id) // gone: sent, or its outcome unknown
-		s.mu.Unlock()
+		s.forgetShown(id) // gone: sent, or its outcome unknown
 	}
 	switch {
 	case errors.Is(err, assistant.ErrNoDraft):
@@ -129,9 +159,7 @@ func (s *server) inboxDiscard(w http.ResponseWriter, r *http.Request, _ Persona)
 		return
 	}
 	if _, err := s.cfg.Inbox.Drafts.Take(id); err == nil {
-		s.mu.Lock()
-		delete(s.inboxShown, id)
-		s.mu.Unlock()
+		s.forgetShown(id)
 	}
 	control.Answer(w, http.StatusOK, s.inboxState())
 }

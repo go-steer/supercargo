@@ -19,6 +19,7 @@ package app
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -311,15 +312,24 @@ func customerGuard(g func([]byte) error) func(string, []byte) error {
 // section. One listener, as a Cloud Run service has one port.
 func (a *App) publicHandler(n *node.Node) http.Handler {
 	protocol := extractTrace(n.Handler())
-	mux := http.NewServeMux()
 	if a.mcp != nil {
-		mux.Handle(mcpserver.Path, a.mcp)
+		// /mcp exactly; everything else reaches the protocol as it came
+		// (a ServeMux would clean paths and redirect).
+		next := protocol
+		protocol = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == mcpserver.Path {
+				a.mcp.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
-	mux.Handle("/", protocol)
 	w := a.Config.Web
 	if w == nil {
-		return mux
+		return protocol
 	}
+	mux := http.NewServeMux()
+	mux.Handle("/", protocol)
 	personas := make([]webui.Persona, len(w.Personas))
 	for i, p := range w.Personas {
 		personas[i] = webui.Persona{ID: p.ID, Name: p.Name, Title: p.Title, Roles: p.Roles}
@@ -368,7 +378,11 @@ func (a *App) mcpServer() error {
 	if err != nil {
 		return err
 	}
-	inbox.Drafts.Prefix = "MD"
+	// A tag per start: a stale link to an earlier start's draft never opens
+	// another draft that got the same number.
+	var tag [2]byte
+	_, _ = rand.Read(tag[:])
+	inbox.Drafts.Prefix = fmt.Sprintf("MD%X", tag)
 	token, from, err := mcpToken(ms)
 	if err != nil {
 		return err

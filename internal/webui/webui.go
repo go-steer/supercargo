@@ -143,7 +143,8 @@ type server struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 	order    []string // session IDs, oldest first
-	// inboxShown is when the node first handed each inbox draft to a page.
+	// inboxShown is when each session's dialog first fetched each inbox
+	// draft (shownKey).
 	inboxShown map[string]time.Time
 }
 
@@ -185,6 +186,7 @@ func Handler(cfg Config) http.Handler {
 	mux.HandleFunc("POST /ui/api/assistant/send", s.authed(s.role(asShipper, s.assistantSend)))
 	mux.HandleFunc("POST /ui/api/assistant/discard", s.authed(s.role(asShipper, s.assistantDiscard)))
 	mux.HandleFunc("GET /ui/api/inbox", s.authed(s.role(asShipper, s.inbox)))
+	mux.HandleFunc("GET /ui/api/inbox/draft", s.authed(s.role(asShipper, s.inboxDraft)))
 	mux.HandleFunc("POST /ui/api/inbox/send", s.authed(s.role(asShipper, s.inboxSend)))
 	mux.HandleFunc("POST /ui/api/inbox/discard", s.authed(s.role(asShipper, s.inboxDiscard)))
 	mux.HandleFunc("POST /ui/api/disrupt", s.authed(s.role([]string{RoleOperator}, s.disrupt)))

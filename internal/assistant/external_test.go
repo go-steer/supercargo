@@ -27,8 +27,8 @@ import (
 
 // TestExternal: an outside agent's session runs the same tools through
 // the same checks, without the counterparty rule (it can't see the
-// user's words) but with drafts only and a question rate limit; the rule
-// still holds for the node's own conversations.
+// user's words) but with drafts only; the rule still holds for the node's
+// own conversations.
 func TestExternal(t *testing.T) {
 	n := &node{shipments: []store.Summary{{Ref: "OB-BKG-1042", Operator: "ocean-blue.example"}}}
 	now := thursday
@@ -58,24 +58,29 @@ func TestExternal(t *testing.T) {
 	if out := a.RunTool(ctx, e, "send_booking", json.RawMessage(`{}`)); !out.IsError {
 		t.Error("an unknown tool ran")
 	}
-	// Questions: ten in the window, then refused, then room again.
-	ask := json.RawMessage(`{"bookingRef":"OB-BKG-1042","question":"Why is it late?"}`)
-	for i := range MaxExternalAsks {
-		if out := a.RunTool(ctx, e, ToolAsk, ask); out.IsError {
-			t.Fatalf("ask %d: %s", i, out.Content)
+	// A refusal's category, never its text, is what a log may keep.
+	a.Private = []string{"2026-10-20"}
+	for name, c := range map[string]struct {
+		tool, in, want string
+	}{
+		"bad input":    {ToolAsk, `{"bookingRef":"OB-BKG-1042","BookingRef":"x","question":"Why?"}`, "bad_input"},
+		"unknown tool": {"send_booking", `{}`, "unknown_tool"},
+		"private date": {ToolAsk, `{"bookingRef":"OB-BKG-1042","question":"Will it arrive by 2026-10-20?"}`, "refused"},
+	} {
+		if out := a.RunTool(ctx, e, c.tool, json.RawMessage(c.in)); !out.IsError || out.Status != c.want {
+			t.Errorf("%s: %+v", name, out)
 		}
 	}
-	if out := a.RunTool(ctx, e, ToolAsk, ask); !out.IsError || !strings.Contains(out.Content, "10 questions") {
-		t.Errorf("the eleventh: %+v", out)
+	if out := a.RunTool(ctx, e, ToolAsk, json.RawMessage(`{"bookingRef":"OB-BKG-1042","question":"Why is it late?"}`)); out.IsError || out.Status != "" {
+		t.Errorf("a question: %+v", out)
 	}
-	// Another session has its own window.
-	if out := a.RunTool(ctx, NewExternal(), ToolAsk, ask); out.IsError {
-		t.Errorf("another session: %s", out.Content)
+	for name, want := range map[string]bool{ToolAsk: true, ToolStatus: true, ToolGetProfile: true, ToolFind: true,
+		ToolDraftBooking: false, ToolList: false, ToolGetEvents: false, ToolPartners: false} {
+		if Outbound(name) != want {
+			t.Errorf("Outbound(%s) = %v", name, !want)
+		}
 	}
-	now = now.Add(ExternalAskWindow + time.Second)
-	if out := a.RunTool(ctx, e, ToolAsk, ask); out.IsError {
-		t.Errorf("after the window: %s", out.Content)
-	}
+	_ = now
 	if got := len(a.ToolList()); got != len(Tools) {
 		t.Errorf("ToolList: %d", got)
 	}

@@ -790,7 +790,7 @@ async function loadInbox() {
     // A link from the agent (?draft=MD-…) opens that draft once.
     const want = new URLSearchParams(location.search).get('draft');
     const d = want && state.inbox.find((x) => x.draftId === want);
-    if (d && !state.openedLink) { state.openedLink = true; bookingDialog(d, INBOX); }
+    if (d && !state.openedLink) { state.openedLink = true; openInboxDraft(d.draftId); }
   } catch { /* no inbox, or not this persona's */ }
 }
 
@@ -812,6 +812,16 @@ const INBOX = {
   },
 };
 
+// openInboxDraft fetches one inbox draft for this page's dialog (the node
+// starts its arming delay for this session then) and opens the dialog.
+async function openInboxDraft(id) {
+  try {
+    const r = await api('inbox/draft?id=' + encodeURIComponent(id));
+    const d = (r.drafts || [])[0];
+    if (d) bookingDialog(d, INBOX);
+  } catch (e) { setStatus('bad', e.message); }
+}
+
 // inboxView is the assistant panel's list of drafts from outside agents.
 function inboxView() {
   const drafts = state.inbox || [];
@@ -822,7 +832,7 @@ function inboxView() {
     const row = el('div', 'inbox-row');
     row.append(el('span', null, `${d.draftId} → ${d.to}`), el('span', 'dim', `${d.request?.port_of_loading || ''} → ${d.request?.port_of_discharge || ''}`));
     const b = el('button', 'draftlink', 'Review…');
-    b.onclick = () => bookingDialog(d, INBOX);
+    b.onclick = () => openInboxDraft(d.draftId);
     row.appendChild(b);
     box.appendChild(row);
   }
@@ -961,7 +971,7 @@ async function start() {
   state.me = await api('me');
   state.gen++;
   state.messages = []; state.lastSeq = 0; state.entries = []; state.open.clear(); state.chat = null; state.tab = {}; state.shownDrafts = new Set();
-  state.initialSeq = null; state.alertCounts = {}; state.summaries = []; state.inbox = []; $('banner').hidden = true;
+  state.initialSeq = null; state.alertCounts = {}; state.summaries = []; state.inbox = []; state.openedLink = false; $('banner').hidden = true;
   const { me } = state;
   $('company').textContent = me.company;
   $('domain').textContent = me.domain;

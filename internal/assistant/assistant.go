@@ -431,6 +431,8 @@ func normalize(calls []llm.ToolCall, round int) []bool {
 type callResult struct {
 	llm.ToolResult
 	draft *DraftResult
+	// status is a refusal's category (toolStatus), never its text.
+	status string
 }
 
 // call validates and runs one tool call. Refusals and failures go back to
@@ -476,7 +478,8 @@ func (a *Assistant) call(ctx context.Context, c *Conversation, t *turnState, cal
 		}
 		out.Content, out.IsError = clean(err.Error()), true
 		ev.Error = out.Content
-		span.SetStatus(codes.Error, toolStatus(err))
+		out.status = toolStatus(err)
+		span.SetStatus(codes.Error, out.status)
 	}
 	if a.OnTool != nil {
 		a.OnTool(ev)

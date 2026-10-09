@@ -76,10 +76,15 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 	return b.base.RoundTrip(r)
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func setup(t *testing.T) (*httptest.Server, *assistant.Assistant, *node, *[]activity.Tool) {
 	t.Helper()
 	n := &node{}
-	a := &assistant.Assistant{Node: n, Drafts: &assistant.Drafts{Prefix: "MD"}, Self: assistant.Self{Domain: "cymbal-shoes.example", Name: "Cymbal Shoes"}}
+	a := &assistant.Assistant{Node: n, Drafts: &assistant.Drafts{Prefix: "MD"}, Self: assistant.Self{Domain: "cymbal-shoes.example", Name: "Cymbal Shoes"},
+		Private: []string{"2026-10-20"}}
 	var mu sync.Mutex
 	var calls []activity.Tool
 	h, err := Handler(Config{Assistant: a, Token: token, Name: "cymbal-shoes", Version: "test", UIURL: "https://cymbal-shoes.example/ui/",
@@ -124,6 +129,11 @@ func TestTools(t *testing.T) {
 	names := map[string]bool{}
 	for _, tl := range tools.Tools {
 		names[tl.Name] = true
+		// Reads run without asking; drafting and asking a carrier don't.
+		ro := tl.Annotations != nil && tl.Annotations.ReadOnlyHint
+		if want := tl.Name != assistant.ToolDraftBooking && tl.Name != assistant.ToolAsk; ro != want {
+			t.Errorf("%s: read-only %v", tl.Name, ro)
+		}
 	}
 	if !names[assistant.ToolList] || !names[assistant.ToolDraftBooking] || !names[assistant.ToolAsk] || len(tools.Tools) != len(a.ToolList()) {
 		t.Errorf("tools: %v", names)
@@ -148,24 +158,45 @@ func TestTools(t *testing.T) {
 	if err != nil || !r.IsError {
 		t.Errorf("a case-variant duplicate: %v %q", err, text(r))
 	}
-	// A question goes to the booking's carrier; ten per window per session.
-	for i := range assistant.MaxExternalAsks {
-		r, err = cs.CallTool(ctx, &mcp.CallToolParams{Name: assistant.ToolAsk, Arguments: map[string]any{"bookingRef": "OB-BKG-1042", "question": "Why is it late?"}})
-		if err != nil || r.IsError {
-			t.Fatalf("ask %d: %v %q", i, err, text(r))
-		}
+	// A question that mentions a private date is refused, and the
+	// activity says only that.
+	r, _ = cs.CallTool(ctx, &mcp.CallToolParams{Name: assistant.ToolAsk, Arguments: map[string]any{"bookingRef": "OB-BKG-1042", "question": "Will it arrive by 2026-10-20?"}})
+	if !r.IsError {
+		t.Errorf("a private date went out: %q", text(r))
 	}
-	r, _ = cs.CallTool(ctx, &mcp.CallToolParams{Name: assistant.ToolAsk, Arguments: map[string]any{"bookingRef": "OB-BKG-1042", "question": "Why is it late?"}})
-	if !r.IsError || n.asks != assistant.MaxExternalAsks {
-		t.Errorf("the eleventh question: %q, %d asked", text(r), n.asks)
+	// Questions to carriers: MaxAsks node-wide, across sessions, counted
+	// on every attempt (the refused ones above included).
+	cs2, err := connect(t, srv, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cs2.Close() }()
+	sent := 0
+	for i := 0; ; i++ {
+		c := cs
+		if i%2 == 1 {
+			c = cs2
+		}
+		r, err = c.CallTool(ctx, &mcp.CallToolParams{Name: assistant.ToolAsk, Arguments: map[string]any{"bookingRef": "OB-BKG-1042", "question": "Why is it late?"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.IsError {
+			break
+		}
+		sent++
+	}
+	if !strings.Contains(text(r), "limit") || sent != MaxAsks-2 || n.asks != sent {
+		t.Errorf("past the node's limit: %q, %d sent, %d asked", text(r), sent, n.asks)
 	}
 	// Every call reached the activity, without arguments or results.
 	got := *calls
-	if len(got) != 3+assistant.MaxExternalAsks+1 || got[1].Outcome != "drafted" || got[1].Draft != "MD-0001" || got[2].Outcome != "refused" {
+	if len(got) != 4+sent+1 || got[1].Outcome != "drafted" || got[1].Draft != "MD-0001" || got[2].Reason != "bad_input" ||
+		got[3].Reason != "refused" || got[len(got)-1].Reason != "rate_limited" {
 		t.Errorf("activity: %+v", got)
 	}
 	for _, c := range got {
-		if strings.Contains(c.Reason, "Why is it late") {
+		if strings.Contains(c.Reason, "2026") || strings.Contains(c.Reason, "late") || strings.Contains(c.Reason, "OB-BKG") {
 			t.Errorf("an argument reached the activity: %+v", c)
 		}
 	}
@@ -177,13 +208,33 @@ func TestAuth(t *testing.T) {
 	if _, err := connect(t, srv, "wrong-token-wrong-token-wrong-token"); err == nil {
 		t.Error("a wrong token connected")
 	}
-	resp, err := http.Post(srv.URL, "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	if err != nil {
-		t.Fatal(err)
+	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+		req, _ := http.NewRequest(method, srv.URL, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized || !strings.HasPrefix(resp.Header.Get("WWW-Authenticate"), "Bearer") {
+			t.Errorf("%s with no token: HTTP %d", method, resp.StatusCode)
+		}
 	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized || !strings.HasPrefix(resp.Header.Get("WWW-Authenticate"), "Bearer") {
-		t.Errorf("no token: HTTP %d", resp.StatusCode)
+	// The scheme's case doesn't matter; the token's does.
+	c := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+	lower := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		r = r.Clone(r.Context())
+		r.Header.Set("Authorization", "bearer "+token)
+		return http.DefaultTransport.RoundTrip(r)
+	})}
+	cs, err := c.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: srv.URL, HTTPClient: lower, MaxRetries: -1}, nil)
+	if err != nil {
+		t.Errorf("a lowercase scheme: %v", err)
+	} else {
+		_ = cs.Close()
+	}
+	if _, err := connect(t, srv, strings.ToUpper(token)); err == nil {
+		t.Error("a token in another case connected")
 	}
 	for name, cfg := range map[string]Config{
 		"no assistant": {Token: token},
@@ -195,24 +246,56 @@ func TestAuth(t *testing.T) {
 	}
 }
 
-// TestSessions: idle sessions go, and their number is bounded.
+// TestSessions: idle sessions go, and a new one past the cap replaces
+// the least recently used instead of being refused.
 func TestSessions(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	s := &server{cfg: Config{Now: func() time.Time { return now }}, sessions: map[string]*session{}}
-	a, _ := s.external("a")
-	if b, _ := s.external("a"); b != a {
+	a := s.external("a")
+	if s.external("a") != a {
 		t.Error("a session's state changed between calls")
 	}
 	for i := range MaxSessions - 1 {
-		if _, err := s.external(string(rune('b' + i))); err != nil {
-			t.Fatal(err)
-		}
+		now = now.Add(time.Second)
+		s.external(string(rune('b' + i)))
 	}
-	if _, err := s.external("one too many"); err == nil {
-		t.Error("more than MaxSessions sessions")
+	now = now.Add(time.Second)
+	s.external("a") // "a" is used again: "b" is now the oldest
+	now = now.Add(time.Second)
+	s.external("new")
+	if len(s.sessions) != MaxSessions || s.sessions["b"] != nil || s.sessions["a"] == nil || s.sessions["new"] == nil {
+		t.Errorf("eviction: %d sessions, b %v, a %v", len(s.sessions), s.sessions["b"] != nil, s.sessions["a"] != nil)
 	}
 	now = now.Add(SessionIdle + time.Second)
-	if _, err := s.external("later"); err != nil || len(s.sessions) != 1 {
-		t.Errorf("idle sessions kept: %d, %v", len(s.sessions), err)
+	s.external("later")
+	if len(s.sessions) != 1 {
+		t.Errorf("idle sessions kept: %d", len(s.sessions))
+	}
+}
+
+// TestLimits: the node-wide windows on drafts and on calls reaching other
+// companies, and their reset.
+func TestLimits(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	s := &server{cfg: Config{Now: func() time.Time { return now }}}
+	for range MaxDrafts {
+		if !s.allow(assistant.ToolDraftBooking) {
+			t.Fatal("a draft within the limit refused")
+		}
+	}
+	if s.allow(assistant.ToolDraftBooking) {
+		t.Error("a draft past the limit")
+	}
+	for range MaxOutbound {
+		if !s.allow(assistant.ToolStatus) {
+			t.Fatal("a status pull within the limit refused")
+		}
+	}
+	if s.allow(assistant.ToolGetProfile) || !s.allow(assistant.ToolList) {
+		t.Error("outbound past the limit, or a local read limited")
+	}
+	now = now.Add(Window)
+	if !s.allow(assistant.ToolDraftBooking) || !s.allow(assistant.ToolStatus) {
+		t.Error("the windows didn't reset")
 	}
 }
