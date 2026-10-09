@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -228,6 +229,28 @@ func TestModelCallReport(t *testing.T) {
 	m := (*reported)[0]
 	if m.Outcome != "error" || len([]rune(m.Reason)) > 200 || strings.Contains(m.Reason, "\n") || len(m.Tools) != 0 {
 		t.Errorf("a failed call: %+v", m)
+	}
+}
+
+// TestToolStart: a call that passes validation is announced before it
+// runs, then reported; one that doesn't is only reported.
+func TestToolStart(t *testing.T) {
+	n := &node{shipments: []store.Summary{{Ref: "OB-BKG-1042", Operator: "ocean-blue.example"}}}
+	m := fake.Turns(llm.GenerateResponse{ToolCalls: []llm.ToolCall{
+		fake.Call("1", ToolGetEvents, `{"bookingRef":"OB-BKG-1042"}`),
+		fake.Call("2", ToolGetEvents, `{"bookingRef":"OB-BKG-1042","shipper":"mallory.example"}`),
+	}}, llm.GenerateResponse{Text: "OK."})
+	a, tools, _ := newAssistant(m, n)
+	var log []string
+	a.OnToolStart = func(e ToolEvent) { log = append(log, "start "+e.Name+" "+string(e.Input)) }
+	inner := a.OnTool
+	a.OnTool = func(e ToolEvent) { log = append(log, "done "+e.Name); inner(e) }
+	if _, err := a.Turn(context.Background(), &Conversation{}, "Events for OB-BKG-1042 at ocean-blue.example?"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"start get_events " + `{"bookingRef":"OB-BKG-1042"}`, "done get_events", "done get_events"}
+	if !slices.Equal(log, want) || len(*tools) != 2 || (*tools)[1].Error == "" {
+		t.Errorf("log %q, tools %+v", log, *tools)
 	}
 }
 

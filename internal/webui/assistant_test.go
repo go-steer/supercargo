@@ -19,11 +19,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/assistant"
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/llm/fake"
@@ -38,9 +40,23 @@ type node struct {
 	booked []shipper.BookRequest
 	fail   error         // Book fails with it, if set
 	hold   chan struct{} // Book waits for it to close, if set
+	// lookup, if set, gets a value when Profile starts, then Profile waits
+	// for it to close.
+	lookup chan struct{}
+	// models are the model calls the assistants reported, as the node's
+	// activity would get them.
+	models []activity.Model
 }
 
 func (n *node) Profile(context.Context, string) (*shipper.Profile, error) {
+	n.mu.Lock()
+	lookup := n.lookup
+	n.lookup = nil // once
+	n.mu.Unlock()
+	if lookup != nil {
+		lookup <- struct{}{}
+		<-lookup
+	}
 	return &shipper.Profile{Domain: "ocean-blue.example", Name: "Ocean Blue", Intents: []string{intents.BookingRequest}}, nil
 }
 func (n *node) Shipments(context.Context) ([]store.Summary, error) { return nil, nil }
@@ -77,7 +93,12 @@ func assistantUI(t *testing.T) (http.Handler, *node, *echo, *time.Time) {
 	h := Handler(Config{Company: "Cymbal Shoes", Domain: "cymbal-shoes.example", Personas: personas, Control: ctl, Now: clock,
 		NewAssistant: func() (*assistant.Assistant, error) {
 			return &assistant.Assistant{Model: assistant.FakeModel(clock), Node: n, Drafts: &assistant.Drafts{}, Now: clock,
-				Self: assistant.Self{Domain: "cymbal-shoes.example", Name: "Cymbal Shoes"}}, nil
+				Self: assistant.Self{Domain: "cymbal-shoes.example", Name: "Cymbal Shoes"},
+				OnModelCall: func(m activity.Model) {
+					n.mu.Lock()
+					defer n.mu.Unlock()
+					n.models = append(n.models, m)
+				}}, nil
 		}})
 	return h, n, ctl, &now
 }
@@ -157,6 +178,82 @@ func TestDiscard(t *testing.T) {
 	}
 }
 
+// TestProgress: while a turn runs, the page sees the calls made so far
+// and the one running, with its arguments in short; another session sees
+// nothing of it, and once the turn is over there's nothing to show.
+func TestProgress(t *testing.T) {
+	h, n, _, _ := assistantUI(t)
+	alex, jo := login(t, h, "alex"), login(t, h, "jo")
+	progress := func(c *http.Cookie) Progress {
+		var p Progress
+		rec := do(h, http.MethodGet, "/ui/api/assistant/progress", "", c)
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil {
+			t.Fatalf("progress: HTTP %d %s", rec.Code, rec.Body)
+		}
+		return p
+	}
+	if p := progress(alex); p.Working || len(p.Tools) != 0 || p.Running != nil {
+		t.Errorf("idle: %+v", p)
+	}
+	lookup := make(chan struct{})
+	n.mu.Lock()
+	n.lookup = lookup
+	n.mu.Unlock()
+	done := make(chan AssistantResponse)
+	go func() {
+		_, st := post(h, "/ui/api/assistant/turn", map[string]string{"text": "We have a new carrier, ocean-blue.example. What can they do?"}, alex)
+		done <- st
+	}()
+	<-lookup // the profile lookup has started
+	// The progress carries no drafts (or anything but these), so polling
+	// it can never start a draft's ArmDelay.
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(do(h, http.MethodGet, "/ui/api/assistant/progress", "", alex).Body.Bytes(), &raw)
+	for k := range raw {
+		if k != "working" && k != "tools" && k != "running" {
+			t.Errorf("the progress carries %q", k)
+		}
+	}
+	p := progress(alex)
+	if !p.Working || p.Running == nil || p.Running.Name != assistant.ToolGetProfile || p.Running.Detail != "ocean-blue.example" {
+		t.Errorf("mid-turn: %+v", p)
+	}
+	if p := progress(jo); p.Working || p.Running != nil {
+		t.Errorf("another session saw this one's turn: %+v", p)
+	}
+	close(lookup)
+	st := <-done
+	last := st.Lines[len(st.Lines)-1]
+	if len(last.Tools) != 1 || last.Tools[0].Detail != "ocean-blue.example" {
+		t.Errorf("the transcript's tool line: %+v", last.Tools)
+	}
+	// The node's activity hears whose assistant called the model.
+	n.mu.Lock()
+	models := slices.Clone(n.models)
+	n.mu.Unlock()
+	if len(models) == 0 || models[0].Agent != "assistant · alex" {
+		t.Errorf("model calls %+v", models)
+	}
+	if p := progress(alex); p.Working || len(p.Tools) != 0 || p.Running != nil {
+		t.Errorf("after the turn: %+v", p)
+	}
+}
+
+func TestToolDetail(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"bookingRef":"OB-1","question":"Why?"}`:     "OB-1, Why?",
+		`{"count":2,"reefer":false,"nested":{"x":1}}`: "2, false",
+		`{"q":"line one\nline two\u202e"}`:            "line one line two",
+		`[1,2]`:                                       "",
+		`{"q":"` + strings.Repeat("x", 200) + `"}`:    strings.Repeat("x", 79) + "…",
+		`{"a":"x",`: "x",
+	} {
+		if got := toolDetail(json.RawMessage(in)); got != want {
+			t.Errorf("%s: %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestAssistantGates: the assistant is the shipper role's, behind a
 // session, same-origin and JSON; disrupting is the carrier role's.
 func TestAssistantGates(t *testing.T) {
@@ -170,8 +267,13 @@ func TestAssistantGates(t *testing.T) {
 			t.Errorf("%s as the carrier: HTTP %d", path, code)
 		}
 	}
-	if rec := do(h, http.MethodGet, "/ui/api/assistant", "", sam); rec.Code != http.StatusForbidden {
-		t.Errorf("the assistant's state as the carrier: HTTP %d", rec.Code)
+	for _, path := range []string{"/ui/api/assistant", "/ui/api/assistant/progress"} {
+		if rec := do(h, http.MethodGet, path, "", sam); rec.Code != http.StatusForbidden {
+			t.Errorf("GET %s as the carrier: HTTP %d", path, rec.Code)
+		}
+		if rec := do(h, http.MethodGet, path, "", nil); rec.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s with no session: HTTP %d", path, rec.Code)
+		}
 	}
 	if code, _ := post(h, "/ui/api/assistant/turn", map[string]string{"text": "hi"}, alex, "Origin", "https://evil.example"); code != http.StatusForbidden {
 		t.Errorf("a cross-site turn: HTTP %d", code)

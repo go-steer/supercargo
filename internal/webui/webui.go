@@ -175,6 +175,7 @@ func Handler(cfg Config) http.Handler {
 	// The assistant is the shipper role's (a receiver's comes later, #75).
 	asShipper := []string{RoleShipper}
 	mux.HandleFunc("GET /ui/api/assistant", s.authed(s.role(asShipper, s.assistantState)))
+	mux.HandleFunc("GET /ui/api/assistant/progress", s.authed(s.role(asShipper, s.assistantProgress)))
 	mux.HandleFunc("POST /ui/api/assistant/turn", s.authed(s.role(asShipper, s.assistantTurn)))
 	mux.HandleFunc("POST /ui/api/assistant/send", s.authed(s.role(asShipper, s.assistantSend)))
 	mux.HandleFunc("POST /ui/api/assistant/discard", s.authed(s.role(asShipper, s.assistantDiscard)))
