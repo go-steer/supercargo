@@ -34,7 +34,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/modelcontextprotocol/go-sdk/oauthex"
 
 	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/assistant"
@@ -72,8 +74,17 @@ type Config struct {
 	// Assistant runs the tools; its Drafts are the inbox people confirm
 	// from in the browser UI.
 	Assistant *assistant.Assistant
-	// Token is the bearer token callers present (at least MinToken bytes).
+	// Token is the bearer token callers present (at least MinToken bytes),
+	// unless Verify is set.
 	Token string
+	// Verify, if set, checks each caller's own bearer token instead (Google
+	// sign-in): who it belongs to, until when, or an error if it doesn't
+	// hold or its owner may not use these tools. A session stays bound to
+	// the caller that opened it.
+	Verify func(ctx context.Context, token string) (caller string, until time.Time, err error)
+	// Metadata, if set, is this endpoint's protected-resource metadata
+	// (RFC 9728), named in a refusal's WWW-Authenticate.
+	Metadata *Metadata
 	// Name and Version identify the server to clients.
 	Name, Version string
 	// UIURL, if set, is the browser UI's address, for the link a draft's
@@ -103,7 +114,7 @@ func Handler(cfg Config) (http.Handler, error) {
 	if cfg.Assistant == nil {
 		return nil, fmt.Errorf("mcpserver: no assistant")
 	}
-	if len(cfg.Token) < MinToken {
+	if cfg.Verify == nil && len(cfg.Token) < MinToken {
 		return nil, fmt.Errorf("mcpserver: the token must be at least %d bytes", MinToken)
 	}
 	if cfg.Now == nil {
@@ -121,23 +132,64 @@ func Handler(cfg Config) (http.Handler, error) {
 	return http.NewCrossOriginProtection().Handler(s.auth(h)), nil
 }
 
-// auth lets only a caller with the token through. Both sides are hashed
+type callerKey struct{}
+
+// sharedToken is the SDK user ID of a caller with the shared token.
+const sharedToken = "token"
+
+// auth lets only a caller with the token through, or, with Verify, a
+// caller whose own token holds. A shared token is hashed on both sides
 // before comparing, so the comparison takes the same time whatever the
 // length presented; the scheme's case doesn't matter (RFC 7235).
+//
+// The caller is then handed to the SDK as its token's user, which binds
+// each MCP session to the caller that opened it: another caller presenting
+// the session's ID is refused.
 func (s *server) auth(h http.Handler) http.Handler {
 	want := sha256.Sum256([]byte(s.cfg.Token))
+	challenge := `Bearer realm="ulp-mcp"`
+	if m := s.cfg.Metadata; m != nil {
+		challenge += fmt.Sprintf(", resource_metadata=%q", m.URL)
+	}
+	bind := auth.RequireBearerToken(func(ctx context.Context, _ string, _ *http.Request) (*auth.TokenInfo, error) {
+		info, _ := ctx.Value(callerKey{}).(*auth.TokenInfo)
+		if info == nil {
+			return nil, auth.ErrInvalidToken
+		}
+		return info, nil
+	}, nil)(h)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		scheme, tok, _ := strings.Cut(r.Header.Get("Authorization"), " ")
-		got := sha256.Sum256([]byte(strings.TrimSpace(tok)))
-		if !strings.EqualFold(scheme, "Bearer") || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="ulp-mcp"`)
+		tok = strings.TrimSpace(tok)
+		ok := strings.EqualFold(scheme, "Bearer")
+		info := &auth.TokenInfo{UserID: sharedToken, Expiration: time.Now().Add(time.Hour)}
+		if s.cfg.Verify != nil {
+			if ok {
+				caller, until, err := s.cfg.Verify(r.Context(), tok)
+				ok = err == nil && caller != "" && caller != sharedToken
+				info = &auth.TokenInfo{UserID: caller, Expiration: until}
+			}
+		} else {
+			got := sha256.Sum256([]byte(tok))
+			ok = ok && subtle.ConstantTimeCompare(got[:], want[:]) == 1
+		}
+		if !ok {
+			w.Header().Set("WWW-Authenticate", challenge)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		// A tool may wait on a carrier: past the server's write timeout.
 		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(WriteTimeout))
-		h.ServeHTTP(w, r)
+		bind.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, info)))
 	})
+}
+
+// caller is who a call's token belongs to, if the node signed them in.
+func caller(req *mcp.CallToolRequest) string {
+	if req.Extra == nil || req.Extra.TokenInfo == nil || req.Extra.TokenInfo.UserID == sharedToken {
+		return ""
+	}
+	return req.Extra.TokenInfo.UserID
 }
 
 // allow records an attempt of tool name if the node-wide windows have
@@ -213,7 +265,7 @@ func (s *server) handle(name string) mcp.ToolHandler {
 		ext := s.external(id)
 		if !s.allow(name) {
 			if s.cfg.OnCall != nil {
-				s.cfg.OnCall(activity.Tool{Via: "mcp", Name: name, Outcome: "refused", Reason: "rate_limited"})
+				s.cfg.OnCall(activity.Tool{Via: "mcp", Name: name, Outcome: "refused", Reason: "rate_limited", Caller: caller(req)})
 			}
 			return errResult(fmt.Sprintf("refused: the node's limit for this tool is reached (at most %d calls reaching other companies, %d questions to carriers and %d drafts in %v); try again later",
 				MaxOutbound, MaxAsks, MaxDrafts, Window)), nil
@@ -226,7 +278,7 @@ func (s *server) handle(name string) mcp.ToolHandler {
 			args = json.RawMessage(`{}`)
 		}
 		out := s.cfg.Assistant.RunTool(ctx, ext, name, args)
-		rec := activity.Tool{Via: "mcp", Name: name, Outcome: "ok"}
+		rec := activity.Tool{Via: "mcp", Name: name, Outcome: "ok", Caller: caller(req)}
 		text := out.Content
 		switch {
 		case out.IsError:
@@ -266,4 +318,26 @@ func annotations(name string) *mcp.ToolAnnotations {
 		return &mcp.ToolAnnotations{Title: "Ask a carrier about one of our bookings", DestructiveHint: &no, OpenWorldHint: &yes}
 	}
 	return &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &no}
+}
+
+// MetadataPath is where the protected-resource metadata is served: under
+// this path followed by the endpoint's path (RFC 9728, section 3.1), and
+// at this path itself, for clients that look there.
+const MetadataPath = "/.well-known/oauth-protected-resource"
+
+// Metadata is the protected-resource metadata (RFC 9728) MCP clients
+// learn the authorization server from.
+type Metadata struct {
+	URL                  string   // where it is served (<origin>/.well-known/oauth-protected-resource/mcp)
+	Resource             string   // the endpoint (<origin>/mcp)
+	AuthorizationServers []string // e.g. https://accounts.google.com
+	Scopes               []string
+}
+
+// MetadataHandler serves m.
+func MetadataHandler(m *Metadata) http.Handler {
+	return auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+		Resource: m.Resource, AuthorizationServers: m.AuthorizationServers, ScopesSupported: m.Scopes,
+		BearerMethodsSupported: []string{"header"},
+	})
 }

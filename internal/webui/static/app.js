@@ -947,6 +947,19 @@ async function showLogin() {
     $('login-title').textContent = `Sign in to ${r.company} · ${r.domain}`;
     const box = $('personas');
     box.replaceChildren();
+    $('login-foot').hidden = !r.demo;
+    if (r.login) {
+      $('login-help').textContent = "Sign in with your company Google account. You act in the roles it is allowed; you only ever see those roles' messages and activity.";
+      // Google sign-in: a round trip through Google, which drops the
+      // page's ?draft= link; it waits here for the way back.
+      const b = el('button', 'persona google', 'Sign in with Google');
+      b.onclick = () => {
+        const d = new URLSearchParams(location.search).get('draft');
+        if (d) sessionStorage.setItem(DRAFT_KEY, d);
+        location.assign(r.login);
+      };
+      box.appendChild(b);
+    }
     for (const p of r.personas) {
       const b = el('button', 'persona');
       b.append(el('span', 'avatar', p.name[0]));
@@ -977,6 +990,7 @@ async function start() {
   $('domain').textContent = me.domain;
   $('persona').textContent = me.persona.name + (me.persona.title ? ', ' + me.persona.title.split(',')[0] : '');
   $('persona-roles').textContent = `(${me.persona.roles.join(' + ')})`;
+  if (me.persona.email) $('persona').dataset.tip = 'Signed in with Google as ' + me.persona.email;
   $('demo').hidden = !me.demo;
   document.title = `${me.company} · supercargo`;
   renderRoles();
@@ -997,5 +1011,12 @@ for (const [id, set] of [['msg-filters', (f) => { state.msgFilter = f; renderMes
     document.querySelectorAll(`#${id} button`).forEach((b) => b.classList.toggle('on', b === e.target));
     set(f);
   };
+}
+// Back from Google sign-in: restore the draft link it started from.
+const DRAFT_KEY = 'ulp-draft';
+{
+  const d = sessionStorage.getItem(DRAFT_KEY);
+  sessionStorage.removeItem(DRAFT_KEY);
+  if (d && !location.search && /^[A-Z0-9-]{1,40}$/.test(d)) history.replaceState(null, '', '?draft=' + encodeURIComponent(d));
 }
 start().catch(() => { /* showLogin ran on 401 */ });

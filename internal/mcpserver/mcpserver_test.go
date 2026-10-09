@@ -299,3 +299,92 @@ func TestLimits(t *testing.T) {
 		t.Error("the windows didn't reset")
 	}
 }
+
+// TestVerify: with Verify, each caller's own token is checked, every call
+// is logged with who made it, and a session stays its opener's.
+func TestVerify(t *testing.T) {
+	a := &assistant.Assistant{Node: &node{}, Drafts: &assistant.Drafts{Prefix: "MD"}, Self: assistant.Self{Domain: "cymbal-shoes.example", Name: "Cymbal Shoes"}}
+	people := map[string]string{"alice-token": "alice@cymbal.example", "bob-token": "bob@cymbal.example"}
+	var mu sync.Mutex
+	var calls []activity.Tool
+	meta := &Metadata{URL: "https://cymbal.example/.well-known/oauth-protected-resource/mcp", Resource: "https://cymbal.example/mcp",
+		AuthorizationServers: []string{"https://accounts.google.com"}, Scopes: []string{"openid", "email"}}
+	h, err := Handler(Config{Assistant: a, Name: "cymbal-shoes", Version: "test", Metadata: meta,
+		Verify: func(_ context.Context, tok string) (string, time.Time, error) {
+			if who, ok := people[tok]; ok {
+				return who, time.Now().Add(time.Hour), nil
+			}
+			if tok == "token-user" {
+				return sharedToken, time.Now().Add(time.Hour), nil // must never pass as the shared token
+			}
+			return "", time.Time{}, errors.New("no")
+		},
+		OnCall: func(c activity.Tool) { mu.Lock(); defer mu.Unlock(); calls = append(calls, c) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	for _, tok := range []string{"", "mallory-token", token, "token-user"} {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(resp.Header.Get("WWW-Authenticate"), `resource_metadata="`+meta.URL+`"`) {
+			t.Errorf("token %q: %d %q, want 401 naming the metadata", tok, resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
+		}
+	}
+
+	cs, err := connect(t, srv, "alice-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cs.Close() }()
+	if _, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: assistant.ToolList, Arguments: map[string]any{}}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if len(calls) != 1 || calls[0].Caller != "alice@cymbal.example" {
+		t.Errorf("calls = %+v, want one by alice", calls)
+	}
+	mu.Unlock()
+
+	// Bob, holding Alice's session ID, is refused.
+	body := `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"list_shipments","arguments":{}}}`
+	req, _ := http.NewRequest(http.MethodPost, srv.URL, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer bob-token")
+	req.Header.Set("Mcp-Session-Id", cs.ID())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("another caller in alice's session: %d, want 403", resp.StatusCode)
+	}
+	mu.Lock()
+	if len(calls) != 1 {
+		t.Errorf("bob's call ran: %+v", calls)
+	}
+	mu.Unlock()
+}
+
+func TestMetadata(t *testing.T) {
+	m := &Metadata{Resource: "https://cymbal.example/mcp", AuthorizationServers: []string{"https://accounts.google.com"}, Scopes: []string{"openid", "email"}}
+	rec := httptest.NewRecorder()
+	MetadataHandler(m).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, MetadataPath+Path, nil))
+	var got struct {
+		Resource string   `json:"resource"`
+		Servers  []string `json:"authorization_servers"`
+		Scopes   []string `json:"scopes_supported"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got.Resource != m.Resource || len(got.Servers) != 1 || len(got.Scopes) != 2 {
+		t.Errorf("metadata = %d %s", rec.Code, rec.Body)
+	}
+}
