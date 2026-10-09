@@ -107,6 +107,24 @@ type Web struct {
 	// localhost names and the listen address: a proxy's, such as a Cloud
 	// Workstations port ("8441-<workstation host>"). Lowercase DNS names.
 	Hosts []string `yaml:"hosts"`
+	// FrameAncestors are the origins ("https://host" or "http://host:port")
+	// that may show this UI in a frame: a presenter page on another node.
+	// Without them, only this UI's own pages may frame it.
+	FrameAncestors []string `yaml:"frameAncestors"`
+	// Presenter, if set, serves /ui/presenter: the listed UIs side by side,
+	// each in its own frame, each signed in by itself.
+	Presenter *Presenter `yaml:"presenter"`
+}
+
+// Presenter lists the UIs the presenter page shows.
+type Presenter struct {
+	Panels []Panel `yaml:"panels"`
+}
+
+// Panel is one UI on the presenter page.
+type Panel struct {
+	Name string `yaml:"name"` // shown above it; 1-64 characters
+	URL  string `yaml:"url"`  // the UI, an absolute http(s) URL ending in /ui/
 }
 
 // Persona is someone who signs in to the UI.
@@ -522,6 +540,27 @@ func (c *Config) validateWeb() error {
 			return fmt.Errorf("web: host %q is not a lowercase DNS name", h)
 		}
 	}
+	if len(w.FrameAncestors) > 8 {
+		return errors.New("web: at most 8 frameAncestors")
+	}
+	for _, o := range w.FrameAncestors {
+		if !validOrigin(o) {
+			return fmt.Errorf("web: frameAncestors %q is not an origin (http(s)://host[:port], nothing else)", o)
+		}
+	}
+	if p := w.Presenter; p != nil {
+		if len(p.Panels) == 0 || len(p.Panels) > 6 {
+			return errors.New("web: presenter: 1-6 panels")
+		}
+		for _, panel := range p.Panels {
+			u, err := url.Parse(panel.URL)
+			if panel.Name == "" || utf8.RuneCountInString(panel.Name) > 64 || strings.ContainsFunc(panel.Name, unsafeRune) ||
+				err != nil || !validOrigin(u.Scheme+"://"+u.Host) || u.Path != "/ui/" || u.RawQuery != "" || u.Fragment != "" || u.User != nil ||
+				u.ForceQuery || panel.URL != u.Scheme+"://"+u.Host+"/ui/" {
+				return fmt.Errorf("web: presenter panel %q needs a short name and a URL like https://host/ui/", panel.URL)
+			}
+		}
+	}
 	if len(w.Personas) == 0 || len(w.Personas) > 32 {
 		return errors.New("web: 1-32 personas are required")
 	}
@@ -607,6 +646,25 @@ func (l *LLM) validate() error {
 }
 
 var personaID = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+
+// validOrigin reports whether s is a bare http(s) origin: scheme, host and
+// an optional port, nothing else (it goes into a Content Security Policy).
+func validOrigin(s string) bool {
+	u, err := url.Parse(s)
+	// Exactly scheme://host[:port]: no trailing "?" or "#", no path.
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || s != u.Scheme+"://"+u.Host || u.ForceQuery {
+		return false
+	}
+	if p := u.Port(); p != "" || strings.HasSuffix(u.Host, ":") {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 || p != strconv.Itoa(n) {
+			return false
+		}
+	}
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+	return (envelope.ValidDomain(host) || host == "localhost" || (ip != nil && !ip.IsUnspecified())) && !strings.ContainsAny(s, " ;,'\"")
+}
 
 // loopback reports whether listen's host is this machine only.
 func loopback(listen string) bool {

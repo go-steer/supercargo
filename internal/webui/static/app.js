@@ -375,6 +375,65 @@ const day = (iso) => {
   return isNaN(d) ? iso : d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
 };
 
+// ── the progress strip: the journey, from the node's records ─────────
+// Every mark names the event behind it (hover), and opens its message
+// (click). At sea is drawn halfway and hollow: an estimate, not a place.
+function openMessageFor(eventId) {
+  const m = state.messages.find((x) => x.body && (x.body.event_id === eventId || x.body.alert_id === eventId));
+  if (!m) return;
+  state.msgFilter = 'all';
+  state.open.add(m.seq);
+  renderMessages();
+  $('msg-' + m.seq)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function momentText(m) {
+  if (!m || !m.at) return '';
+  const word = { planned: 'planned', estimated: 'est.', actual: '' }[m.kind] ?? '';
+  return `${word} ${day(m.at)}`.trim();
+}
+
+function renderStrip(box, j) {
+  if (!j || !Array.isArray(j.legs) || !j.legs.length) return;
+  j.calls ||= [];
+  j.position ||= {};
+  const track = el('div', 'track');
+  const reached = new Set(j.calls.filter((c) => c.kinds.some((k) => k !== 'unscheduled')).map((c) => c.port.unLocode));
+  const unscheduled = new Set(j.calls.filter((c) => c.kinds.includes('unscheduled')).map((c) => c.port.unLocode));
+  const pin = (p, src) => {
+    const d = el('span', 'port' + (reached.has(p.unLocode) ? ' reached' : '') + (unscheduled.has(p.unLocode) ? ' unscheduled' : ''));
+    d.dataset.tip = `${p.unLocode} ${p.name}` + (unscheduled.has(p.unLocode) ? ' · unscheduled call' : '');
+    if (src) { d.dataset.src = src; d.onclick = () => openMessageFor(src); }
+    return d;
+  };
+  j.legs.forEach((l, i) => {
+    if (i === 0) track.appendChild(pin(l.from, l.departure && l.departure.source));
+    const departed = l.departure && l.departure.kind === 'actual';
+    const cls = { done: 'done', 'in progress': 'in-progress', delayed: 'delayed', planned: 'planned' }[l.status] || 'planned';
+    const seg = el('span', 'seg ' + cls + (departed ? ' departed' : ''));
+    seg.dataset.tip = `${l.from.unLocode} → ${l.to.unLocode} · ${l.mode}${l.vessel ? ' · ' + l.vessel + ' ' + l.voyage : ''} · ${l.status}` +
+      (l.standard ? ` · reported in ${l.standard === 'DCSA_TNT' ? 'DCSA Track & Trace' : l.standard}` : '');
+    const atSea = j.position.between && j.position.between[0] === l.from.unLocode && j.position.between[1] === l.to.unLocode;
+    if (atSea) {
+      const ship = el('span', 'ship estimated');
+      ship.dataset.tip = 'At sea (estimated: no message says exactly where)';
+      if (j.position.since) { ship.dataset.src = j.position.since; ship.onclick = () => openMessageFor(j.position.since); }
+      seg.appendChild(ship);
+    }
+    track.appendChild(seg);
+    track.appendChild(pin(l.to, l.arrival && l.arrival.source));
+  });
+  const first = j.legs[0], last = j.legs[j.legs.length - 1];
+  const labels = el('div', 'labels');
+  const from = el('span', null, `${first.from.unLocode} ${momentText(first.departure)}`);
+  const mid = el('span', 'mid', j.position.at ? `at ${j.position.at.unLocode}` : 'at sea (estimated)');
+  const to = el('span', 'end' + (last.status === 'delayed' ? ' late' : ''), `${last.to.unLocode} ${momentText(last.arrival)}` +
+    (last.status === 'delayed' ? ' · delayed' : ''));
+  labels.append(from, mid, to);
+  box.replaceChildren(track, labels);
+  if (j.truncated) box.appendChild(el('div', 'hint', 'some ports off the plan are not shown'));
+}
+
 // ── the delay banner: the latest alert, with what it means for us ────
 const IMPACT = { misses: 'misses your deadline', tight: 'your deadline is now tight', ok: 'still in time', unknown: 'impact unknown' };
 function dismissed() {
@@ -462,6 +521,11 @@ const loadLeft = latest(async () => {
       const key = `${s.operator}/${s.bookingRef}`;
       if (state.alertCounts[key] !== undefined && s.alerts > state.alertCounts[key]) card.classList.add('arrived');
       state.alertCounts[key] = s.alerts;
+      const strip = el('div', 'strip');
+      card.appendChild(strip);
+      const jpath = state.activeSide === 'operator' ? `bookings/${encodeURIComponent(s.bookingRef)}/journey`
+        : `shipments/${encodeURIComponent(s.operator)}/${encodeURIComponent(s.bookingRef)}/journey`;
+      api(jpath).then((r) => { if (r.journey) renderStrip(strip, r.journey); }).catch(() => {});
       const counts = el('div', 'summary-line dim', `${s.events} events · ${s.alerts} alerts${s.lastEvent ? ' · last: ' + s.lastEvent : ''}`);
       if (s.alerts) counts.classList.add('has-alert');
       card.appendChild(counts);

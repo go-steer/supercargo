@@ -23,6 +23,8 @@
 # (CI sets it), when it fails.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
+# Always the local addresses: a workstation's proxy needs a person's sign-in.
+unset WEB_HOST
 
 chrome="${SUPERCARGO_CHROME:-}"
 if [[ -z "$chrome" ]]; then
@@ -52,8 +54,9 @@ smoke_start "$work"
 
 if ! "$work/bin/browserdrive" -chrome "$chrome" \
   -shipper "http://cymbal-shoes.localhost:$SH_PORT/ui/" \
-  -operator "http://ocean-blue.localhost:$OP_PORT/ui/" 2>&1 | tee "$work/browser.log"; then
+  -operator "http://ocean-blue.localhost:$OP_PORT/ui/" \
+  -presenter "http://127.0.0.1:$OP_PORT/ui/presenter" 2>&1 | tee "$work/browser.log"; then
   smoke_fail "$work" "the browser run failed"
 fi
-grep -q "the delay arrives live" "$work/browser.log" || smoke_fail "$work" "the browser run stopped early"
-echo "✓ smoke/browser: booked through the assistant and its dialog, disrupted from the carrier view, the delay arrived live"
+grep -q "Presenter: both" "$work/browser.log" || smoke_fail "$work" "the browser run stopped early"
+echo "✓ smoke/browser: booked through the assistant and its dialog, disrupted from the carrier view, the delay and the journey arrived live; the presenter page framed both"

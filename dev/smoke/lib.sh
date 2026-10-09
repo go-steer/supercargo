@@ -49,6 +49,26 @@ web_hosts() {
   return 0
 }
 
+# web_origin PORT prints the origin a browser reaches node PORT's UI at
+# for the presenter page: the Cloud Workstations proxy's, or 127.0.0.1
+# (one site for every port, so each framed UI keeps its session; the
+# *.localhost names are a site each).
+web_origin() {
+  if [[ -n "${WEB_HOST:-}" ]]; then printf 'https://%s-%s' "$1" "$WEB_HOST"; else printf 'http://127.0.0.1:%s' "$1"; fi
+}
+
+# web_presenter prints the operator's presenter section and both nodes'
+# frameAncestors line (the presenter page is on the operator's node).
+web_frame_ancestors() {
+  printf '\n  frameAncestors: ["%s"]   # the presenter page' "$(web_origin "$OP_PORT")"
+}
+web_presenter() {
+  printf '\n  presenter:               # %s/ui/presenter: both UIs side by side' "$(web_origin "$OP_PORT")"
+  printf '\n    panels:'
+  printf '\n      - { name: "Cymbal Shoes · shipper", url: "%s/ui/" }' "$(web_origin "$SH_PORT")"
+  printf '\n      - { name: "Ocean Blue · carrier", url: "%s/ui/" }' "$(web_origin "$OP_PORT")"
+}
+
 demo_setup() {
   local dir=$1 hps=$2 root llm
   root="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
@@ -119,7 +139,7 @@ control:
 web:                     # the browser UI at http://ocean-blue.localhost:$OP_PORT/ui/
   auth: demo             # no password: local demos only
   personas:
-    - { id: sam, name: Sam, title: "Ops desk", roles: [operator] }$(web_hosts $OP_PORT)
+    - { id: sam, name: Sam, title: "Ops desk", roles: [operator] }$(web_hosts $OP_PORT)$(web_frame_ancestors)$(web_presenter)
 $telemetry
 EOF
 
@@ -143,7 +163,7 @@ llm: $llm
 web:                     # the browser UI at http://cymbal-shoes.localhost:$SH_PORT/ui/
   auth: demo             # no password: local demos only
   personas:
-    - { id: alex, name: Alex, title: "Logistics", roles: [shipper] }$(web_hosts $SH_PORT)
+    - { id: alex, name: Alex, title: "Logistics", roles: [shipper] }$(web_hosts $SH_PORT)$(web_frame_ancestors)
 $telemetry
 EOF
 

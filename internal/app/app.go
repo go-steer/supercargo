@@ -311,7 +311,14 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 		node := assistant.ControlNode{Client: control.InProcess(a.controlAPI, 2*time.Minute)}
 		newAssistant = func() (*assistant.Assistant, error) { return ShipperAssistant(a.Config, node) }
 	}
+	var panels []webui.Panel
+	if w.Presenter != nil {
+		for _, p := range w.Presenter.Panels {
+			panels = append(panels, webui.Panel{Name: p.Name, URL: p.URL})
+		}
+	}
 	mux.Handle(webui.Prefix, webui.Handler(webui.Config{Company: a.Config.Name, Domain: a.Config.Domain, Personas: personas, NewAssistant: newAssistant,
+		FrameAncestors: w.FrameAncestors, Panels: panels,
 		Control: a.controlAPI, Secure: a.Config.TLS.Mode != config.TLSInsecureDev, Hosts: append(listenHosts(a.Config.Listen), w.Hosts...)}))
 	mux.Handle("/", protocol)
 	return mux

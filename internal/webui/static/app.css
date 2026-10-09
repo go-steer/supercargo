@@ -235,6 +235,7 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
 .chip.fam-alert.high .sev { color: var(--bg-surface); }
 @keyframes arrived { 0%, 100% { box-shadow: none; } 15%, 60% { box-shadow: 0 0 0 2px var(--orange), 0 0 18px color-mix(in srgb, var(--orange) 55%, transparent); } }
 .arrived { animation: arrived 4s ease-out 1; }
+.banner[hidden] { display: none; }
 .banner { display: flex; gap: 12px; align-items: center; padding: 7px 14px; font-weight: 600;
   background: color-mix(in srgb, var(--orange) 16%, var(--bg-surface)); border-bottom: 2px solid var(--orange); color: var(--text); }
 .banner.misses { background: color-mix(in srgb, var(--orange) 28%, var(--bg-surface)); }
@@ -248,3 +249,23 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
   background: var(--orange); color: var(--bg-surface); }
 .was { text-decoration: line-through; color: var(--text-dim); }
 .booking.delayed { border-color: var(--orange); }
+
+/* ── the journey's progress strip (docs/ui/route-map.md) ─────────── */
+.strip { margin-top: 7px; }
+.strip .track { display: flex; align-items: center; gap: 0; }
+.strip .port { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--border-soft); background: var(--bg-surface); flex: none; cursor: default; }
+.strip .port.reached { background: var(--cyan); border-color: var(--cyan); }
+.strip .port.unscheduled { border-radius: 2px; transform: rotate(45deg); width: 10px; height: 10px; }
+.strip .seg { flex: 1; height: 0; border-top: 3px dashed var(--border-soft); position: relative; min-width: 30px; }
+.strip .seg.done { border-top-style: solid; border-color: var(--cyan); }
+.strip .seg.in-progress { border-image: linear-gradient(90deg, var(--cyan) 50%, var(--border-soft) 50%) 1; border-top-style: solid; }
+.strip .seg.delayed { border-color: var(--orange); }
+.strip .seg.delayed.departed { border-image: linear-gradient(90deg, var(--cyan) 50%, var(--orange) 50%) 1; border-top-style: solid; }
+.strip .ship { position: absolute; left: 50%; top: -9px; transform: translateX(-50%); width: 13px; height: 13px; border-radius: 50%;
+  background: var(--cyan); box-shadow: 0 0 0 3px color-mix(in srgb, var(--cyan) 30%, transparent); }
+.strip .ship.estimated { background: var(--bg-surface); border: 2px dashed var(--cyan); box-shadow: none; }
+.strip .labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); margin-top: 4px; gap: 8px; }
+.strip .labels .mid { text-align: center; flex: 1; }
+.strip .labels .end { text-align: right; }
+.strip .labels .late { color: var(--orange); }
+.strip [data-src] { cursor: pointer; }

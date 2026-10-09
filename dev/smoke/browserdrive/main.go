@@ -42,14 +42,15 @@ func main() {
 	chrome := flag.String("chrome", "", "the Chrome (or headless shell) binary")
 	shipper := flag.String("shipper", "", "Cymbal Shoes' UI, e.g. http://cymbal-shoes.localhost:8442/ui/")
 	operator := flag.String("operator", "", "Ocean Blue's UI")
+	presenter := flag.String("presenter", "", "the presenter page")
 	flag.Parse()
-	if err := run(*chrome, *shipper, *operator); err != nil {
+	if err := run(*chrome, *shipper, *operator, *presenter); err != nil {
 		fmt.Fprintln(os.Stderr, "browserdrive:", err)
 		os.Exit(1)
 	}
 }
 
-func run(chrome, shipperURL, operatorURL string) error {
+func run(chrome, shipperURL, operatorURL, presenterURL string) error {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.WindowSize(1500, 920))
 	if chrome != "" {
 		opts = append(opts, chromedp.ExecPath(chrome))
@@ -133,11 +134,15 @@ func run(chrome, shipperURL, operatorURL string) error {
 		waitText(`#messages`, "ocean.booking.confirmation")); err != nil {
 		return err
 	}
-	if err := step("Ocean Blue: sign in as Sam; the booking is there", ob, signIn(operatorURL),
-		waitText(`#left`, "OB-BKG-")); err != nil {
+	if err := step("Ocean Blue: sign in as Sam; the booking is there, with its journey", ob, signIn(operatorURL),
+		waitText(`#left`, "OB-BKG-"), chromedp.WaitVisible(`.booking .strip .seg`, chromedp.ByQuery)); err != nil {
 		return err
 	}
-	if err := step("Cymbal Shoes: the vessel departs (a live event)", cy, waitText(`#messages`, "TRANSPORT DEPA ACT")); err != nil {
+	if err := step("Cymbal Shoes: the vessel departs (a live event); the strip says at sea, estimated", cy,
+		waitText(`#messages`, "TRANSPORT DEPA ACT"),
+		chromedp.Click(`//button[contains(@class,"tab") and text()="Shipments"]`, chromedp.BySearch),
+		chromedp.WaitVisible(`.strip .ship.estimated`, chromedp.ByQuery),
+		waitText(`.strip`, "at sea (estimated)")); err != nil {
 		return err
 	}
 	// The delay arrives as two messages milliseconds apart (the event, then
@@ -156,12 +161,37 @@ func run(chrome, shipperURL, operatorURL string) error {
 		chromedp.WaitNotPresent(`.dialog`, chromedp.ByQuery)); err != nil {
 		return err
 	}
-	return step("Cymbal Shoes: the delay arrives live (alert, banner, DELAYED card)", cy,
+	if err := step("Cymbal Shoes: the delay arrives live (alert, banner, DELAYED card, the strip's last leg delayed)", cy,
 		chromedp.WaitVisible(`.chip.fam-alert.high`, chromedp.ByQuery),
 		chromedp.WaitVisible(`#banner:not([hidden])`, chromedp.ByQuery),
 		waitText(`#banner`, "misses your deadline"),
-		chromedp.Click(`//button[contains(@class,"tab") and text()="Shipments"]`, chromedp.BySearch),
-		chromedp.WaitVisible(`.booking.delayed .delayed-badge`, chromedp.ByQuery))
+		chromedp.WaitVisible(`.booking.delayed .delayed-badge`, chromedp.ByQuery),
+		chromedp.WaitVisible(`.strip .seg.delayed`, chromedp.ByQuery),
+		waitText(`.strip`, "delayed")); err != nil {
+		return err
+	}
+	if presenterURL == "" {
+		return nil
+	}
+	return step("Presenter: both companies' UIs, framed side by side", ob,
+		chromedp.Navigate(presenterURL),
+		chromedp.WaitVisible(`.stage iframe`, chromedp.ByQuery),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			for {
+				var n int
+				if err := chromedp.Evaluate(`document.querySelectorAll('.stage iframe').length`, &n).Do(ctx); err != nil {
+					return err
+				}
+				if n == 2 {
+					return nil
+				}
+				select {
+				case <-ctx.Done():
+					return fmt.Errorf("%d frames, want 2", n)
+				case <-time.After(200 * time.Millisecond):
+				}
+			}
+		}))
 }
 
 // holdFirstFetch intercepts the tab's requests matching pattern: the first

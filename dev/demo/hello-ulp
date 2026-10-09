@@ -121,6 +121,7 @@ Hello ULP is set up in $dir. Open four terminals:
   Each company's browser UI, once its node runs (sign in as its persona):
        Ocean Blue:   $ob_ui   (Sam: bookings, Disrupt voyage…)
        Cymbal Shoes: $cy_ui   (Alex: the assistant; book and confirm there)
+       Presenter:    $(web_origin "$OP_PORT")/ui/presenter   (both side by side; sign in to each)
 
   1. Ocean Blue's node (the operator):
        $operator
