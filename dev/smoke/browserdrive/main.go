@@ -179,12 +179,16 @@ func holdFirstFetch(tab context.Context, pattern string, hold time.Duration, bod
 		go func() {
 			if held.CompareAndSwap(false, true) {
 				time.Sleep(hold)
-				_ = fetch.FulfillRequest(e.RequestID, 200).
+				if err := fetch.FulfillRequest(e.RequestID, 200).
 					WithResponseHeaders([]*fetch.HeaderEntry{{Name: "Content-Type", Value: "application/json"}}).
-					WithBody(base64.StdEncoding.EncodeToString([]byte(body))).Do(exec)
+					WithBody(base64.StdEncoding.EncodeToString([]byte(body))).Do(exec); err != nil {
+					fmt.Fprintln(os.Stderr, "browserdrive: releasing the held fetch:", err)
+				}
 				return
 			}
-			_ = fetch.ContinueRequest(e.RequestID).Do(exec)
+			if err := fetch.ContinueRequest(e.RequestID).Do(exec); err != nil {
+				fmt.Fprintln(os.Stderr, "browserdrive: letting a fetch through:", err)
+			}
 		}()
 	})
 	return chromedp.Run(tab, fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: pattern, RequestStage: fetch.RequestStageRequest}}))

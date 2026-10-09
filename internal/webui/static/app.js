@@ -23,7 +23,7 @@
 const API = 'api/';
 const state = {
   me: null, activeSide: null, tab: {}, msgFilter: 'all', actFilter: 'all',
-  messages: [], lastSeq: 0, entries: [], open: new Set(), events: null, loading: false,
+  messages: [], lastSeq: 0, entries: [], open: new Set(), events: null, gen: 0,
   chat: null, thinking: false, poll: null, streamOpen: false,
   initialSeq: null, alertCounts: {}, summaries: [],
 };
@@ -267,8 +267,10 @@ function latest(load) {
 }
 
 const loadMessages = latest(async () => {
+  const gen = state.gen;
   try {
     const r = await api('messages?' + new URLSearchParams(state.lastSeq ? { since: state.lastSeq } : { limit: 300 }));
+    if (gen !== state.gen) return; // asked for by a session since signed out
     const first = state.initialSeq === null;
     if (r.messages.length) {
       state.messages.push(...r.messages);
@@ -423,12 +425,16 @@ const currentTab = () => state.tab[state.activeSide] || tabsFor(state.activeSide
 const loadLeft = latest(async () => {
   const view = VIEWS[state.activeSide];
   if (!view) return;
-  if (currentTab() === 'assistant') { if (!state.chat) await loadChat(); return; }
-  const [title, path] = tabsFor(state.activeSide).find(([, k]) => k === currentTab());
-  const key = path;
+  if (currentTab() === 'assistant') { state.chat ? renderChat() : await loadChat(); return; }
+  const gen = state.gen, side = state.activeSide, tab = currentTab();
   const left = $('left');
   try {
+    const [title, path] = tabsFor(side).find(([, k]) => k === tab);
+    const key = path;
     const r = await api(path);
+    // Moved on meanwhile (another tab, side or session): the rerun, or
+    // whatever moved, draws the panel.
+    if (gen !== state.gen || side !== state.activeSide || tab !== currentTab()) return;
     const bar = el('div', 'panel-bar');
     bar.append(el('span', 'panel-title', title), el('span', 'hint', state.activeSide === 'operator' ? 'carrier role' : 'shipper role'));
     const body = el('div', 'panel-body');
@@ -678,6 +684,7 @@ async function signIn(id) {
 
 async function start() {
   state.me = await api('me');
+  state.gen++;
   state.messages = []; state.lastSeq = 0; state.entries = []; state.open.clear(); state.chat = null; state.tab = {}; state.shownDrafts = new Set();
   state.initialSeq = null; state.alertCounts = {}; state.summaries = []; $('banner').hidden = true;
   const { me } = state;
