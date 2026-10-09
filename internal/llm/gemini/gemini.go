@@ -38,12 +38,21 @@ import (
 // DefaultMaxTokens caps a reply when the request sets no limit.
 const DefaultMaxTokens = 4096
 
+// DefaultThinkingBudget is the thinking tokens a reply may spend. Gemini
+// counts them against the output limit, so a request's MaxTokens (the
+// reply's own length) gets this much on top: without it, a model that
+// thinks first can use up a small reply's whole limit and answer nothing.
+const DefaultThinkingBudget = 1024
+
 // Options configure a Model: exactly one of APIKey or Vertex.
 type Options struct {
 	Model  string
 	APIKey string
 	// Vertex, if set, reaches Gemini through Vertex AI.
 	Vertex *Vertex
+	// ThinkingBudget bounds the tokens spent thinking before each reply
+	// (0: DefaultThinkingBudget).
+	ThinkingBudget int
 	// BaseURL and HTTPClient replace the endpoint and transport (tests).
 	BaseURL    string
 	HTTPClient *http.Client
@@ -58,9 +67,10 @@ type Vertex struct {
 
 // Model is a Gemini model.
 type Model struct {
-	client *genai.Client
-	model  string
-	name   string
+	thinking int32
+	client   *genai.Client
+	model    string
+	name     string
 }
 
 // The Gemini API's endpoint.
@@ -103,7 +113,11 @@ func New(ctx context.Context, opts Options) (*Model, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gemini: %w", err)
 	}
-	return &Model{client: client, model: opts.Model, name: name}, nil
+	thinking := opts.ThinkingBudget
+	if thinking <= 0 {
+		thinking = DefaultThinkingBudget
+	}
+	return &Model{client: client, model: opts.Model, name: name, thinking: int32(thinking)}, nil
 }
 
 // Name implements llm.Model.
@@ -127,7 +141,8 @@ func (m *Model) Generate(ctx context.Context, req llm.GenerateRequest) (llm.Gene
 		out.Model = m.model
 	}
 	if u := res.UsageMetadata; u != nil {
-		out.Usage = llm.Usage{InputTokens: int(u.PromptTokenCount), OutputTokens: int(u.CandidatesTokenCount)}
+		// Thinking is output too: it is billed as such.
+		out.Usage = llm.Usage{InputTokens: int(u.PromptTokenCount), OutputTokens: int(u.CandidatesTokenCount + u.ThoughtsTokenCount)}
 	}
 	if len(res.Candidates) == 0 || res.Candidates[0].Content == nil {
 		return out, errors.New("gemini: no reply (blocked, or empty)")
@@ -183,7 +198,8 @@ func (m *Model) request(req llm.GenerateRequest) ([]*genai.Content, *genai.Gener
 	if maxTokens <= 0 {
 		maxTokens = DefaultMaxTokens
 	}
-	cfg := &genai.GenerateContentConfig{MaxOutputTokens: int32(maxTokens)}
+	budget := m.thinking
+	cfg := &genai.GenerateContentConfig{MaxOutputTokens: int32(maxTokens) + budget, ThinkingConfig: &genai.ThinkingConfig{ThinkingBudget: &budget}}
 	if req.System != "" {
 		cfg.SystemInstruction = &genai.Content{Parts: []*genai.Part{{Text: req.System}}}
 	}

@@ -78,7 +78,7 @@ var etaTool = llm.Tool{Name: "get_eta", Description: "The ETA.",
 func TestToolRoundTrip(t *testing.T) {
 	f := &fakeAPI{replies: []string{
 		`{"candidates":[{"content":{"role":"model","parts":[{"text":"Let me look."},{"functionCall":{"name":"get_eta","args":{"bookingRef":"OB-1"}},"thoughtSignature":"c2lnbmVk"}]},"finishReason":"STOP"}],
-		  "usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3},"modelVersion":"gemini-test-001"}`,
+		  "usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3,"thoughtsTokenCount":40},"modelVersion":"gemini-test-001"}`,
 		`{"candidates":[{"content":{"role":"model","parts":[{"text":"Thinking…","thought":true},{"text":"Friday."}]},"finishReason":"STOP"}]}`,
 	}}
 	m := newModel(t, f)
@@ -89,7 +89,7 @@ func TestToolRoundTrip(t *testing.T) {
 	r, err := m.Generate(context.Background(), llm.GenerateRequest{System: "Be brief.", Messages: msgs, Tools: []llm.Tool{etaTool}})
 	if err != nil || r.StopReason != llm.StopTool || len(r.ToolCalls) != 1 || r.ToolCalls[0].Name != "get_eta" ||
 		string(r.ToolCalls[0].Input) != `{"bookingRef":"OB-1"}` || string(r.ToolCalls[0].Signature) != "signed" ||
-		r.Text != "Let me look." || r.Model != "gemini-test-001" || r.Usage.InputTokens != 7 || r.Usage.OutputTokens != 3 {
+		r.Text != "Let me look." || r.Model != "gemini-test-001" || r.Usage.InputTokens != 7 || r.Usage.OutputTokens != 43 {
 		t.Fatalf("first turn: %+v, %v", r, err)
 	}
 	if !strings.HasSuffix(f.paths[0], "/models/gemini-test:generateContent") {
@@ -134,7 +134,8 @@ func TestJSONAndStops(t *testing.T) {
 	q := []llm.Message{{Role: llm.User, Text: "Rotterdam?"}}
 	r, err := m.Generate(context.Background(), llm.GenerateRequest{JSONSchema: schema, Messages: q, MaxTokens: 50})
 	cfg := f.bodies[0]["generationConfig"].(map[string]any)
-	if err != nil || r.Text != `{"port":"NLRTM"}` || cfg["responseMimeType"] != "application/json" || cfg["responseJsonSchema"] == nil || cfg["maxOutputTokens"] != float64(50) {
+	if err != nil || r.Text != `{"port":"NLRTM"}` || cfg["responseMimeType"] != "application/json" || cfg["responseJsonSchema"] == nil || cfg["maxOutputTokens"] != float64(50+DefaultThinkingBudget) ||
+		cfg["thinkingConfig"].(map[string]any)["thinkingBudget"] != float64(DefaultThinkingBudget) {
 		t.Errorf("JSON: %+v, %v, config %v", r, err, cfg)
 	}
 	if _, err := m.Generate(context.Background(), llm.GenerateRequest{JSONSchema: schema, Messages: q}); err == nil {
@@ -267,6 +268,23 @@ func TestJSONDropsToolCalls(t *testing.T) {
 		if _, err := m.Generate(context.Background(), req); err == nil || !strings.Contains(err.Error(), reason) {
 			t.Errorf("%s: %v", reason, err)
 		}
+	}
+}
+
+// TestThinkingBudget: a reply's MaxTokens is its own; thinking gets its
+// budget on top, so it can't use up a short reply's limit.
+func TestThinkingBudget(t *testing.T) {
+	f := &fakeAPI{replies: []string{`{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`}}
+	m, err := New(context.Background(), Options{Model: "g", APIKey: "k", BaseURL: f.server(t).URL, ThinkingBudget: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Generate(context.Background(), llm.GenerateRequest{Messages: []llm.Message{{Role: llm.User, Text: "?"}}, MaxTokens: 300}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := f.bodies[0]["generationConfig"].(map[string]any)
+	if cfg["maxOutputTokens"] != float64(500) || cfg["thinkingConfig"].(map[string]any)["thinkingBudget"] != float64(200) {
+		t.Errorf("config %v", cfg)
 	}
 }
 

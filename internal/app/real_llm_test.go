@@ -91,9 +91,12 @@ func TestRealModels(t *testing.T) {
 			}
 			t.Logf("after the tool: %q", strings.TrimSpace(r.Text))
 
-			r, err = m.Generate(ctx, llm.GenerateRequest{MaxTokens: 1024,
+			r, err = m.Generate(ctx, llm.GenerateRequest{
 				JSONSchema: json.RawMessage(`{"type":"object","properties":{"port":{"type":"string"}},"required":["port"]}`),
-				Messages:   []llm.Message{{Role: llm.User, Text: "Which UN/LOCODE is Rotterdam? Answer as JSON."}}})
+				// A short limit, as the summarizer's: a model that thinks
+				// first must still have room to answer.
+				MaxTokens: 200,
+				Messages:  []llm.Message{{Role: llm.User, Text: "Which UN/LOCODE is Rotterdam? Answer as JSON."}}})
 			var out struct{ Port string }
 			if err != nil || json.Unmarshal([]byte(r.Text), &out) != nil || !strings.Contains(out.Port, "RTM") {
 				t.Fatalf("JSON reply: %q, %v", r.Text, err)
