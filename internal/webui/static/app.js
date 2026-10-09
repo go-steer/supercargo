@@ -767,13 +767,15 @@ function bookingDialog(d) {
   const q = d.request || {};
   const eq = (q.containers || []).map((c) => `${c.count} × ${c.equipment_size_type}, ${c.gross_weight_kg} kg each`).join('; ');
   const rows = [
-    ['Operator:', d.to], ['Shipper:', q.shipper_name || ''],
+    ['Operator:', d.to], ...(d.newPartner ? [['', 'A new partner: not in your address book, and never booked with before. Check the domain.', 'newpartner']] : []),
+    ['Shipper:', q.shipper_name || ''],
     ['Route:', `${q.port_of_loading} → ${q.port_of_discharge}`], ['Equipment:', eq],
     ['Cargo:', `${q.cargo?.description || ''}, HS ${q.cargo?.hs_code || ''}`], ['Departure:', 'on/after ' + (q.earliest_departure || '')],
     ['Reference:', q.shipper_reference || ''],
   ];
   if (q.service_contract_number) rows.push(['Contract:', q.service_contract_number]);
   if (q.consignee) rows.push(['Consignee:', `${q.consignee.name} (${q.consignee.domain})`]);
+  if (d.newConsignee) rows.push(['', 'A consignee not in your address book. Check the domain: it goes to the carrier.', 'newpartner']);
   if (q.subscription) rows.push(['Updates:', `${(q.subscription.intents || []).join(', ')} → ${q.subscription.endpoint}`]);
   for (const [k, v] of Object.entries(d.notSent || {})) rows.push(['Not sent:', `your ${k === 'requiredBy' ? 'deadline' : k}, ${v} (it stays with us)`, 'notsent']);
   const discard = el('div', 'fineprint');

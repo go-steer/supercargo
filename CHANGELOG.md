@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- Partners and the directory, MVP1 step 6 (#79): the assistant lists the partners we know (`list_partners`: the company's address book, `addressBook.file`, and the carriers we've booked with) and searches a directory for new ones (`find_partners`, `directory.file`; Google Cloud API hub next), verifying each candidate's profile at its domain; a directory entry is never trust. People can name partners by name: a partner's name in the user's own words counts as naming its domain, for address-book partners and verified finds, and an ambiguous name is asked about. The booking dialog (browser and terminal) marks a carrier we've never booked with and don't list as a new partner. The demo gets an address book and a directory.
+
 - The assistant's model calls are in the node's activity stream and log, like the other model roles': each `model` entry now names its agent (inquiry responder, alert summarizer, or `assistant · <persona>` from the browser) and the tools the reply asked for. Never the conversation's text or the tools' arguments: the stream is everyone's on that side.
 
 - The browser assistant shows its work and formats its answers: while a turn runs, each tool call appears as it starts and finishes, with its arguments in short (`GET /ui/api/assistant/progress`, which hands out no drafts); replies render a safe Markdown subset (paragraphs, lists including loose and one-level nested ones, headings, code blocks, bold, italics, code) as elements and text only, never markup from the model; the browser smoke test checks the renderer. The assistant gains `OnToolStart`.

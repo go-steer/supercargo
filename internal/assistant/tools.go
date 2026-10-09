@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/ports"
 	"github.com/go-steer/supercargo/internal/shipper"
+	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
@@ -39,16 +41,28 @@ const (
 	ToolGetEvents    = "get_events"
 	ToolAsk          = "ask_operator"
 	ToolStatus       = "get_status"
+	ToolPartners     = "list_partners"
+	ToolFind         = "find_partners"
 )
 
 // Tools are the assistant's tools. There is no tool that sends a booking:
 // sending happens only in the confirmation dialog, after a person says yes.
 var Tools = []llm.Tool{
-	{Name: ToolGetProfile, Description: "Fetch a company's ULP profile (intents, capabilities, supported dialects, endpoints, signing keys) through our node, which verifies it. Use it when the user names a carrier's domain.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"domain":{"type":"string","maxLength":253,"description":"The company's domain, as the user wrote it, e.g. ocean-blue.example"}},"required":["domain"],"additionalProperties":false}`)},
+	{Name: ToolGetProfile, Description: "Fetch a company's ULP profile (intents, capabilities, supported dialects, endpoints, signing keys) through our node, which verifies it. Use it when the user names a carrier.",
+		Schema: json.RawMessage(`{"type":"object","properties":{"domain":{"type":"string","maxLength":253,"description":"The company's domain: as the user wrote it, or the domain of a partner the user named, from list_partners or find_partners"}},"required":["domain"],"additionalProperties":false}`)},
+	{Name: ToolPartners, Description: "List the partners we know: our address book (carriers, shippers, consignees, with their domains), the carriers we've booked with, and partners found in this conversation. Use it to find the domain of a company the user names by name.",
+		Schema: json.RawMessage(`{"type":"object","properties":{"role":{"type":"string","enum":["carrier","shipper","consignee"]}},"additionalProperties":false}`)},
+	{Name: ToolFind, Description: "Search the partner directory for companies we don't know yet, e.g. carriers serving a lane. Each candidate's profile is fetched from its domain and verified; only verified ones can be used, and only once the user names one.",
+		Schema: json.RawMessage(`{"type":"object","properties":{` +
+			`"role":{"type":"string","enum":["carrier","shipper","consignee"],"description":"Default carrier"},` +
+			`"mode":{"type":"string","enum":["OCEAN","ROAD","RAIL","AIR"]},` +
+			`"from":{"type":"string","maxLength":5,"description":"UN/LOCODE of the port of loading, e.g. NLRTM"},` +
+			`"to":{"type":"string","maxLength":5,"description":"UN/LOCODE of the port of discharge, e.g. USEWR"},` +
+			`"text":{"type":"string","maxLength":100,"description":"Words in the name or description"}` +
+			`},"additionalProperties":false}`)},
 	{Name: ToolDraftBooking, Description: "Prepare a booking request draft. Nothing is sent: the user reviews the draft and confirms it themselves. Returns the draft ID and what the carrier would receive.",
 		Schema: json.RawMessage(`{"type":"object","properties":{` +
-			`"operator":{"type":"string","maxLength":253,"description":"The carrier's domain, as the user named it"},` +
+			`"operator":{"type":"string","maxLength":253,"description":"The carrier's domain: as the user wrote it, or the domain of the carrier the user named, from list_partners or find_partners"},` +
 			`"shipperRef":{"type":"string","maxLength":64,"description":"The user's own reference (a PO number), if they gave one"},` +
 			`"portOfLoading":{"type":"string","maxLength":5,"description":"UN/LOCODE, e.g. NLRTM for Rotterdam"},` +
 			`"portOfDischarge":{"type":"string","maxLength":5,"description":"UN/LOCODE, e.g. USEWR for Newark"},` +
@@ -59,7 +73,7 @@ var Tools = []llm.Tool{
 			`"hsCode":{"type":"string","maxLength":10,"description":"The HS code's first 4 to 10 digits"},` +
 			`"earliestDeparture":{"type":"string","maxLength":10,"description":"YYYY-MM-DD"},` +
 			`"consigneeName":{"type":"string","maxLength":128},` +
-			`"consigneeDomain":{"type":"string","maxLength":253,"description":"Only a domain the user gave"},` +
+			`"consigneeDomain":{"type":"string","maxLength":253,"description":"The consignee's domain: as the user wrote it, or from list_partners for a consignee the user named"},` +
 			`"requiredBy":{"type":"string","maxLength":10,"description":"YYYY-MM-DD: the user's own delivery deadline. Private: kept on our side, never sent"}` +
 			`},"required":["operator","portOfLoading","portOfDischarge","containerType","containerCount","grossWeightKg","cargoDescription","hsCode","earliestDeparture"],"additionalProperties":false}`)},
 	{Name: ToolList, Description: "List our bookings, each at a glance: status, ETA, latest event, alerts.",
@@ -150,12 +164,16 @@ func (a *Assistant) run(ctx context.Context, c *Conversation, t *turnState, call
 	case ToolGetProfile:
 		var in struct{ Domain string }
 		_ = json.Unmarshal(call.Input, &in)
-		if err := c.named(in.Domain); err != nil {
+		if err := a.named(c, in.Domain); err != nil {
 			return nil, err
 		}
 		return a.Node.Profile(ctx, in.Domain)
 	case ToolDraftBooking:
-		return a.draft(c, call.Input)
+		return a.draft(ctx, c, call.Input)
+	case ToolPartners:
+		return a.listPartners(ctx, c, call.Input)
+	case ToolFind:
+		return a.findPartners(ctx, c, call.Input)
 	case ToolList:
 		s, err := a.Node.Shipments(ctx)
 		if len(s) > maxShipments {
@@ -299,15 +317,21 @@ type DraftResult struct {
 	Request intents.BookingRequestBody `json:"request"`
 	// NotSent is the private part of the draft, which stays here.
 	NotSent map[string]string `json:"notSent,omitempty"`
-	Next    string            `json:"next"`
+	// NewPartner: the carrier isn't in our address book, and we've never
+	// booked with it. The dialog says so.
+	NewPartner bool `json:"newPartner,omitempty"`
+	// NewConsignee: the consignee isn't in our address book. Its domain
+	// goes to the carrier, so the dialog says so too.
+	NewConsignee bool   `json:"newConsignee,omitempty"`
+	Next         string `json:"next"`
 }
 
-func (a *Assistant) draft(c *Conversation, raw json.RawMessage) (any, error) {
+func (a *Assistant) draft(ctx context.Context, c *Conversation, raw json.RawMessage) (any, error) {
 	var in draftInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, refuse("%v", err)
 	}
-	if err := c.named(in.Operator); err != nil {
+	if err := a.named(c, in.Operator); err != nil {
 		return nil, err
 	}
 	if in.Operator == a.Self.Domain {
@@ -325,7 +349,7 @@ func (a *Assistant) draft(c *Conversation, raw json.RawMessage) (any, error) {
 	}
 	switch {
 	case in.ConsigneeDomain != "":
-		if err := c.named(in.ConsigneeDomain); err != nil {
+		if err := a.named(c, in.ConsigneeDomain); err != nil {
 			return nil, err
 		}
 		req.Consignee = &intents.Consignee{Name: fold(in.ConsigneeName), Domain: in.ConsigneeDomain}
@@ -347,7 +371,15 @@ func (a *Assistant) draft(c *Conversation, raw json.RawMessage) (any, error) {
 	if err := probe.Validate(); err != nil {
 		return nil, refuse("the draft isn't a valid booking request: %v", err)
 	}
-	dr, err := a.Drafts.add(Draft{Operator: in.Operator, Request: req, RequiredBy: in.RequiredBy, Created: a.now()})
+	newPartner := !a.inAddressBook(in.Operator)
+	if newPartner {
+		if s, err := a.Node.Shipments(ctx); err == nil {
+			newPartner = !slices.ContainsFunc(s, func(x store.Summary) bool { return x.Operator == in.Operator })
+		}
+	}
+	newConsignee := req.Consignee != nil && req.Consignee.Domain != "" && !a.inAddressBook(req.Consignee.Domain)
+	dr, err := a.Drafts.add(Draft{Operator: in.Operator, Request: req, RequiredBy: in.RequiredBy, NewPartner: newPartner,
+		NewConsignee: newConsignee, Created: a.now()})
 	if err != nil {
 		return nil, refuse("%v", err)
 	}
@@ -356,7 +388,7 @@ func (a *Assistant) draft(c *Conversation, raw json.RawMessage) (any, error) {
 
 // Result is the draft as draft_booking returns it and the dialog shows it.
 func (d Draft) Result() DraftResult {
-	out := DraftResult{DraftID: d.ID, To: d.Operator, Request: d.Request,
+	out := DraftResult{DraftID: d.ID, To: d.Operator, Request: d.Request, NewPartner: d.NewPartner, NewConsignee: d.NewConsignee,
 		Next: "Nothing has been sent. Tell the user the draft is ready for them to review and confirm; only they can send it."}
 	if d.RequiredBy != "" {
 		out.NotSent = map[string]string{"requiredBy": d.RequiredBy}

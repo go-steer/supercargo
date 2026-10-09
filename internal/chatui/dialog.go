@@ -17,6 +17,7 @@ package chatui
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -166,11 +167,17 @@ func (m *Model) dialogView() string {
 		line("Departure:", "on/after "+r.EarliestDeparture),
 		line("Reference:", r.ShipperRef),
 	}
+	if d.NewPartner {
+		lines = slices.Insert(lines, 1, fmt.Sprintf("%-11s", "")+m.st.pending.Render("A new partner: not in your address book, never booked with. Check the domain."))
+	}
 	if r.ServiceContractNumber != "" {
 		lines = append(lines, line("Contract:", r.ServiceContractNumber))
 	}
 	if c := r.Consignee; c != nil {
 		lines = append(lines, line("Consignee:", c.Name+" ("+c.Domain+")"))
+		if d.NewConsignee {
+			lines = append(lines, fmt.Sprintf("%-11s", "")+m.st.pending.Render("A consignee not in your address book. Check the domain: it goes to the carrier."))
+		}
 	}
 	if s := r.Subscription; s != nil {
 		lines = append(lines, line("Updates:", strings.Join(s.Intents, ", ")+" → "+s.Endpoint))

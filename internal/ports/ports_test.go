@@ -15,6 +15,7 @@
 package ports
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -29,6 +30,10 @@ func TestNames(t *testing.T) {
 	}
 	if l := Location("USEWR"); l != (intents.Location{UNLocode: "USEWR", Name: "Newark"}) {
 		t.Errorf("Location(USEWR) = %+v", l)
+	}
+	all := Names()
+	if len(all) != len(names) || !slices.Contains(all, "Rotterdam") {
+		t.Errorf("Names() = %v", all)
 	}
 }
 

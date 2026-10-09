@@ -33,7 +33,11 @@ type Draft struct {
 	// RequiredBy (YYYY-MM-DD) is private: shown in the confirmation
 	// dialog as not sent, never in the request.
 	RequiredBy string
-	Created    time.Time
+	// NewPartner: a carrier not in the address book, never booked with.
+	NewPartner bool
+	// NewConsignee: a consignee domain not in the address book.
+	NewConsignee bool
+	Created      time.Time
 }
 
 // Drafts holds a session's drafts. Taking one removes it, so a draft is

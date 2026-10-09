@@ -95,6 +95,37 @@ func TestNewModelVertex(t *testing.T) {
 	}
 }
 
+// TestPartners: the assistant gets the address book and the directory;
+// a broken file of either stops the node and the assistant.
+func TestPartners(t *testing.T) {
+	dir := t.TempDir()
+	book, search := filepath.Join(dir, "book.yaml"), filepath.Join(dir, "dir.yaml")
+	_ = os.WriteFile(book, []byte("entries:\n  - { domain: cymbal-footwear.example, name: Cymbal Footwear, roles: [consignee] }\n"), 0o600)
+	_ = os.WriteFile(search, []byte("entries:\n  - { domain: ocean-blue.example, name: Ocean Blue, roles: [carrier] }\n"), 0o600)
+	c := cfg(t, config.RoleShipper)
+	c.LLM = &config.LLM{Provider: config.ProviderFake}
+	if a, err := ShipperAssistant(c, nil); err != nil || a.AddressBook != nil || a.Directory != nil {
+		t.Errorf("neither configured: %+v, %v", a, err)
+	}
+	c.AddressBook, c.Directory = &config.AddressBook{File: book}, &config.Directory{File: search}
+	a, err := ShipperAssistant(c, nil)
+	if err != nil || len(a.AddressBook) != 1 || a.AddressBook[0].Name != "Cymbal Footwear" || a.Directory == nil {
+		t.Fatalf("both: %+v, %v", a, err)
+	}
+	for _, broken := range []func(){
+		func() { c.AddressBook.File = filepath.Join(dir, "missing.yaml") },
+		func() { c.AddressBook.File = book; c.Directory.File = book + ".missing" },
+	} {
+		broken()
+		if _, err := ShipperAssistant(c, nil); err == nil {
+			t.Error("an assistant with a broken partner file")
+		}
+		if _, err := New(c, quiet()); err == nil {
+			t.Error("a node with a broken partner file started")
+		}
+	}
+}
+
 func TestAgentSkills(t *testing.T) {
 	all, err := agentSkills("shipment-inquiry", nil)
 	if err != nil || len(all) != 1 || all[0].Name != "shipment-inquiry" || all[0].Source != "builtin" {

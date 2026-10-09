@@ -110,6 +110,16 @@ keys: [{kid: cy-1, privateKeyFile: k.pem}]}`
 	if _, err := Parse([]byte(operatorYAML + "business: { file: /etc/ulp/business.yaml }\n")); err == nil {
 		t.Error("an operator with a business file was accepted")
 	}
+	// The address book and the directory: files at absolute paths.
+	c, err = Parse([]byte(strings.TrimSuffix(minimal, "}") + ", addressBook: {file: /etc/ulp/partners.yaml}, directory: {file: /etc/ulp/directory.yaml}}"))
+	if err != nil || c.AddressBook.File != "/etc/ulp/partners.yaml" || c.Directory.File != "/etc/ulp/directory.yaml" {
+		t.Errorf("address book and directory: %+v, %v", c, err)
+	}
+	for _, bad := range []string{", addressBook: {file: partners.yaml}}", ", directory: {file: ''}}", ", directory: {url: x}}"} {
+		if _, err := Parse([]byte(strings.TrimSuffix(minimal, "}") + bad)); err == nil {
+			t.Errorf("a config with %s was accepted", bad)
+		}
+	}
 	// Anthropic: the key's variable defaults to ANTHROPIC_API_KEY.
 	c, err = Parse([]byte(strings.Replace(operatorYAML, "provider: fake, model: m, apiKeyEnv: LLM_API_KEY", "provider: anthropic", 1)))
 	if err != nil || c.LLM.APIKeyEnv != "ANTHROPIC_API_KEY" || c.LLM.Model != "" {
