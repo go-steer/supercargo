@@ -58,6 +58,15 @@ func TestExternal(t *testing.T) {
 	if out := a.RunTool(ctx, e, "send_booking", json.RawMessage(`{}`)); !out.IsError {
 		t.Error("an unknown tool ran")
 	}
+	// The shipper's tools only: the carrier's are unknown here, and not listed.
+	if out := a.RunTool(ctx, e, ToolDraftDisruption, json.RawMessage(`{"bookingRef":"OB-BKG-1042","delay":"24h","reason":"x"}`)); !out.IsError || out.Status != "unknown_tool" {
+		t.Errorf("a carrier tool from an outside agent: %+v", out)
+	}
+	for _, tl := range a.ToolList() {
+		if tl.Name == ToolDraftDisruption || tl.Name == ToolListBookings {
+			t.Errorf("the shipper's outside agents are offered %s", tl.Name)
+		}
+	}
 	// A refusal's category, never its text, is what a log may keep.
 	a.Private = []string{"2026-10-20"}
 	for name, c := range map[string]struct {

@@ -59,8 +59,9 @@ type ToolOutcome struct {
 	Status  string
 }
 
-// ToolList is this assistant's tools, for an outside agent to call.
-func (a *Assistant) ToolList() []llm.Tool { return Tools }
+// ToolList is this assistant's tools, for an outside agent to call: the
+// ones RunTool validates against, so a tool not listed never runs.
+func (a *Assistant) ToolList() []llm.Tool { return a.tools() }
 
 // RunTool runs one tool call for an outside agent's session e.
 func (a *Assistant) RunTool(ctx context.Context, e *External, name string, input json.RawMessage) ToolOutcome {
