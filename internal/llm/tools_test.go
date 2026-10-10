@@ -70,27 +70,31 @@ func TestValidateCallRefusesAdversarial(t *testing.T) {
 
 func TestValidateCallSchemaRules(t *testing.T) {
 	for name, input := range map[string]string{
-		"integer below minimum":          `{"count":0}`,
-		"integer above maximum":          `{"count":51}`,
-		"not an integer":                 `{"count":2.5}`,
-		"a near-integer":                 `{"count":1.0000000000000001}`,
-		"a trailing dot":                 `{"count":1.}`,
-		"an exponent":                    `{"count":1e0}`,
-		"an integral float out of range": `{"count":51.0}`,
-		"number too large":               `{"count":1,"weight":30001}`,
-		"number as string":               `{"count":"2"}`,
-		"boolean as string":              `{"count":1,"hazardous":"no"}`,
-		"not in enum":                    `{"count":1,"label":"45G1"}`,
-		"array too long":                 `{"count":1,"notes":["a","b","c"]}`,
-		"array item too long":            `{"count":1,"notes":["0123456789A"]}`,
-		"array item wrong type":          `{"count":1,"notes":[1]}`,
-		"not an array":                   `{"count":1,"notes":"a"}`,
-		"nested extra member":            `{"count":1,"origin":{"unLocode":"NLRTM","x":1}}`,
-		"nested missing":                 `{"count":1,"origin":{}}`,
-		"nested not an object":           `{"count":1,"origin":"NLRTM"}`,
-		"nested duplicate":               `{"count":1,"origin":{"unLocode":"A","unLocode":"B"}}`,
-		"oversized input":                `{"count":1,"notes":["` + strings.Repeat("x", llm.MaxToolInput) + `"]}`,
-		"number out of range":            `{"count":1e400}`,
+		"integer below minimum":             `{"count":0}`,
+		"integer above maximum":             `{"count":51}`,
+		"not an integer":                    `{"count":2.5}`,
+		"a near-integer":                    `{"count":1.0000000000000001}`,
+		"a trailing dot":                    `{"count":1.}`,
+		"an exponent":                       `{"count":1e0}`,
+		"an integral float out of range":    `{"count":51.0}`,
+		"an exponent after a zero fraction": `{"count":1.0e0}`,
+		"negative zero":                     `{"count":-0}`,
+		"negative zero, float":              `{"count":-0.0}`,
+		"an integral float past int64":      `{"count":18446744073709551617.0}`,
+		"number too large":                  `{"count":1,"weight":30001}`,
+		"number as string":                  `{"count":"2"}`,
+		"boolean as string":                 `{"count":1,"hazardous":"no"}`,
+		"not in enum":                       `{"count":1,"label":"45G1"}`,
+		"array too long":                    `{"count":1,"notes":["a","b","c"]}`,
+		"array item too long":               `{"count":1,"notes":["0123456789A"]}`,
+		"array item wrong type":             `{"count":1,"notes":[1]}`,
+		"not an array":                      `{"count":1,"notes":"a"}`,
+		"nested extra member":               `{"count":1,"origin":{"unLocode":"NLRTM","x":1}}`,
+		"nested missing":                    `{"count":1,"origin":{}}`,
+		"nested not an object":              `{"count":1,"origin":"NLRTM"}`,
+		"nested duplicate":                  `{"count":1,"origin":{"unLocode":"A","unLocode":"B"}}`,
+		"oversized input":                   `{"count":1,"notes":["` + strings.Repeat("x", llm.MaxToolInput) + `"]}`,
+		"number out of range":               `{"count":1e400}`,
 		// encoding/json would read these into the "count" or "label" field,
 		// past the checks on the exact name.
 		"case variant":      `{"count":1,"Count":999}`,
@@ -165,13 +169,45 @@ func TestInteger(t *testing.T) {
 			t.Errorf("Int from %s = %d, %v; want %d", in, i, err, want)
 		}
 	}
-	for _, in := range []string{"1.5", "1.0000000000000001", "1.", "1e0", "", "x", `"1"`, "99999999999999999999"} {
+	for _, in := range []string{"1.5", "1.0000000000000001", "1.", "1e0", "1.0e0", "1.00E0", "", "x", `"1"`, "99999999999999999999",
+		"+1", "01", "00.0", "-", "-01", ".0"} {
 		if _, ok := llm.Integer(json.Number(in)); ok {
 			t.Errorf("Integer(%s) accepted", in)
 		}
 		var i llm.Int
 		if err := i.UnmarshalJSON([]byte(in)); err == nil {
 			t.Errorf("Int from %s accepted", in)
+		}
+	}
+}
+
+// TestIntegerBounds: integer bounds compare exactly, past 2^53 and past
+// what int64 holds.
+func TestIntegerBounds(t *testing.T) {
+	ts := []llm.Tool{
+		{Name: "big", Schema: []byte(`{"type":"object","properties":{"n":{"type":"integer","maximum":9007199254740992}}}`)},
+		{Name: "frac", Schema: []byte(`{"type":"object","properties":{"n":{"type":"integer","minimum":1.5,"maximum":3.5}}}`)},
+		{Name: "huge", Schema: []byte(`{"type":"object","properties":{"n":{"type":"integer","minimum":-1e30,"maximum":1e30}}}`)},
+		{Name: "tiny", Schema: []byte(`{"type":"object","properties":{"n":{"type":"integer","minimum":1e30}}}`)},
+	}
+	for _, c := range []struct {
+		tool, n string
+		ok      bool
+	}{
+		{"big", "9007199254740992", true},
+		{"big", "9007199254740993", false},
+		{"big", "9007199254740993.0", false},
+		{"frac", "1", false},
+		{"frac", "2", true},
+		{"frac", "3.0", true},
+		{"frac", "4", false},
+		{"huge", "-9223372036854775808", true},
+		{"huge", "9223372036854775807", true},
+		{"tiny", "9223372036854775807", false},
+	} {
+		err := llm.ValidateCall(ts, fake.Call("x", c.tool, `{"n":`+c.n+`}`))
+		if (err == nil) != c.ok {
+			t.Errorf("%s n=%s: %v, want ok=%v", c.tool, c.n, err, c.ok)
 		}
 	}
 }

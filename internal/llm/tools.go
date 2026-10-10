@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -110,8 +111,27 @@ func Integer(n json.Number) (int64, bool) {
 		}
 		s = whole
 	}
+	// JSON's integer grammar, which ParseInt is looser than: no "+", and
+	// no leading zero but "0" itself.
+	digits := strings.TrimPrefix(s, "-")
+	if digits == "" || digits[0] == '+' || len(digits) > 1 && digits[0] == '0' {
+		return 0, false
+	}
 	v, err := strconv.ParseInt(s, 10, 64)
 	return v, err == nil
+}
+
+// atLeast reports whether v >= bound, exactly: a bound past what int64
+// holds (or not integral) is compared as the integer next to it on the
+// right side.
+func atLeast(v int64, bound float64) bool {
+	switch {
+	case bound <= math.MinInt64:
+		return true
+	case bound >= math.MaxInt64:
+		return false
+	}
+	return v >= int64(math.Ceil(bound))
 }
 
 // Int is a tool input field that holds an integer, read as ValidateCall
@@ -230,8 +250,14 @@ func (s schemaNode) check(path string, v any) error {
 			return fmt.Errorf("%s is not a number", path)
 		}
 		if s.Type == "integer" {
-			if _, ok := Integer(n); !ok {
+			v, ok := Integer(n)
+			if !ok {
 				return fmt.Errorf("%s is not an integer", path)
+			}
+			// Integers compare as integers: past 2^53 a float64 can't tell
+			// a bound from its neighbour.
+			if s.Minimum != nil && !atLeast(v, *s.Minimum) || s.Maximum != nil && !atLeast(-v, -*s.Maximum) {
+				return fmt.Errorf("%s is out of range", path)
 			}
 		}
 		// A number too large for a float64 (1e400) is out of any range.
