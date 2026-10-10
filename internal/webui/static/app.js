@@ -315,7 +315,7 @@ function entryView(e) {
   tag.dataset.tip = SIDE_TIPS[e.side || ''];
   head.append(stamp(e.time), badge, tag);
   // The binding a message went over: the same signed envelope either way.
-  const via = e.kind === 'envelope' && e.envelope && VIA_TIPS[e.envelope.via] ? e.envelope.via : '';
+  const via = e.kind === 'envelope' && e.envelope && Object.hasOwn(VIA_TIPS, e.envelope.via) ? e.envelope.via : '';
   if (via) {
     const v = el('span', 'via ' + via, via.toUpperCase());
     v.dataset.tip = VIA_TIPS[via];
