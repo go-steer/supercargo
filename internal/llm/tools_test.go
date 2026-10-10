@@ -15,6 +15,7 @@
 package llm_test
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -43,6 +44,9 @@ func TestValidateCallAccepts(t *testing.T) {
 		fake.Call("1", "get_events", `{"bookingRef":"OB-BKG-1042"}`),
 		fake.Call("2", "draft_booking", `{"count":2,"weight":12000.5,"hazardous":false,"label":"40HC","notes":["fragile"],"origin":{"unLocode":"NLRTM"},"other":1}`),
 		fake.Call("3", "draft_booking", `{"count":50}`),
+		// A client holding every number as a float (Gemini Enterprise's).
+		fake.Call("4", "draft_booking", `{"count":1.0}`),
+		fake.Call("5", "draft_booking", `{"count":12.000,"weight":12000.0}`),
 	} {
 		if err := llm.ValidateCall(tools, c); err != nil {
 			t.Errorf("%s %s: %v", c.Name, c.Input, err)
@@ -66,23 +70,27 @@ func TestValidateCallRefusesAdversarial(t *testing.T) {
 
 func TestValidateCallSchemaRules(t *testing.T) {
 	for name, input := range map[string]string{
-		"integer below minimum": `{"count":0}`,
-		"integer above maximum": `{"count":51}`,
-		"not an integer":        `{"count":2.5}`,
-		"number too large":      `{"count":1,"weight":30001}`,
-		"number as string":      `{"count":"2"}`,
-		"boolean as string":     `{"count":1,"hazardous":"no"}`,
-		"not in enum":           `{"count":1,"label":"45G1"}`,
-		"array too long":        `{"count":1,"notes":["a","b","c"]}`,
-		"array item too long":   `{"count":1,"notes":["0123456789A"]}`,
-		"array item wrong type": `{"count":1,"notes":[1]}`,
-		"not an array":          `{"count":1,"notes":"a"}`,
-		"nested extra member":   `{"count":1,"origin":{"unLocode":"NLRTM","x":1}}`,
-		"nested missing":        `{"count":1,"origin":{}}`,
-		"nested not an object":  `{"count":1,"origin":"NLRTM"}`,
-		"nested duplicate":      `{"count":1,"origin":{"unLocode":"A","unLocode":"B"}}`,
-		"oversized input":       `{"count":1,"notes":["` + strings.Repeat("x", llm.MaxToolInput) + `"]}`,
-		"number out of range":   `{"count":1e400}`,
+		"integer below minimum":          `{"count":0}`,
+		"integer above maximum":          `{"count":51}`,
+		"not an integer":                 `{"count":2.5}`,
+		"a near-integer":                 `{"count":1.0000000000000001}`,
+		"a trailing dot":                 `{"count":1.}`,
+		"an exponent":                    `{"count":1e0}`,
+		"an integral float out of range": `{"count":51.0}`,
+		"number too large":               `{"count":1,"weight":30001}`,
+		"number as string":               `{"count":"2"}`,
+		"boolean as string":              `{"count":1,"hazardous":"no"}`,
+		"not in enum":                    `{"count":1,"label":"45G1"}`,
+		"array too long":                 `{"count":1,"notes":["a","b","c"]}`,
+		"array item too long":            `{"count":1,"notes":["0123456789A"]}`,
+		"array item wrong type":          `{"count":1,"notes":[1]}`,
+		"not an array":                   `{"count":1,"notes":"a"}`,
+		"nested extra member":            `{"count":1,"origin":{"unLocode":"NLRTM","x":1}}`,
+		"nested missing":                 `{"count":1,"origin":{}}`,
+		"nested not an object":           `{"count":1,"origin":"NLRTM"}`,
+		"nested duplicate":               `{"count":1,"origin":{"unLocode":"A","unLocode":"B"}}`,
+		"oversized input":                `{"count":1,"notes":["` + strings.Repeat("x", llm.MaxToolInput) + `"]}`,
+		"number out of range":            `{"count":1e400}`,
 		// encoding/json would read these into the "count" or "label" field,
 		// past the checks on the exact name.
 		"case variant":      `{"count":1,"Count":999}`,
@@ -142,5 +150,28 @@ func TestValidateCallSchemaRules(t *testing.T) {
 	}
 	if err := llm.ValidateCall(arr, fake.Call("x", "a", `{"l":[{"k":1},{"k":2}],"m":{"n":[]}}`)); err != nil {
 		t.Errorf("the same key in sibling objects: %v", err)
+	}
+}
+
+// TestInteger: integers as JSON Schema counts them, exactly, and Int reads
+// what ValidateCall lets through.
+func TestInteger(t *testing.T) {
+	for in, want := range map[string]int64{"1": 1, "1.0": 1, "-3.000": -3, "0": 0, "999.0": 999} {
+		if v, ok := llm.Integer(json.Number(in)); !ok || v != want {
+			t.Errorf("Integer(%s) = %d, %v; want %d", in, v, ok, want)
+		}
+		var i llm.Int
+		if err := json.Unmarshal([]byte(in), &i); err != nil || int64(i) != want {
+			t.Errorf("Int from %s = %d, %v; want %d", in, i, err, want)
+		}
+	}
+	for _, in := range []string{"1.5", "1.0000000000000001", "1.", "1e0", "", "x", `"1"`, "99999999999999999999"} {
+		if _, ok := llm.Integer(json.Number(in)); ok {
+			t.Errorf("Integer(%s) accepted", in)
+		}
+		var i llm.Int
+		if err := i.UnmarshalJSON([]byte(in)); err == nil {
+			t.Errorf("Int from %s accepted", in)
+		}
 	}
 }

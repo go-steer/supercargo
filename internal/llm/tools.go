@@ -97,6 +97,39 @@ func ValidateCall(tools []Tool, call ToolCall) error {
 	return nil
 }
 
+// Integer is n's value if n is an integer as JSON Schema counts one:
+// digits, with no fractional part or an all-zero one. Clients that hold
+// every number as a float send 1 as 1.0 (Gemini Enterprise's does). The
+// test is on the text, so nothing that merely rounds to an integer
+// (1.0000000000000001) passes; exponents (1e0) don't either.
+func Integer(n json.Number) (int64, bool) {
+	s := string(n)
+	if whole, frac, ok := strings.Cut(s, "."); ok {
+		if frac == "" || strings.Trim(frac, "0") != "" {
+			return 0, false
+		}
+		s = whole
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	return v, err == nil
+}
+
+// Int is a tool input field that holds an integer, read as ValidateCall
+// checks one (Integer): 3 and 3.0 are both 3. Use it for every integer in
+// a tool's input struct, so decoding never refuses what validation let
+// through.
+type Int int64
+
+// UnmarshalJSON reads an integer, or a number with an all-zero fraction.
+func (i *Int) UnmarshalJSON(b []byte) error {
+	v, ok := Integer(json.Number(b))
+	if !ok {
+		return fmt.Errorf("llm: %s is not an integer", b)
+	}
+	*i = Int(v)
+	return nil
+}
+
 // schemaNode is the JSON Schema subset ValidateCall understands.
 type schemaNode struct {
 	Type                 string                `json:"type"`
@@ -197,7 +230,7 @@ func (s schemaNode) check(path string, v any) error {
 			return fmt.Errorf("%s is not a number", path)
 		}
 		if s.Type == "integer" {
-			if _, err := n.Int64(); err != nil {
+			if _, ok := Integer(n); !ok {
 				return fmt.Errorf("%s is not an integer", path)
 			}
 		}

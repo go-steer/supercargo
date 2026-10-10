@@ -299,7 +299,7 @@ type draftInput struct {
 	PortOfDischarge   string  `json:"portOfDischarge"`
 	GrossWeightKg     float64 `json:"grossWeightKg"`
 	ContainerType     string  `json:"containerType"`
-	ContainerCount    int     `json:"containerCount"`
+	ContainerCount    llm.Int `json:"containerCount"`
 	CargoDescription  string  `json:"cargoDescription"`
 	HSCode            string  `json:"hsCode"`
 	EarliestDeparture string  `json:"earliestDeparture"`
@@ -343,7 +343,7 @@ func (a *Assistant) draft(ctx context.Context, c *Conversation, raw json.RawMess
 	}
 	req := intents.BookingRequestBody{
 		ShipperRef: in.ShipperRef, ShipperName: a.shipperName(), PortOfLoading: in.PortOfLoading, PortOfDischarge: in.PortOfDischarge,
-		Equipment:         []intents.Equipment{{ISOType: iso, Count: in.ContainerCount, GrossWeightKg: in.GrossWeightKg}},
+		Equipment:         []intents.Equipment{{ISOType: iso, Count: int(in.ContainerCount), GrossWeightKg: in.GrossWeightKg}},
 		Cargo:             intents.Cargo{Description: fold(in.CargoDescription), HSCode: in.HSCode},
 		EarliestDeparture: in.EarliestDeparture,
 	}
