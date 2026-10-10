@@ -1,8 +1,11 @@
 # Agent runtime: where the assistants run (proposal)
 
-**Status:** proposal for review (2026-10-09). Nothing here is built yet. It
-changes where some of [DESIGN §A.10](./DESIGN.md#a10-llm-integration)'s
-guardrails live, so it needs a decision before any code.
+**Status:** proposal for review (2026-10-09). **Phase 1 is built**
+(2026-10-10): the node serves the shipper's tools over MCP, and Gemini
+Enterprise drove the demo through them (see [Phases](#phases)). Phases 2
+and 3 change where some of
+[DESIGN §A.10](./DESIGN.md#a10-llm-integration)'s guardrails live, so they
+need a decision before any code.
 
 The question: should the assistants (the shipper's, and the carrier's in
 #99) keep running on supercargo's own tool loop inside the node, or run as
@@ -23,9 +26,9 @@ tools over MCP?
   browser UI runs the same assistant **inside the node** for convenience
   (`control.InProcess`), through the same control-API calls. The boundary
   is logical there, not physical.
-- **MCP is already planned** (DESIGN §A.7, #39–#42): the node's tools for
-  the company's own agents, Gemini Enterprise among them, and a read-only
-  on-ramp for partners.
+- **MCP is built for the company's own agents** (DESIGN §A.7, #105, #110):
+  the shipper's tools at `/mcp`, with Google sign-in for Gemini Enterprise.
+  The read-only on-ramp for partners (#41) is still planned.
 
 ## What changed
 
@@ -91,10 +94,21 @@ tools over MCP?
 
 ### Phases
 
-1. **The node serves the assistant's tools over MCP** (#40/#41). The same
-   tool implementations, with the node-side checks above, over the control
-   socket first (local, owner-only), later loopback or IAP with a token.
-   This alone unlocks Gemini Enterprise and other MCP clients.
+1. **The node serves the assistant's tools over MCP** (#40). **Done**
+   (#105, #110, deployed with #107):
+   - The same tool implementations, behind `llm.ValidateCall` on the exact
+     argument bytes and each tool's own rules.
+   - Drafts wait in an inbox, and a person confirms each in the browser UI.
+   - The counterparty rule is replaced by those confirmations and the new
+     partner marks, with node-wide limits as the backstop.
+   - Served on the node's listener at `/mcp`, with a shared token (Gemini
+     CLI), or each person's own Google token (Gemini Enterprise), rather
+     than over the control socket.
+   - Gemini Enterprise drove it on 2026-10-10: find a carrier, draft a
+     booking a person confirmed, pull a status, ask the carrier over A2A.
+     The run turned up one client difference, fixed in #109: its numbers
+     arrive as floats.
+   - The partner on-ramp (#41) is still to come.
 2. **`ulpagent`**: a small process that embeds mast (`RunWorkload`) and is
    pointed at that MCP server. The shipper's assistant first; the browser
    chat stays on the in-node loop.
