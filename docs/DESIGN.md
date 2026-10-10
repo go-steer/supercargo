@@ -760,7 +760,7 @@ type Model interface {
 
 Choose the provider by config. The demo logic must not depend on provider-specific features beyond tool calling and JSON output.
 
-**No agent runner: the tool loop is ours.** Each `Generate` call is one turn. Tool calls come back to the caller, which validates them and then executes or refuses them. Frameworks whose runner executes the model's tool calls itself (ADK's, for one) don't fit "models propose, code acts".
+**No agent runner: the tool loop is ours.** Each `Generate` call is one turn. Tool calls come back to the caller, which validates them and then executes or refuses them. Frameworks whose runner executes the model's tool calls itself (ADK's, for one) don't fit "models propose, code acts". **Under review:** running the assistants as a separate agent process (on mast, so ADK v2) that reaches the node's tools over MCP, with the checks moved to the node's tool boundary. See [agent-runtime.md](./agent-runtime.md).
 - `internal/llm` carries the turn: tool definitions (name, description, JSON Schema) in the request; the model's tool calls and its stop reason in the response; and earlier calls and their results in the history.
 - **`llm.ValidateCall` checks a proposed call before anything runs.**
   - The tool must exist, named exactly.
