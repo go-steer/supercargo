@@ -134,7 +134,9 @@ func run(chrome, shipperURL, operatorURL, presenterURL string) error {
 		chromedp.Click(`.dialog button.primary`, chromedp.ByQuery),
 		chromedp.WaitNotPresent(`.dialog`, chromedp.ByQuery),
 		waitText(`.chat`, "Booked."),
-		waitText(`#messages`, "ocean.booking.confirmation")); err != nil {
+		waitText(`#messages`, "ocean.booking.confirmation"),
+		// The booking's envelope entries carry their binding's badge.
+		chromedp.WaitReady(`#activity .entry .via.rest`, chromedp.ByQuery)); err != nil {
 		return err
 	}
 	if err := step("Ocean Blue: sign in as Sam; the booking is there, with its journey", ob, signIn(operatorURL),

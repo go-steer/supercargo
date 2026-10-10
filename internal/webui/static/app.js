@@ -300,6 +300,11 @@ const SIDE_TIPS = {
   '': 'The whole node: a message no role can claim.',
 };
 
+const VIA_TIPS = {
+  a2a: 'Carried over A2A (JSON-RPC at /a2a): a question to the carrier. The signed envelope is the same as over REST.',
+  rest: 'Carried over REST (/ulp): bookings, pushed events and alerts, status. The signed envelope is the same as over A2A.',
+};
+
 function entryView(e) {
   const box = el('div', 'entry');
   const head = el('div', 'entry-head');
@@ -309,6 +314,13 @@ function entryView(e) {
   const tag = el('span', 'side', e.side || 'node');
   tag.dataset.tip = SIDE_TIPS[e.side || ''];
   head.append(stamp(e.time), badge, tag);
+  // The binding a message went over: the same signed envelope either way.
+  const via = e.kind === 'envelope' && e.envelope && Object.hasOwn(VIA_TIPS, e.envelope.via) ? e.envelope.via : '';
+  if (via) {
+    const v = el('span', 'via ' + via, via.toUpperCase());
+    v.dataset.tip = VIA_TIPS[via];
+    head.appendChild(v);
+  }
   box.append(head, jsonBlock(e[e.kind] || {}, 1));
   return box;
 }

@@ -149,6 +149,8 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
   background: linear-gradient(var(--bg-surface), var(--bg-surface)) padding-box, var(--aurora) border-box; }
 .kind.model span { background: var(--aurora); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .side { font-size: 10px; color: var(--text-dim); border: 1px dotted var(--border-soft); border-radius: 3px; padding: 0 5px; }
+.via { font-size: 10px; font-weight: 700; letter-spacing: .08em; border-radius: 3px; padding: 0 5px; color: var(--text-dim); border: 1px solid var(--border-soft); }
+.via.a2a { color: var(--blue); border-color: var(--blue); }
 .entry .json { max-height: none; border: none; background: transparent; padding: 0 0 0 4px; }
 
 /* ── assistant ──────────────────────────────────────────────────── */
