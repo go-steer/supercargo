@@ -97,14 +97,42 @@ type Config struct {
 	// Web serves the browser UI under /ui/ on the node's listener (#30).
 	// Absent: no UI.
 	Web *Web `yaml:"web"`
+
+	// Google signs people in with the company's own Google OAuth client
+	// (#39): the browser UI (web.auth: google) and the company's agents
+	// over MCP (mcp.server.auth: google, as Gemini Enterprise calls).
+	Google *Google `yaml:"google"`
+}
+
+// Sign-in modes.
+const (
+	AuthDemo   = "demo"   // web: personas as buttons, no password (loopback only)
+	AuthGoogle = "google" // web and mcp: Google sign-in, personas by members
+	AuthToken  = "token"  // mcp: one shared bearer token (the default)
+)
+
+// Google is the company's Google OAuth client ("Web application" type).
+type Google struct {
+	ClientID string `yaml:"clientID"`
+	// ClientSecretEnv names the environment variable holding the client
+	// secret, or ClientSecretFile is an absolute path to a file holding it,
+	// readable by its owner only (one of the two).
+	ClientSecretEnv  string `yaml:"clientSecretEnv"`
+	ClientSecretFile string `yaml:"clientSecretFile"`
+	// PublicURL is the node's origin as people and Google reach it
+	// (https://host): the UI's redirect URI is PublicURL/ui/auth/callback,
+	// and the MCP endpoint is PublicURL/mcp. https, unless the host is
+	// localhost (trying it out on one machine).
+	PublicURL string `yaml:"publicURL"`
 }
 
 // Web configures the browser UI.
 type Web struct {
-	// Auth is how people sign in. "demo" (the only mode so far) offers the
-	// personas as buttons, with no password: for local deployments only
-	// (tls: insecure-dev or local-ca). Hosted sign-in (IAP) comes with the
-	// deployment (#81).
+	// Auth is how people sign in. "demo" offers the personas as buttons,
+	// with no password: for local deployments only (loopback, tls:
+	// insecure-dev or local-ca). "google" signs people in with Google (the
+	// google section) and makes each the first persona whose members
+	// include their email.
 	Auth string `yaml:"auth"`
 	// Personas are who may sign in, and the roles each may act in.
 	Personas []Persona `yaml:"personas"`
@@ -138,6 +166,10 @@ type Persona struct {
 	Name  string   `yaml:"name"`  // shown; 1-64 characters
 	Title string   `yaml:"title"` // shown; at most 64 characters
 	Roles []string `yaml:"roles"` // roles of this node this persona acts in
+	// Members are who signs in as this persona with Google sign-in: an
+	// exact email address, or "@domain" for every account of that
+	// Workspace domain (Google must say so: an email alone isn't enough).
+	Members []string `yaml:"members"`
 }
 
 // Telemetry configures OpenTelemetry export over OTLP.
@@ -283,7 +315,12 @@ type MCP struct {
 
 // MCPServer configures the node's MCP endpoint.
 type MCPServer struct {
-	// TokenEnv names the environment variable holding the bearer token
+	// Auth is how callers sign in: "token" (the default), one shared token,
+	// or "google", each person's own Google access token (the google
+	// section's client), allowed if a persona acting as shipper has them
+	// among its members.
+	Auth string `yaml:"auth"`
+	// With auth token: TokenEnv names the environment variable holding the bearer token
 	// callers present (at least 32 bytes): never the token itself. Or
 	// TokenFile, an absolute path to a file holding it, readable by its
 	// owner only (one of the two).
@@ -513,8 +550,23 @@ func (c *Config) validate() error {
 		if !c.Has(RoleShipper) {
 			return errors.New("mcp: server: the MCP tools are the shipper role's; this node has no shipper role")
 		}
+		switch ms.Auth {
+		case "":
+			ms.Auth = AuthToken
+		case AuthToken, AuthGoogle:
+		default:
+			return fmt.Errorf("mcp: server: auth %q is not %s or %s", ms.Auth, AuthToken, AuthGoogle)
+		}
 		switch {
-		case (ms.TokenEnv == "") == (ms.TokenFile == ""):
+		case ms.Auth == AuthGoogle && (ms.TokenEnv != "" || ms.TokenFile != ""):
+			return errors.New("mcp: server: auth google takes no token: each caller presents their own")
+		case ms.Auth == AuthGoogle && c.Google == nil:
+			return errors.New("mcp: server: auth google needs the google section")
+		case ms.Auth == AuthGoogle && (c.Web == nil || !slices.ContainsFunc(c.Web.Personas, func(p Persona) bool {
+			return len(p.Members) > 0 && slices.Contains(p.Roles, RoleShipper)
+		})):
+			return errors.New("mcp: server: auth google allows the members of web personas acting as shipper, and there are none")
+		case ms.Auth == AuthToken && (ms.TokenEnv == "") == (ms.TokenFile == ""):
 			return errors.New("mcp: server: tokenEnv or tokenFile, one of the two")
 		case ms.TokenEnv != "" && !envName.MatchString(ms.TokenEnv):
 			return fmt.Errorf("mcp: server: tokenEnv %q is not an environment variable name", ms.TokenEnv)
@@ -544,6 +596,9 @@ func (c *Config) validate() error {
 		if c.Simulator.HoursPerSecond == 0 {
 			c.Simulator.HoursPerSecond = 1
 		}
+	}
+	if err := c.validateGoogle(); err != nil {
+		return err
 	}
 	if err := c.validateWeb(); err != nil {
 		return err
@@ -585,13 +640,19 @@ func (c *Config) validateWeb() error {
 	if w == nil {
 		return nil
 	}
-	if w.Auth != "demo" {
-		return fmt.Errorf("web: auth %q is not demo (hosted sign-in comes with the deployment)", w.Auth)
-	}
-	// No password: only this machine may reach it. The hosted deployment
-	// signs people in through IAP instead (#81).
-	if !loopback(c.Listen) || (c.TLS.Mode != TLSInsecureDev && c.TLS.Mode != TLSLocalCA) {
-		return fmt.Errorf("web: demo sign-in has no password, so the node must listen on loopback only (127.0.0.1, ::1 or localhost), not %q", c.Listen)
+	switch w.Auth {
+	case AuthDemo:
+		// No password: only this machine may reach it. A hosted node signs
+		// people in with Google instead.
+		if !loopback(c.Listen) || (c.TLS.Mode != TLSInsecureDev && c.TLS.Mode != TLSLocalCA) {
+			return fmt.Errorf("web: demo sign-in has no password, so the node must listen on loopback only (127.0.0.1, ::1 or localhost), not %q", c.Listen)
+		}
+	case AuthGoogle:
+		if c.Google == nil {
+			return errors.New("web: auth google needs the google section")
+		}
+	default:
+		return fmt.Errorf("web: auth %q is not %s or %s", w.Auth, AuthDemo, AuthGoogle)
 	}
 	if len(w.Hosts) > 16 {
 		return errors.New("web: at most 16 hosts")
@@ -643,9 +704,66 @@ func (c *Config) validateWeb() error {
 				return fmt.Errorf("web: persona %s acts as %q, which this node isn't", p.ID, r)
 			}
 		}
+		if len(p.Members) > 256 {
+			return fmt.Errorf("web: persona %s: at most 256 members", p.ID)
+		}
+		for _, m := range p.Members {
+			if !validMember(m) {
+				return fmt.Errorf("web: persona %s: member %q is not a lowercase email address or @domain", p.ID, m)
+			}
+		}
+		if w.Auth == AuthGoogle && len(p.Members) == 0 {
+			return fmt.Errorf("web: persona %s has no members, so nobody could sign in as it", p.ID)
+		}
 	}
 	return nil
 }
+
+// validMember accepts "name@domain" or "@domain", lowercase.
+func validMember(m string) bool {
+	local, domain, ok := strings.Cut(m, "@")
+	return ok && envelope.ValidDomain(domain) && strings.Count(domain, ".") > 0 &&
+		len(local) <= 64 && !strings.ContainsFunc(local, func(r rune) bool {
+		return r <= ' ' || r >= 0x7f || r == '@' || unicode.IsUpper(r)
+	})
+}
+
+func (c *Config) validateGoogle() error {
+	g := c.Google
+	if g == nil {
+		return nil
+	}
+	if !googleClientID.MatchString(g.ClientID) {
+		return fmt.Errorf("google: clientID %q is not a Google OAuth client ID (...apps.googleusercontent.com)", g.ClientID)
+	}
+	switch {
+	case (g.ClientSecretEnv == "") == (g.ClientSecretFile == ""):
+		return errors.New("google: clientSecretEnv or clientSecretFile, one of the two")
+	case g.ClientSecretEnv != "" && !envName.MatchString(g.ClientSecretEnv):
+		return fmt.Errorf("google: clientSecretEnv %q is not an environment variable name", g.ClientSecretEnv)
+	case g.ClientSecretFile != "" && !filepath.IsAbs(g.ClientSecretFile):
+		return fmt.Errorf("google: clientSecretFile %q must be an absolute path", g.ClientSecretFile)
+	}
+	u, err := url.Parse(g.PublicURL)
+	if err != nil || !validOrigin(g.PublicURL) || (u.Scheme != "https" && !localHost(u.Hostname())) {
+		return fmt.Errorf("google: publicURL %q must be an https origin (https://host[:port]); plain http only for localhost", g.PublicURL)
+	}
+	if (c.Web == nil || c.Web.Auth != AuthGoogle) && (c.MCP == nil || c.MCP.Server == nil || c.MCP.Server.Auth != AuthGoogle) {
+		return errors.New("google: unused: set web.auth or mcp.server.auth to google")
+	}
+	return nil
+}
+
+// localHost reports whether host names this machine.
+func localHost(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+var googleClientID = regexp.MustCompile(`^[0-9]{1,32}-[a-z0-9]{1,64}\.apps\.googleusercontent\.com$`)
 
 // llmEnvDefaults are the environment variables each provider reads by
 // default: the names Claude Code and Google's Gen AI SDK use, so the

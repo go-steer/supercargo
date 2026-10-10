@@ -179,6 +179,9 @@ func (h *Handler) render(r slog.Record, msg string, rec record, order []string) 
 		return stamp + " " + h.model(rec)
 	case "tool call":
 		line := fmt.Sprintf("⚙ tool %s via %s", rec.get("tool"), rec.get("via"))
+		if c := rec.get("caller"); c != "" {
+			line += " for " + c
+		}
 		switch rec.get("outcome") {
 		case "refused":
 			return stamp + " " + line + "  " + h.paint(h.p.Yellow, "refused: "+rec.get("reason"), false)

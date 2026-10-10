@@ -215,6 +215,11 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
 .summary-line { font-size: 12px; margin-top: 2px; }
 .has-alert { color: var(--yellow); }
 .login-card .persona { cursor: pointer; }
+.login-card .persona.google { justify-content: center; font-weight: 600; }
+.auth-page { display: grid; place-items: center; min-height: 100vh; margin: 0; background: var(--bg); color: var(--text); }
+.auth-page main { width: 420px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; padding: 22px 24px; }
+.auth-page h1 { font-size: 15px; margin: 0 0 8px; }
+.auth-page a { color: var(--text); }
 
 /* ── assistant panel ────────────────────────────────────────────── */
 .chat { flex: 1; overflow: auto; }
