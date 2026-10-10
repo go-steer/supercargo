@@ -177,6 +177,15 @@ func (h *Handler) render(r slog.Record, msg string, rec record, order []string) 
 		return stamp + " " + h.envelope(rec)
 	case "model call":
 		return stamp + " " + h.model(rec)
+	case "tool call":
+		line := fmt.Sprintf("⚙ tool %s via %s", rec.get("tool"), rec.get("via"))
+		switch rec.get("outcome") {
+		case "refused":
+			return stamp + " " + line + "  " + h.paint(h.p.Yellow, "refused: "+rec.get("reason"), false)
+		case "drafted":
+			return stamp + " " + line + "  " + h.paint(h.p.Green, "drafted "+rec.get("draft"), false)
+		}
+		return stamp + " " + line + "  " + h.paint(h.p.Green, "ok", false)
 	case "alert summary":
 		text := fmt.Sprintf("✦ summary %s  %s: %s", rec.get("booking"), strings.ToUpper(rec.get("impact")), rec.get("text"))
 		if rec.get("generatedBy") == "template" {

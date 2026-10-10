@@ -130,6 +130,12 @@ Hello ULP is set up in $dir. Open four terminals:
        Cymbal Shoes: $cy_ui   (Alex: the assistant; book and confirm there)
        Presenter:    $(web_origin "$OP_PORT")/ui/presenter   (both side by side; sign in to each)$proxy_note
 
+  Cymbal's own agent over MCP (Gemini CLI; Gemini Enterprise once deployed):
+       cd $q/gemini && gemini
+     Then ask it, say: "What shipments do we have?", or have it draft a booking:
+     nothing is sent until a person confirms the draft in Cymbal's browser UI
+     (the Assistant tab's "From your agents" box, or the link the agent shows).
+
   1. Ocean Blue's node (the operator):
        $operator
 

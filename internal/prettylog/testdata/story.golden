@@ -14,6 +14,9 @@
 18:00:05 ← (unreadable)                                          -    MALFORMED not a JWS
 18:00:05 ✦ model anthropic:claude  OB-BKG-1042  1.5s  0→0 tokens  attempt 2  invalid: cites EV-9
 18:00:05 ✦ model assistant · alex  anthropic:claude  0s  0→0 tokens  tools find_partners,list_partners  attempt 2  error: timeout
+18:00:05 ⚙ tool list_shipments via mcp  ok
+18:00:05 ⚙ tool draft_booking via mcp  drafted MD-0001
+18:00:05 ⚙ tool ask_operator via mcp  refused: at most 10 questions
 18:00:05 ✦ summary OB-BKG-1  UNKNOWN: Customs hold.[2J Next  (template)  ! cited but not received: EV-404
 18:00:05 ← ulp.tnt.event                  ocean-blue.example     -    VERIFIED (kid ob-demo-1)  REFUSED replay: seen before  m-7
 18:00:05 ← ulp.ocean.booking.confirmation ocean-blue.example     -    VERIFIED (kid ob-demo-1)  REFUSED response sentAt is 3m0s from now

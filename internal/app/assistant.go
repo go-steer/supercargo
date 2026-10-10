@@ -49,11 +49,27 @@ func ShipperAssistant(cfg *config.Config, node assistant.Node) (*assistant.Assis
 		}
 		agentSkills = append(agentSkills, company...)
 	}
+	a, err := ToolAssistant(cfg, node)
+	if err != nil {
+		return nil, err
+	}
+	a.Model, a.Skills = model, agentSkills
+	return a, nil
+}
+
+// ToolAssistant is the shipper's assistant without a model: its tools,
+// their checks, its partners and its drafts, for an outside agent to call
+// over MCP (internal/mcpserver). Its business dates and notes are private,
+// as for the assistant: no question to a carrier may carry them.
+func ToolAssistant(cfg *config.Config, node assistant.Node) (*assistant.Assistant, error) {
+	if !cfg.Has(config.RoleShipper) {
+		return nil, fmt.Errorf("%s has roles %v; the shipper's tools need the shipper role", cfg.Domain, cfg.Roles)
+	}
 	book, dir, err := Partners(cfg)
 	if err != nil {
 		return nil, err
 	}
-	a := &assistant.Assistant{Model: model, Node: node, Drafts: &assistant.Drafts{}, Skills: agentSkills,
+	a := &assistant.Assistant{Node: node, Drafts: &assistant.Drafts{},
 		Self: assistant.Self{Domain: cfg.Domain, Name: cfg.Name, Endpoint: RESTURL(cfg)}, AddressBook: book}
 	if dir != nil {
 		a.Directory = dir

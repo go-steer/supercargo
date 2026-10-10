@@ -276,6 +276,22 @@ type MCP struct {
 		Name string `yaml:"name"`
 		URL  string `yaml:"url"`
 	} `yaml:"connectors"`
+	// Server serves the shipper's assistant tools over MCP at /mcp, for the
+	// company's own agents (internal/mcpserver).
+	Server *MCPServer `yaml:"server"`
+}
+
+// MCPServer configures the node's MCP endpoint.
+type MCPServer struct {
+	// TokenEnv names the environment variable holding the bearer token
+	// callers present (at least 32 bytes): never the token itself. Or
+	// TokenFile, an absolute path to a file holding it, readable by its
+	// owner only (one of the two).
+	TokenEnv  string `yaml:"tokenEnv"`
+	TokenFile string `yaml:"tokenFile"`
+	// UIURL is the browser UI's address, for the link a draft's answer
+	// carries (optional).
+	UIURL string `yaml:"uiURL"`
 }
 
 // Simulator configures the operator's shipment simulator.
@@ -491,6 +507,25 @@ func (c *Config) validate() error {
 	}
 	if c.Directory != nil && !filepath.IsAbs(c.Directory.File) {
 		return fmt.Errorf("directory: file %q must be an absolute path", c.Directory.File)
+	}
+	if c.MCP != nil && c.MCP.Server != nil {
+		ms := c.MCP.Server
+		if !c.Has(RoleShipper) {
+			return errors.New("mcp: server: the MCP tools are the shipper role's; this node has no shipper role")
+		}
+		switch {
+		case (ms.TokenEnv == "") == (ms.TokenFile == ""):
+			return errors.New("mcp: server: tokenEnv or tokenFile, one of the two")
+		case ms.TokenEnv != "" && !envName.MatchString(ms.TokenEnv):
+			return fmt.Errorf("mcp: server: tokenEnv %q is not an environment variable name", ms.TokenEnv)
+		case ms.TokenFile != "" && !filepath.IsAbs(ms.TokenFile):
+			return fmt.Errorf("mcp: server: tokenFile %q must be an absolute path", ms.TokenFile)
+		}
+		if ms.UIURL != "" {
+			if u, err := url.Parse(ms.UIURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+				return fmt.Errorf("mcp: server: uiURL %q is not an http(s) URL", ms.UIURL)
+			}
+		}
 	}
 	if c.Skills != nil && (c.Skills.Dir == "" || !filepath.IsAbs(c.Skills.Dir)) {
 		return fmt.Errorf("skills: dir %q must be an absolute path", c.Skills.Dir)

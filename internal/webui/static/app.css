@@ -289,3 +289,6 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
 .strip .labels .end { text-align: right; }
 .strip .labels .late { color: var(--orange); }
 .strip [data-src] { cursor: pointer; }
+.inbox { border: 1px solid var(--orange); border-radius: 6px; padding: 6px 10px; margin: 6px 0 10px; }
+.inbox-title { color: var(--orange); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 4px; }
+.inbox-row { display: flex; gap: 12px; align-items: center; margin: 3px 0; }

@@ -136,6 +136,8 @@ func TestSlogSink(t *testing.T) {
 		{Kind: KindPush, Push: &Push{Booking: "OB-1", ID: "EV-3", Problem: "dropped", Error: "refused"}},
 		{Kind: KindPush, Push: &Push{Booking: "OB-1", Problem: "unpublished", Error: "full"}},
 		{Kind: KindSummary, Summary: &Summary{Booking: "OB-1", AlertID: "AL-1", Text: "Late.", Impact: "misses", GeneratedBy: "llm", Cited: []string{"AL-1"}}},
+		{Kind: KindTool, Tool: &Tool{Via: "mcp", Name: "draft_booking", Outcome: "drafted", Draft: "MD-0001"}},
+		{Kind: KindTool, Tool: &Tool{Via: "mcp", Name: "ask_operator", Outcome: "refused", Reason: "too many"}},
 	} {
 		sink(e)
 	}
@@ -156,6 +158,8 @@ func TestSlogSink(t *testing.T) {
 		{"push dropped", "WARN", "id", "EV-3"},
 		{"event not published", "WARN", "err", "full"},
 		{"alert summary", "WARN", "impact", "misses"},
+		{"tool call", "INFO", "draft", "MD-0001"},
+		{"tool call", "WARN", "reason", "too many"},
 	}
 	if len(lines) != len(want) {
 		t.Fatalf("%d lines, want %d:\n%s", len(lines), len(want), buf.String())

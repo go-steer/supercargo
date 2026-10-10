@@ -293,6 +293,7 @@ const KIND_TIPS = {
   summary: "What an alert means for you, written by the assistant (or the template, if the model's answer failed validation).",
   voyage: "A simulated voyage starting (the demo's shipment simulator).",
   push: "A push to a customer the node gave up on, or couldn't publish.",
+  tool: 'A tool one of your own outside agents called over MCP (Gemini Enterprise, say), and how it went. Never its arguments or results.',
 };
 const SIDE_TIPS = {
   customer: 'Your shipper or receiver role: shipments other carriers carry for you.',
@@ -346,6 +347,7 @@ function addEntry(e) {
   }
   // A message in or out: the messages panel catches up.
   if (e.kind === 'envelope') loadMessages();
+  if (e.kind === 'tool') loadInbox();
   if ((e.kind === 'record' || e.kind === 'voyage') && currentTab() !== 'assistant') loadLeft();
 }
 
@@ -660,6 +662,8 @@ function renderChat() {
   bar.append(el('span', 'panel-title', 'Assistant'), el('span', 'hint', 'shipper role · it drafts; you decide'));
   const body = el('div', 'panel-body chat');
   const lines = state.chat.lines || [];
+  const inbox = inboxView();
+  if (inbox) body.appendChild(inbox);
   if (!lines.length) body.appendChild(el('div', 'empty', 'Ask about a carrier by its domain, book a shipment, or check on one.'));
   for (const l of lines) {
     const t = el('div', 'turn ' + (l.who === 'you' ? 'you' : l.who === 'note' ? 'note' : 'ai'));
@@ -776,7 +780,66 @@ function modal(title, rows, question, confirmText, onConfirm, extra = []) {
   return { close };
 }
 
-function bookingDialog(d) {
+// ── the inbox: drafts your outside agents made over MCP ──────────────
+async function loadInbox() {
+  if (!(state.me && state.me.sides.includes('customer'))) return;
+  try {
+    const r = await api('inbox');
+    state.inbox = r.drafts || [];
+    if (currentTab() === 'assistant') renderChat();
+    // A link from the agent (?draft=MD-…) opens that draft once.
+    const want = new URLSearchParams(location.search).get('draft');
+    const d = want && state.inbox.find((x) => x.draftId === want);
+    if (d && !state.openedLink) { state.openedLink = true; openInboxDraft(d.draftId); }
+  } catch { /* no inbox, or not this persona's */ }
+}
+
+// How a booking dialog sends and discards: the assistant's drafts, or the
+// inbox's.
+const CHAT = {
+  discard: async (d) => { state.chat = await api('assistant/discard', { method: 'POST', body: JSON.stringify({ draftId: d.draftId }) }); renderChat(); },
+  send: async (d) => {
+    try { state.chat = await api('assistant/send', { method: 'POST', body: JSON.stringify({ draftId: d.draftId }) }); } finally { await loadChat(); }
+  },
+};
+const INBOX = {
+  discard: async (d) => { state.inbox = (await api('inbox/discard', { method: 'POST', body: JSON.stringify({ draftId: d.draftId }) })).drafts || []; renderChat(); },
+  send: async (d) => {
+    try {
+      const r = await api('inbox/send', { method: 'POST', body: JSON.stringify({ draftId: d.draftId }) });
+      if (r.note) setStatus('ok', r.note);
+    } finally { await loadInbox(); loadMessages(); }
+  },
+};
+
+// openInboxDraft fetches one inbox draft for this page's dialog (the node
+// starts its arming delay for this session then) and opens the dialog.
+async function openInboxDraft(id) {
+  try {
+    const r = await api('inbox/draft?id=' + encodeURIComponent(id));
+    const d = (r.drafts || [])[0];
+    if (d) bookingDialog(d, INBOX);
+  } catch (e) { setStatus('bad', e.message); }
+}
+
+// inboxView is the assistant panel's list of drafts from outside agents.
+function inboxView() {
+  const drafts = state.inbox || [];
+  if (!drafts.length) return null;
+  const box = el('div', 'inbox');
+  box.appendChild(el('div', 'inbox-title', 'From your agents (MCP): waiting for a person'));
+  for (const d of drafts) {
+    const row = el('div', 'inbox-row');
+    row.append(el('span', null, `${d.draftId} → ${d.to}`), el('span', 'dim', `${d.request?.port_of_loading || ''} → ${d.request?.port_of_discharge || ''}`));
+    const b = el('button', 'draftlink', 'Review…');
+    b.onclick = () => openInboxDraft(d.draftId);
+    row.appendChild(b);
+    box.appendChild(row);
+  }
+  return box;
+}
+
+function bookingDialog(d, via = CHAT) {
   const q = d.request || {};
   const eq = (q.containers || []).map((c) => `${c.count} × ${c.equipment_size_type}, ${c.gross_weight_kg} kg each`).join('; ');
   const rows = [
@@ -794,16 +857,11 @@ function bookingDialog(d) {
   const discard = el('div', 'fineprint');
   const link = el('button', null, 'Discard this draft');
   link.onclick = async () => {
-    try { state.chat = await api('assistant/discard', { method: 'POST', body: JSON.stringify({ draftId: d.draftId }) }); renderChat(); dlg.close(); }
-    catch (e) { discard.lastChild.textContent = e.message; }
+    try { await via.discard(d); dlg.close(); } catch (e) { discard.lastChild.textContent = e.message; }
   };
   discard.append(link, el('span'));
   const dlg = modal(`Booking draft ${d.draftId}`, rows, 'Send this booking request? It is signed by your node and sent to ' + d.to + '.',
-    'Send booking request', async () => {
-      try {
-        state.chat = await api('assistant/send', { method: 'POST', body: JSON.stringify({ draftId: d.draftId }) });
-      } finally { await loadChat(); }
-    }, [discard]);
+    'Send booking request', () => via.send(d), [discard]);
 }
 
 function disruptDialog(s) {
@@ -913,7 +971,7 @@ async function start() {
   state.me = await api('me');
   state.gen++;
   state.messages = []; state.lastSeq = 0; state.entries = []; state.open.clear(); state.chat = null; state.tab = {}; state.shownDrafts = new Set();
-  state.initialSeq = null; state.alertCounts = {}; state.summaries = []; $('banner').hidden = true;
+  state.initialSeq = null; state.alertCounts = {}; state.summaries = []; state.inbox = []; state.openedLink = false; $('banner').hidden = true;
   const { me } = state;
   $('company').textContent = me.company;
   $('domain').textContent = me.domain;
@@ -926,6 +984,7 @@ async function start() {
   await Promise.all([loadLeft(), loadMessages()]);
   if (currentTab() === 'assistant') renderChat();
   connectEvents();
+  loadInbox();
 }
 
 // ── wiring ───────────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ package assistant
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -43,6 +44,9 @@ type Draft struct {
 // Drafts holds a session's drafts. Taking one removes it, so a draft is
 // sent at most once.
 type Drafts struct {
+	// Prefix starts a booking draft's ID (default BD): an outside agent's
+	// drafts are MD-, so the two never read alike.
+	Prefix string
 	mu     sync.Mutex
 	next   int
 	drafts map[string]Draft
@@ -65,7 +69,11 @@ func (d *Drafts) add(dr Draft) (Draft, error) {
 		d.drafts = map[string]Draft{}
 	}
 	d.next++
-	dr.ID = fmt.Sprintf("BD-%04d", d.next)
+	prefix := d.Prefix
+	if prefix == "" {
+		prefix = "BD"
+	}
+	dr.ID = fmt.Sprintf("%s-%04d", prefix, d.next)
 	if dr.Request.ShipperRef == "" {
 		dr.Request.ShipperRef = dr.ID
 	}
@@ -83,6 +91,20 @@ func (d *Drafts) requiredBy() []string {
 			out = append(out, dr.RequiredBy)
 		}
 	}
+	return out
+}
+
+// Open returns the open drafts, oldest first.
+func (d *Drafts) Open() []Draft {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]Draft, 0, len(d.drafts))
+	for _, dr := range d.drafts {
+		out = append(out, dr)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Created.Before(out[j].Created) || out[i].Created.Equal(out[j].Created) && out[i].ID < out[j].ID
+	})
 	return out
 }
 
