@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -94,6 +95,58 @@ func ValidateCall(tools []Tool, call ToolCall) error {
 	if err := schema.check("input", input); err != nil {
 		return fmt.Errorf("%w: %v", ErrBadInput, err)
 	}
+	return nil
+}
+
+// Integer is n's value if n is an integer as JSON Schema counts one:
+// digits, with no fractional part or an all-zero one. Clients that hold
+// every number as a float send 1 as 1.0 (Gemini Enterprise's does). The
+// test is on the text, so nothing that merely rounds to an integer
+// (1.0000000000000001) passes; exponents (1e0) don't either.
+func Integer(n json.Number) (int64, bool) {
+	s := string(n)
+	if whole, frac, ok := strings.Cut(s, "."); ok {
+		if frac == "" || strings.Trim(frac, "0") != "" {
+			return 0, false
+		}
+		s = whole
+	}
+	// JSON's integer grammar, which ParseInt is looser than: no "+", and
+	// no leading zero but "0" itself.
+	digits := strings.TrimPrefix(s, "-")
+	if digits == "" || digits[0] == '+' || len(digits) > 1 && digits[0] == '0' {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	return v, err == nil
+}
+
+// atLeast reports whether v >= bound, exactly: a bound past what int64
+// holds (or not integral) is compared as the integer next to it on the
+// right side.
+func atLeast(v int64, bound float64) bool {
+	switch {
+	case bound <= math.MinInt64:
+		return true
+	case bound >= math.MaxInt64:
+		return false
+	}
+	return v >= int64(math.Ceil(bound))
+}
+
+// Int is a tool input field that holds an integer, read as ValidateCall
+// checks one (Integer): 3 and 3.0 are both 3. Use it for every integer in
+// a tool's input struct, so decoding never refuses what validation let
+// through.
+type Int int64
+
+// UnmarshalJSON reads an integer, or a number with an all-zero fraction.
+func (i *Int) UnmarshalJSON(b []byte) error {
+	v, ok := Integer(json.Number(b))
+	if !ok {
+		return fmt.Errorf("llm: %s is not an integer", b)
+	}
+	*i = Int(v)
 	return nil
 }
 
@@ -197,8 +250,14 @@ func (s schemaNode) check(path string, v any) error {
 			return fmt.Errorf("%s is not a number", path)
 		}
 		if s.Type == "integer" {
-			if _, err := n.Int64(); err != nil {
+			v, ok := Integer(n)
+			if !ok {
 				return fmt.Errorf("%s is not an integer", path)
+			}
+			// Integers compare as integers: past 2^53 a float64 can't tell
+			// a bound from its neighbour.
+			if s.Minimum != nil && !atLeast(v, *s.Minimum) || s.Maximum != nil && !atLeast(-v, -*s.Maximum) {
+				return fmt.Errorf("%s is out of range", path)
 			}
 		}
 		// A number too large for a float64 (1e400) is out of any range.

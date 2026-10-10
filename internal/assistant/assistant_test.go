@@ -719,3 +719,19 @@ func TestOneLine(t *testing.T) {
 		}
 	}
 }
+
+// TestDraftFloatNumbers: a client that holds every number as a float
+// (Gemini Enterprise's) sends 1 as 1.0. The draft takes it as 1.
+func TestDraftFloatNumbers(t *testing.T) {
+	m := fake.Turns(llm.GenerateResponse{ToolCalls: []llm.ToolCall{fake.Call("1", ToolDraftBooking,
+		draftJSON(`"containerCount":2.0,"grossWeightKg":12000.0`))}},
+		llm.GenerateResponse{Text: "Ready."})
+	a, _, _ := newAssistant(m, &node{})
+	r, err := a.Turn(context.Background(), &Conversation{}, "Book with ocean-blue.example")
+	if err != nil || len(r.Drafts) != 1 {
+		t.Fatalf("%+v, %v", r, err)
+	}
+	if eq := r.Drafts[0].Request.Equipment; len(eq) != 1 || eq[0].Count != 2 || eq[0].GrossWeightKg != 12000 {
+		t.Errorf("equipment %+v", eq)
+	}
+}
