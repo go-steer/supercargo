@@ -212,9 +212,20 @@ caller's own token itself.
 
 3. **Verify Auth.** Google asks you to sign in. Use an account in
    `MEMBERS`. Then **Continue**, and **Continue** again.
-4. Location **Multi-region (global)**, connector name `Cymbal Shoes`, then
-   **Create**. Wait until the state is **Active**.
+4. Location **Multi-region (global)**, connector name `Cymbal Shoes`, and
+   a description. The assistant uses the description to decide when the
+   connector applies, so say what it's for:
+   > Cymbal Shoes' shipping node (ULP). Use for anything about Cymbal
+   > Shoes' ocean shipments: list our shipments and their status, track
+   > events and delay alerts, look up carriers (our partners, or find new
+   > ones on a route), ask a carrier about one of our bookings, and draft
+   > a new booking. Drafting never sends anything: a person reviews and
+   > confirms every booking in Cymbal's browser UI, at the link the tool
+   > returns.
+
+   Then **Create**, and wait until the state is **Active**.
 5. Open the data store → **Actions** → **Reload custom actions**. That
+   is the first request that reaches Cymbal's node, with your token; it
    lists Cymbal's tools: `list_shipments`, `get_events`, `get_status`,
    `get_operator_profile`, `list_partners`, `find_partners`,
    `ask_operator`, `draft_booking`. Select them all and choose **Enable
@@ -227,6 +238,11 @@ caller's own token itself.
    https://docs.cloud.google.com/gemini/enterprise/docs/connectors/connect-existing-data-store
 
 ## 7. The scene
+
+First, in the Gemini Enterprise chat app, **enable the Cymbal Shoes
+connector** for your chat. Until you do, the assistant answers from a
+web search instead of calling Cymbal's tools, and Cymbal's node sees no
+`tool call`.
 
 1. In Gemini Enterprise, ask: *"Using Cymbal Shoes, find a carrier from
    Rotterdam to Newark and draft a booking for one 40' high-cube
@@ -252,6 +268,8 @@ caller's own token itself.
 | **Not allowed** after sign-in | The email isn't in `MEMBERS`. Add it and re-run the script. |
 | Verify Auth works, but Reload custom actions fails with 401 | The account isn't in `MEMBERS`, or the scopes lack `email`. Cymbal's log says `unauthorized`. |
 | Gemini Enterprise can't reach the server | `allowedEgressFqdns` is missing the run.app host or Google's hosts (step 5). |
+| Gemini Enterprise answers from the web; Cymbal's log has no `tool call` | The Cymbal Shoes connector isn't enabled in the chat app (step 7). Enable it, and check the data store is connected to the app. |
+| Reload custom actions shows nothing; Cymbal's log has no `/mcp` request | The MCP Server URL is wrong, or `allowedEgressFqdns` blocks the run.app host (step 5). |
 | The assistant answers from templates | Vertex AI isn't enabled, or the model isn't available in `LLM_LOCATION`. Set `LLM_MODEL` or `LLM_LOCATION` and re-run. |
 | Nodes reject each other's messages | Read each node's log: `gcloud run services logs read cymbal-shoes --region "$REGION"`. |
 
