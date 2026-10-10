@@ -474,3 +474,25 @@ func TestStatusCommandRejects(t *testing.T) {
 		t.Errorf("a refusal: %v", err)
 	}
 }
+
+func TestCheck(t *testing.T) {
+	cfg := shipperConfig(t)
+	out, err := runCmd(t, "", "check", "--config", cfg)
+	if err != nil || !strings.Contains(out, "cymbal-shoes.example") {
+		t.Errorf("check: %q, %v", out, err)
+	}
+	bad := filepath.Join(t.TempDir(), "bad.yaml")
+	if err := os.WriteFile(bad, []byte("domain: x\nlisten: nowhere\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, args := range map[string][]string{
+		"an invalid config": {"check", "--config", bad},
+		"no config":         {"check"},
+		"a missing config":  {"check", "--config", filepath.Join(t.TempDir(), "none.yaml")},
+		"extra arguments":   {"check", "--config", cfg, "more"},
+	} {
+		if _, err := runCmd(t, "", args...); err == nil {
+			t.Errorf("%s: succeeded", name)
+		}
+	}
+}

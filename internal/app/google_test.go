@@ -17,6 +17,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/assistant"
+	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/webui"
 )
 
@@ -167,5 +169,101 @@ func TestGoogleSecret(t *testing.T) {
 	}
 	if _, _, err := secretFrom("", filepath.Join(dir, "missing")); err == nil {
 		t.Error("a missing secret file: no error")
+	}
+}
+
+// TestProxyMode: a node behind a proxy that serves https at its domain
+// (Cloud Run): plain HTTP on its listener, its key from the environment
+// (and then gone from it), https everywhere it publishes.
+func TestProxyMode(t *testing.T) {
+	pemData, err := os.ReadFile(keyFile(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SUPERCARGO_TEST_SIGNING_KEY", string(pemData))
+	cfg, err := config.Parse([]byte(`domain: ocean-blue-123.us-central1.run.app
+name: Ocean Blue
+role: operator
+listen: ":8080"
+tls: { mode: proxy }
+keys: [{ kid: ob-1, privateKeyEnv: SUPERCARGO_TEST_SIGNING_KEY }]
+operator: { refPrefix: OB-BKG, containerPrefix: OCBU, vessel: Aurora, voyage: 42W, departureHour: 18, transit: 134h }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(cfg, quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := os.LookupEnv("SUPERCARGO_TEST_SIGNING_KEY"); ok {
+		t.Error("the signing key stayed in the environment")
+	}
+	if got := RESTURL(cfg); got != "https://ocean-blue-123.us-central1.run.app/ulp" {
+		t.Errorf("RESTURL = %s", got)
+	}
+	srv := httptest.NewServer(a.Server.Handler)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/.well-known/ulp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "https://ocean-blue-123.us-central1.run.app/ulp") {
+		t.Errorf("profile: %d %s", resp.StatusCode, body)
+	}
+}
+
+// TestProxyModeStaysHTTPS: behind the proxy, the node still never speaks
+// plain HTTP to partners, publishes only https endpoints, and its UI
+// cookies are Secure, __Host- ones.
+func TestProxyModeStaysHTTPS(t *testing.T) {
+	// A partner that answers only plain HTTP, mapped as a peer.
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("the node spoke plain HTTP to a partner")
+		http.NotFound(w, nil)
+	}))
+	defer plain.Close()
+	t.Setenv("SUPERCARGO_TEST_GOOGLE_SECRET", "a-client-secret")
+	cfg, err := config.Parse([]byte(`domain: cymbal-shoes-123.us-central1.run.app
+name: Cymbal Shoes
+role: shipper
+listen: ":8080"
+tls: { mode: proxy }
+keys: [{ kid: cy-1, privateKeyFile: "` + keyFile(t) + `" }]
+peers: { plain.example: "` + strings.TrimPrefix(plain.URL, "http://") + `" }
+google: { clientID: 123-abc.apps.googleusercontent.com, clientSecretEnv: SUPERCARGO_TEST_GOOGLE_SECRET, publicURL: "https://cymbal-shoes-123.us-central1.run.app" }
+web:
+  auth: google
+  personas:
+    - { id: alex, name: Alex, roles: [shipper], members: [alex@example.com] }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(cfg, quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Keys.Profile(context.Background(), "plain.example"); err == nil {
+		t.Error("a profile came over plain HTTP")
+	}
+	get := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Host = "cymbal-shoes-123.us-central1.run.app"
+		rec := httptest.NewRecorder()
+		a.Server.Handler.ServeHTTP(rec, req)
+		return rec
+	}
+	for _, path := range []string{"/.well-known/ulp"} {
+		body := get(path).Body.String()
+		if !strings.Contains(body, "https://cymbal-shoes-123.us-central1.run.app/") || strings.Contains(body, "http://") {
+			t.Errorf("%s publishes a non-https endpoint: %s", path, body)
+		}
+	}
+	c := get(webui.LoginPath).Result().Cookies()
+	if len(c) != 1 || !c[0].Secure || !strings.HasPrefix(c[0].Name, "__Host-") || c[0].Path != "/" {
+		t.Errorf("the sign-in cookie behind the proxy: %+v", c)
 	}
 }

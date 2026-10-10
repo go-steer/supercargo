@@ -16,6 +16,7 @@
 //
 //	ulpnode serve  --config node.yaml               run the node
 //	ulpnode keygen --kid cy-2026-1 --out key.pem    mint a signing key; print its public JWK
+//	ulpnode check  --config node.yaml               check a config without running it
 //	ulpnode book   --config node.yaml --operator ocean-blue.example --request booking.json
 //	                                                send a booking (after an explicit y)
 //	ulpnode ask    --config node.yaml --booking OB-BKG-1042 "Why the delay?"
@@ -69,6 +70,7 @@ func main() {
 const usage = `usage:
   ulpnode serve  --config FILE [--log-format text|json|pretty] [--log-theme dark|light]
   ulpnode keygen --kid KID --out FILE
+  ulpnode check  --config FILE
   ulpnode status --config FILE --booking REF [--operator DOMAIN]
   ulpnode ask    --config FILE --booking REF [--operator DOMAIN] QUESTION...
   ulpnode watch  --config FILE [--since N]
@@ -83,6 +85,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return serve(args[1:], stderr)
 	case "keygen":
 		return keygen(args[1:], stdout)
+	case "check":
+		return check(args[1:], stdout)
 	case "book":
 		return book(args[1:], stdin, stdout, stderr)
 	case "ask":
@@ -94,6 +98,24 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	default:
 		return fmt.Errorf("unknown command %q\n%s", args[0], usage)
 	}
+}
+
+// check loads a config as serve would, without its keys, secrets or
+// files, and says so if it holds: for a deployment to check what it
+// renders before shipping it.
+func check(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("check", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	path := fs.String("config", "", "node config file")
+	if err := fs.Parse(args); err != nil || *path == "" || fs.NArg() != 0 {
+		return errors.New("check: --config FILE is required")
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "%s: %s (%s), roles %s, tls %s\n", *path, cfg.Domain, cfg.Name, strings.Join(cfg.Roles, "+"), cfg.TLS.Mode)
+	return nil
 }
 
 func logger(format, themeName string, w io.Writer) (*slog.Logger, error) {
