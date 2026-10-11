@@ -26,6 +26,7 @@ import (
 
 	"github.com/go-steer/supercargo/internal/assistant"
 	"github.com/go-steer/supercargo/internal/ports"
+	"github.com/go-steer/supercargo/pkg/intents"
 )
 
 // The confirmation dialog is the only way a booking leaves the shipper
@@ -146,7 +147,10 @@ func (m *Model) command(text string) bool {
 // what stays home.
 func (m *Model) dialogView() string {
 	d := m.dialog
-	r := d.Request
+	var r intents.BookingRequestBody
+	if d.Request != nil {
+		r = *d.Request
+	}
 	// Every field in full, wrapped: what the dialog shows is what is sent.
 	width := max(30, min(90, m.width-8)) - 11
 	line := func(label, value string) string {

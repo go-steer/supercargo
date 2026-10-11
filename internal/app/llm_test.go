@@ -126,6 +126,31 @@ func TestPartners(t *testing.T) {
 	}
 }
 
+// TestCarrierAssistant: the carrier's assistant is the operator role's,
+// needs a model, and carries the company's own skills.
+func TestCarrierAssistant(t *testing.T) {
+	if _, err := CarrierAssistant(cfg(t, config.RoleShipper), nil); err == nil {
+		t.Error("a shipper node got a carrier's assistant")
+	}
+	c := cfg(t, config.RoleOperator)
+	if _, err := CarrierAssistant(c, nil); err == nil {
+		t.Error("a carrier's assistant with no model")
+	}
+	c.LLM = &config.LLM{Provider: config.ProviderFake}
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "delay-phrasing"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "delay-phrasing", "SKILL.md"), []byte("---\nname: delay-phrasing\ndescription: d\n---\nBe brief."), 0o644)
+	c.Skills = &config.Skills{Dir: dir}
+	a, err := CarrierAssistant(c, nil)
+	if err != nil || a.Model.Name() != "fake" || len(a.Skills) != 1 || a.Skills[0].Name != "delay-phrasing" || a.Self.Domain != c.Domain {
+		t.Fatalf("carrier's assistant: %+v, %v", a, err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "delay-phrasing", "SKILL.md"), []byte("no frontmatter"), 0o644)
+	if _, err := CarrierAssistant(c, nil); err == nil {
+		t.Error("a broken company skill loaded")
+	}
+}
+
 func TestAgentSkills(t *testing.T) {
 	all, err := agentSkills("shipment-inquiry", nil)
 	if err != nil || len(all) != 1 || all[0].Name != "shipment-inquiry" || all[0].Source != "builtin" {

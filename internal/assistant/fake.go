@@ -302,10 +302,10 @@ func profileReply(content string) llm.GenerateResponse {
 
 func draftReply(content string) llm.GenerateResponse {
 	var d DraftResult
-	if json.Unmarshal([]byte(content), &d) != nil || d.DraftID == "" || len(d.Request.Equipment) == 0 {
+	if json.Unmarshal([]byte(content), &d) != nil || d.DraftID == "" || d.Request == nil || len(d.Request.Equipment) == 0 {
 		return say("I couldn't prepare the draft.")
 	}
-	r := d.Request
+	r := *d.Request
 	e := r.Equipment[0]
 	out := fmt.Sprintf("Draft %s is ready: %d × %s of %s, %s (%s) → %s (%s), departing on or after %s, with %s.",
 		d.DraftID, e.Count, ports.SizeLabel(e.ISOType), r.Cargo.Description, ports.Name(r.PortOfLoading), r.PortOfLoading,

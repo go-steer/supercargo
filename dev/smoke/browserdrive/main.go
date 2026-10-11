@@ -175,6 +175,26 @@ func run(chrome, shipperURL, operatorURL, presenterURL string) error {
 		waitText(`.strip`, "delayed")); err != nil {
 		return err
 	}
+	if err := step("Ocean Blue: Sam's assistant lists the voyage's bookings", ob,
+		chromedp.Click(`//button[contains(@class,"tab") and text()="Assistant"]`, chromedp.BySearch),
+		ask("Which bookings are on voyage 42W?"),
+		waitText(`.turn.ai`, "OB-BKG-")); err != nil {
+		return err
+	}
+	if err := step("Ocean Blue: the assistant drafts a voyage's delay; a person publishes it", ob,
+		ask("Delay voyage 42W by 1 day: fog at Halifax"),
+		chromedp.WaitVisible(`.dialog`, chromedp.ByQuery),
+		waitText(`.dialog`, "the whole voyage"),
+		chromedp.WaitEnabled(`.dialog button.primary`, chromedp.ByQuery),
+		chromedp.Click(`.dialog button.primary`, chromedp.ByQuery),
+		chromedp.WaitNotPresent(`.dialog`, chromedp.ByQuery),
+		waitText(`.chat`, "Published DD-0001: signed alerts for OB-BKG-")); err != nil {
+		return err
+	}
+	if err := step("Cymbal Shoes: the voyage's alert arrives too", cy,
+		waitText(`#banner`, "Oct 17")); err != nil { // 13th + 3 days + 1
+		return err
+	}
 	if presenterURL == "" {
 		return nil
 	}

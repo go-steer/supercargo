@@ -245,6 +245,7 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
 .dialog .row .k { color: var(--text-dim); }
 .dialog .row.notsent .k, .dialog .row.notsent .v { color: var(--green); }
 .dialog .row.newpartner .k, .dialog .row.newpartner .v { color: var(--orange); }
+.dialog .row.scope .v { color: var(--text-dim); }
 .dialog .q { margin-top: 14px; font-weight: 700; }
 .dialog .buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 .dialog button.primary { border-color: var(--blue); color: var(--blue); }

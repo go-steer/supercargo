@@ -82,6 +82,11 @@ type Assistant struct {
 	// shipper's business-context dates and notes, if the caller has them.
 	// Open drafts' required-by dates are always private.
 	Private []string
+	// Carrier, if set, makes this the carrier's assistant (the operator
+	// role's): its tools read the carrier's bookings and draft
+	// disruptions, which a person confirms; Node and the partner fields
+	// are the shipper's and unused.
+	Carrier CarrierNode
 	// AddressBook is the company's own list of the partners it knows,
 	// trusted like its configuration: the user may name one by its name.
 	AddressBook []directory.Entry
@@ -356,7 +361,7 @@ func (a *Assistant) generate(ctx context.Context, c *Conversation, round int) (l
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req := llm.GenerateRequest{System: a.system(), Messages: c.messages, Tools: Tools, MaxTokens: maxAssistantToken}
+	req := llm.GenerateRequest{System: a.system(), Messages: c.messages, Tools: a.tools(), MaxTokens: maxAssistantToken}
 	var skillIDs []string
 	for _, s := range a.Skills {
 		skillIDs = append(skillIDs, s.ID())
@@ -371,7 +376,7 @@ func (a *Assistant) generate(ctx context.Context, c *Conversation, round int) (l
 		// One capped line: a provider's error can carry a whole response.
 		m.Outcome, m.Reason = "error", OneLine(err.Error(), 200)
 	} else {
-		m.Tools = toolNames(resp.ToolCalls)
+		m.Tools = toolNames(a.tools(), resp.ToolCalls)
 	}
 	span.End(resp, m.Outcome)
 	if a.OnModelCall != nil {
@@ -388,7 +393,11 @@ func (a *Assistant) system() string {
 	if name == "" {
 		name = "the shipper"
 	}
-	s := fmt.Sprintf(systemPrompt, name, a.Self.Domain, a.now().UTC().Format(time.DateOnly))
+	prompt := systemPrompt
+	if a.Carrier != nil {
+		prompt = carrierPrompt
+	}
+	s := fmt.Sprintf(prompt, name, a.Self.Domain, a.now().UTC().Format(time.DateOnly))
 	if len(a.Skills) == 0 {
 		return s
 	}
@@ -439,7 +448,7 @@ type callResult struct {
 // the model as error results, so it can explain or ask.
 func (a *Assistant) call(ctx context.Context, c *Conversation, t *turnState, call llm.ToolCall, i int, bad bool) callResult {
 	out := callResult{ToolResult: llm.ToolResult{CallID: call.ID}}
-	ctx, span := llm.StartTool(ctx, call, Tools)
+	ctx, span := llm.StartTool(ctx, call, a.tools())
 	defer span.End()
 	var result any
 	var err error
@@ -449,11 +458,15 @@ func (a *Assistant) call(ctx context.Context, c *Conversation, t *turnState, cal
 	case bad:
 		err = fmt.Errorf("%w: the input is not a JSON object", llm.ErrBadInput)
 	default:
-		if err = llm.ValidateCall(Tools, call); err == nil {
+		if err = llm.ValidateCall(a.tools(), call); err == nil {
 			if a.OnToolStart != nil {
 				a.OnToolStart(ToolEvent{Name: clean(call.Name), Input: call.Input})
 			}
-			result, err = a.run(ctx, c, t, call)
+			if a.Carrier != nil {
+				result, err = a.runCarrier(ctx, call)
+			} else {
+				result, err = a.run(ctx, c, t, call)
+			}
 		}
 	}
 	ev := ToolEvent{Name: clean(call.Name), Input: call.Input}
@@ -536,7 +549,7 @@ func toolStatus(err error) string {
 // them: a model's name for a tool is its output, so only declared tools
 // are named (anything else could carry the conversation onto the shared
 // stream), at most MaxCallsPerRound of them.
-func toolNames(calls []llm.ToolCall) []string {
+func toolNames(tools []llm.Tool, calls []llm.ToolCall) []string {
 	var out []string
 	for i, c := range calls {
 		if i == MaxCallsPerRound {
@@ -544,7 +557,7 @@ func toolNames(calls []llm.ToolCall) []string {
 			break
 		}
 		name := "(unknown tool)"
-		if slices.ContainsFunc(Tools, func(t llm.Tool) bool { return t.Name == c.Name }) {
+		if slices.ContainsFunc(tools, func(t llm.Tool) bool { return t.Name == c.Name }) {
 			name = c.Name
 		}
 		out = append(out, name)

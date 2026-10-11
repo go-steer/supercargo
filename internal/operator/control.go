@@ -37,11 +37,14 @@ type DisruptRequest struct {
 }
 
 // DisruptResponse is its answer: the alert published (a booking), each
-// booking's outcome (a voyage), or why not.
+// booking's outcome (a voyage), or why not. Applied (a booking, HTTP
+// 200): the delay took effect but its alert wasn't sent, so disrupting
+// again would delay it twice.
 type DisruptResponse struct {
-	Alert  *intents.TnTAlertBody `json:"alert,omitempty"`
-	Alerts []VoyageAlert         `json:"alerts,omitempty"`
-	Error  string                `json:"error,omitempty"`
+	Alert   *intents.TnTAlertBody `json:"alert,omitempty"`
+	Alerts  []VoyageAlert         `json:"alerts,omitempty"`
+	Applied bool                  `json:"applied,omitempty"`
+	Error   string                `json:"error,omitempty"`
 }
 
 // ControlHandler is the operator's control API (internal/control): ulpctl
@@ -120,6 +123,9 @@ func RegisterControl(mux *http.ServeMux, sim *Simulator, bookings *store.Booking
 			control.Answer(w, http.StatusNotFound, DisruptResponse{Error: err.Error()})
 		case errors.Is(err, ErrArrived):
 			control.Answer(w, http.StatusConflict, DisruptResponse{Error: err.Error()})
+		case errors.Is(err, ErrAlertNotSent):
+			// It happened: not a refusal, which a client may retry.
+			control.Answer(w, http.StatusOK, DisruptResponse{Applied: true, Error: err.Error()})
 		case err != nil:
 			control.Answer(w, http.StatusBadRequest, DisruptResponse{Error: err.Error()})
 		default:

@@ -111,6 +111,10 @@ func disrupt(args []string, stdout, stderr io.Writer) error {
 		}
 		return nil
 	}
+	if code == http.StatusOK && dr.Applied {
+		fmt.Fprintf(stdout, "Delayed %s, but its alert was not sent: %s\n", *booking, dr.Error)
+		return errors.New("disrupt: the delay is applied without its alert; don't run this again, it would delay the voyage twice")
+	}
 	if code != http.StatusOK || dr.Alert == nil {
 		return fmt.Errorf("disrupt: HTTP %d: %s", code, dr.Error)
 	}

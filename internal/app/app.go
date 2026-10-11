@@ -354,11 +354,29 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 	for i, p := range w.Personas {
 		personas[i] = webui.Persona{ID: p.ID, Name: p.Name, Title: p.Title, Roles: p.Roles, Members: p.Members}
 	}
-	var newAssistant func() (*assistant.Assistant, error)
-	if a.Config.Has(config.RoleShipper) && a.Config.LLM != nil {
-		node := assistant.ControlNode{Client: control.InProcess(a.controlAPI, 2*time.Minute)}
-		newAssistant = func() (*assistant.Assistant, error) {
-			as, err := ShipperAssistant(a.Config, node)
+	// One assistant per role the node has (with a model): the shipper's on
+	// the customer side, the carrier's on the operator side (#75).
+	var newAssistant func(side string) (*assistant.Assistant, error)
+	var assistantSides []string
+	if a.Config.LLM != nil {
+		client := control.InProcess(a.controlAPI, 2*time.Minute)
+		if a.Config.Has(config.RoleShipper) {
+			assistantSides = append(assistantSides, activity.SideCustomer)
+		}
+		if a.Config.Has(config.RoleOperator) {
+			assistantSides = append(assistantSides, activity.SideOperator)
+		}
+		newAssistant = func(side string) (*assistant.Assistant, error) {
+			var as *assistant.Assistant
+			var err error
+			switch side {
+			case activity.SideCustomer:
+				as, err = ShipperAssistant(a.Config, assistant.ControlNode{Client: client})
+			case activity.SideOperator:
+				as, err = CarrierAssistant(a.Config, assistant.ControlCarrierNode{Client: client})
+			default:
+				err = fmt.Errorf("no assistant for side %q", side)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -369,7 +387,7 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 				if m.Agent == "" {
 					m.Agent = "assistant"
 				}
-				a.Activity.Publish(activity.Entry{Side: activity.SideCustomer, Kind: activity.KindModel, Model: &m})
+				a.Activity.Publish(activity.Entry{Side: side, Kind: activity.KindModel, Model: &m})
 			}
 			return as, nil
 		}
@@ -381,7 +399,7 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 		}
 	}
 	mux.Handle(webui.Prefix, webui.Handler(webui.Config{Company: a.Config.Name, Domain: a.Config.Domain, Personas: personas, NewAssistant: newAssistant,
-		FrameAncestors: w.FrameAncestors, Panels: panels, Inbox: a.inbox, Google: a.webGoogle(), Control: a.controlAPI,
+		AssistantSides: assistantSides, FrameAncestors: w.FrameAncestors, Panels: panels, Inbox: a.inbox, Google: a.webGoogle(), Control: a.controlAPI,
 		Secure: a.Config.TLS.Mode != config.TLSInsecureDev || strings.HasPrefix(publicURL(a.Config), "https://"),
 		Hosts:  slices.Concat(listenHosts(a.Config.Listen), publicHost(a.Config), w.Hosts)}))
 	return mux

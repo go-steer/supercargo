@@ -28,14 +28,17 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/go-steer/supercargo/internal/operator"
 	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
 
-// Sent is a draft that was sent, and the carrier's answer.
+// Sent is a draft that was sent, and the answer: the carrier's
+// confirmation (a booking), or each booking's outcome (a disruption).
 type Sent struct {
 	Draft        Draft
 	Confirmation *intents.BookingConfirmationBody
+	Disrupted    *operator.DisruptResponse
 }
 
 // ErrOutcomeUnknown reports a send that may or may not have reached the
@@ -56,7 +59,7 @@ func (a *Assistant) Send(ctx context.Context, id string) (sent *Sent, err error)
 			span.SetStatus(codes.Error, "outcome_unknown")
 		case err != nil:
 			span.SetStatus(codes.Error, "not_sent")
-		default:
+		case sent.Confirmation != nil:
 			span.SetAttributes(attribute.String("ulp.booking_status", sent.Confirmation.Status))
 		}
 		span.End()
@@ -65,29 +68,61 @@ func (a *Assistant) Send(ctx context.Context, id string) (sent *Sent, err error)
 	if err != nil {
 		return nil, err
 	}
+	if d.Disruption != nil {
+		return a.sendDisruption(ctx, d)
+	}
+	if a.Node == nil {
+		a.Drafts.Put(d)
+		return nil, errors.New("not sent: this assistant can't send bookings")
+	}
 	resp, err := a.Node.Book(ctx, shipper.BookRequest{Operator: d.Operator, Request: d.Request})
 	if err != nil {
-		var ne *NodeError
-		var op *net.OpError
-		switch {
-		case errors.As(err, &ne) && ne.Status >= http.StatusBadRequest && ne.Status < http.StatusInternalServerError:
-			// Refused before anything was sealed.
-			a.Drafts.Put(d)
-			if strings.HasPrefix(err.Error(), "not sent") {
-				return nil, err
-			}
-			return nil, fmt.Errorf("not sent: %w", err)
-		case errors.As(err, &op) && op.Op == "dial":
-			// The node isn't running: nothing left the shipper.
-			a.Drafts.Put(d)
-			return nil, fmt.Errorf("not sent: is the node running? %w", err)
-		}
-		return nil, fmt.Errorf("%w (%v)", ErrOutcomeUnknown, err)
+		return nil, a.notSent(d, err)
 	}
 	if resp.Confirmation == nil {
 		return nil, fmt.Errorf("%w (the node answered without a confirmation)", ErrOutcomeUnknown)
 	}
 	return &Sent{Draft: d, Confirmation: resp.Confirmation}, nil
+}
+
+// sendDisruption publishes a drafted delay through the carrier's node:
+// each affected customer gets its signed alert. A voyage answers per
+// booking; one that wasn't delayed, or was without its alert going out,
+// is in the outcome, for the report.
+func (a *Assistant) sendDisruption(ctx context.Context, d Draft) (*Sent, error) {
+	if a.Carrier == nil {
+		a.Drafts.Put(d)
+		return nil, errors.New("not sent: this assistant can't publish delays")
+	}
+	dis := d.Disruption
+	resp, err := a.Carrier.Disrupt(ctx, operator.DisruptRequest{BookingRef: dis.BookingRef, Vessel: dis.Vessel, Voyage: dis.Voyage,
+		Delay: dis.Delay, Reason: dis.Reason})
+	if err != nil {
+		return nil, a.notSent(d, err)
+	}
+	return &Sent{Draft: d, Disrupted: resp}, nil
+}
+
+// notSent sorts out a failed send: refused before anything was sealed (an
+// HTTP 4xx), or the node not running, puts the draft back; anything else
+// may or may not have happened.
+func (a *Assistant) notSent(d Draft, err error) error {
+	var ne *NodeError
+	var op *net.OpError
+	switch {
+	case errors.As(err, &ne) && ne.Status >= http.StatusBadRequest && ne.Status < http.StatusInternalServerError:
+		// Refused before anything was sealed.
+		a.Drafts.Put(d)
+		if strings.HasPrefix(err.Error(), "not sent") {
+			return err
+		}
+		return fmt.Errorf("not sent: %w", err)
+	case errors.As(err, &op) && op.Op == "dial":
+		// The node isn't running: nothing left.
+		a.Drafts.Put(d)
+		return fmt.Errorf("not sent: is the node running? %w", err)
+	}
+	return fmt.Errorf("%w (%v)", ErrOutcomeUnknown, err)
 }
 
 // notePrefix marks a message the UI wrote into the conversation: it is
@@ -98,14 +133,23 @@ const notePrefix = "[ulpchat] "
 // so it can tell the user (comparing the planned arrival with their
 // deadline, say). The note is the code's, not the user's words.
 func (a *Assistant) Report(ctx context.Context, c *Conversation, s *Sent) (Reply, error) {
-	result, err := json.Marshal(map[string]any{"draftId": s.Draft.ID, "operator": s.Draft.Operator,
-		"confirmation": s.Confirmation, "requiredBy": s.Draft.RequiredBy})
+	var result []byte
+	var err error
+	note := notePrefix + "The user confirmed draft " + s.Draft.ID + " in the dialog, and our node sent it, signed. " +
+		"The carrier's answer is below; tell the user the outcome in a sentence or two, and compare the planned arrival with their deadline if they gave one.\n"
+	if s.Disrupted != nil {
+		result, err = json.Marshal(map[string]any{"draftId": s.Draft.ID, "disruption": s.Draft.Disruption, "outcome": s.Disrupted})
+		note = notePrefix + "The user confirmed delay " + s.Draft.ID + " in the dialog, and our node published it. " +
+			"The outcome is below: tell the user which bookings got their signed alert and the new ETAs, in a sentence or two. " +
+			"Name any booking that got no alert; one marked applied was delayed anyway, so say not to publish the delay again.\n"
+	} else {
+		result, err = json.Marshal(map[string]any{"draftId": s.Draft.ID, "operator": s.Draft.Operator,
+			"confirmation": s.Confirmation, "requiredBy": s.Draft.RequiredBy})
+	}
 	if err != nil {
 		return Reply{}, err
 	}
-	note := notePrefix + "The user confirmed draft " + s.Draft.ID + " in the dialog, and our node sent it, signed. " +
-		"The carrier's answer is below; tell the user the outcome in a sentence or two, and compare the planned arrival with their deadline if they gave one.\n" +
-		"<result>\n" + string(result) + "\n</result>"
+	note += "<result>\n" + string(result) + "\n</result>"
 	r, err := a.turn(ctx, c, note, false)
 	if err != nil {
 		// The send happened: the conversation keeps the fact even when

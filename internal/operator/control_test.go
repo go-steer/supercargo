@@ -16,6 +16,7 @@ package operator
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -91,6 +92,18 @@ func TestControlDisrupt(t *testing.T) {
 	}
 	if got := []string{resp.Alerts[0].BookingRef, resp.Alerts[1].BookingRef}; !slices.Contains(got, ref) || !slices.Contains(got, other) {
 		t.Errorf("voyage alerts for %v", got)
+	}
+	// Applied without its alert: 200, applied, so nobody retries it.
+	s3 := newSimulated(t)
+	ref3 := s3.book(t, 1)
+	s3.advance(2 * time.Second)
+	s3.pub.mu.Lock()
+	s3.pub.failAlerts = errors.New("queue gone")
+	s3.pub.mu.Unlock()
+	code, resp = post(t, ControlHandler(s3.sim, s3.svc.Bookings, store.NewEventLog(0)), "127.0.0.1:1", "application/json",
+		`{"bookingRef":"`+ref3+`","delay":"1h","reason":"Late."}`)
+	if code != http.StatusOK || !resp.Applied || resp.Alert != nil || !strings.Contains(resp.Error, "don't disrupt again") {
+		t.Errorf("applied without its alert: %d %+v", code, resp)
 	}
 	// After arrival: 409.
 	s2 := newSimulated(t)

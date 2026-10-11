@@ -59,4 +59,4 @@ if ! "$work/bin/browserdrive" -chrome "$chrome" \
   smoke_fail "$work" "the browser run failed"
 fi
 grep -q "Presenter: both" "$work/browser.log" || smoke_fail "$work" "the browser run stopped early"
-echo "✓ smoke/browser: booked through the assistant and its dialog, disrupted from the carrier view, the delay and the journey arrived live; the presenter page framed both"
+echo "✓ smoke/browser: booked through the assistant and its dialog, disrupted from the carrier view, the delay and the journey arrived live; the carrier's assistant drafted a voyage delay that a person published; the presenter page framed both"

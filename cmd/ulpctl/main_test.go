@@ -68,6 +68,8 @@ func fakeNode(t *testing.T, status int, errText string) (cfg string, got *operat
 				applied := strings.HasPrefix(errText, "applied: ")
 				resp.Alerts = append(resp.Alerts, operator.VoyageAlert{BookingRef: "OB-BKG-1043", Error: errText, Applied: applied})
 			}
+		} else if status == http.StatusOK && strings.HasPrefix(errText, "applied: ") {
+			resp = operator.DisruptResponse{Applied: true, Error: errText}
 		} else if status == http.StatusOK {
 			resp.Alert = &intents.TnTAlertBody{AlertID: "AL-000009", Kind: "delay", Severity: "high", Summary: got.Reason,
 				PreviousETA: "2026-10-13T08:00:00Z", NewETA: "2026-10-16T08:00:00Z", CauseEventIDs: []string{"EV-000008"}}
@@ -97,6 +99,17 @@ func TestDisrupt(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
+	}
+}
+
+// TestDisruptApplied: a booking delayed without its alert is said
+// plainly, and the command fails so nobody runs it again.
+func TestDisruptApplied(t *testing.T) {
+	cfg, _ := fakeNode(t, http.StatusOK, "applied: the alert was not sent")
+	var out bytes.Buffer
+	err := run([]string{"disrupt", "--config", cfg, "--booking", "OB-BKG-1042", "--delay", "1h", "--reason", "Late."}, &out, &out)
+	if err == nil || !strings.Contains(err.Error(), "don't run this again") || !strings.Contains(out.String(), "Delayed OB-BKG-1042, but its alert was not sent") {
+		t.Errorf("applied: %v\n%s", err, out.String())
 	}
 }
 
