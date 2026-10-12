@@ -239,6 +239,10 @@ caller's own token itself.
 
 ## 7. The scene
 
+To present it, follow [the demo script](demo-script.md): the scenes in
+order, what to type, what to point at, and what to do when something goes
+wrong. The short version, to check that everything works:
+
 First, in the Gemini Enterprise chat app, **enable the Cymbal Shoes
 connector** for your chat. Until you do, the assistant answers from a
 web search instead of calling Cymbal's tools, and Cymbal's node sees no
