@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- `docs/demo-script.md`: how to present the hosted demo, scene by scene, from Gemini Enterprise finding a carrier to a question over A2A, with what to type, what to point at, why each step matters, and what to do when something goes wrong. Linked from the runbook.
+
 - The browser UI's activity marks each envelope entry with the binding it went over: an `A2A` badge (questions to the carrier) or `REST` (everything else), with a tooltip saying the signed envelope is the same either way.
 
 - Cloud Run (#38) and its runbook (#42): `tls: { mode: proxy }` (plain HTTP behind a proxy that serves https at the domain), signing keys from an environment variable (`keys[].privateKeyEnv`, removed once read), `ulpnode check --config` to check a config without running it, and `deploy/cloudrun/deploy.sh`, which puts both companies on Cloud Run at their `run.app` addresses (one instance each, Vertex AI through their service accounts, keys and configs in Secret Manager, Google sign-in). `docs/runbook-cloudrun.md` goes from an empty project to Gemini Enterprise drafting a booking over MCP that a person confirms in the browser.
