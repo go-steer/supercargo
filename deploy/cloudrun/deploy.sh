@@ -15,7 +15,7 @@
 
 # Deploys the two-company demo to Cloud Run (#38): Ocean Blue (carrier)
 # and Cymbal Shoes (shipper), each its own service at its own run.app
-# address, which is its ULP domain. docs/runbook-cloudrun.md walks through
+# address, which is its ULP domain. docs/guides/runbook-cloudrun.md walks through
 # it, including what to do by hand first (the OAuth client).
 #
 #   PROJECT=my-project GOOGLE_CLIENT_ID=123-abc.apps.googleusercontent.com \
@@ -287,7 +287,7 @@ cat <<EOF
 Done.
   Ocean Blue    https://$OB/ui/
   Cymbal Shoes  https://$CY/ui/
-  Cymbal's MCP  https://$CY/mcp   (Gemini Enterprise: docs/runbook-cloudrun.md, step 6)
+  Cymbal's MCP  https://$CY/mcp   (Gemini Enterprise: docs/guides/runbook-cloudrun.md, step 6)
 
 The OAuth client needs these authorized redirect URIs (runbook, step 2):
   https://$OB/ui/auth/callback

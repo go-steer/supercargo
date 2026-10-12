@@ -11,6 +11,12 @@ authorization rules, the LLM roles, and the build milestones. Read the design
 before adding protocol surface, and keep it current in the same PR as the
 change it describes.
 
+Other docs live in subfolders of `docs/` ([`docs/README.md`](./docs/README.md)):
+`guides/` (how to do something with what's built), `proposals/` (designs
+for review before any code; folded into `DESIGN.md` once accepted),
+`reference/` (domain background, not a spec), and `ui/`. `DESIGN.md` stays
+at the top because code comments cite it.
+
 ## What this project is
 
 A Go module, `github.com/go-steer/supercargo`, with two layers:
