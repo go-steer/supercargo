@@ -15,6 +15,10 @@ The HTML pages here (walk-throughs, mockups) are published at **https://go-steer
 - [Run the demo on Cloud Run](guides/runbook-cloudrun.md): from an empty project to Gemini Enterprise drafting a booking over MCP that a person confirms in the browser.
 - [Present the hosted demo](guides/demo-script.md): the scenes in order, what to type, what to point at, and what to do when something goes wrong.
 
+## Proposals
+
+- [Door to door through a freight forwarder](proposals/door-to-door-forwarder.md): the demo's next shape: a forwarder books a truck, a ship and a truck for one order, tracks the journey, and handles a delay's knock-on effects, with every party seeing only its share.
+
 ## Reference
 
 - [Multi-leg freight shipping and API orchestration](reference/multi-leg-freight-and-api-orchestration.md): Incoterms and who books, freight forwarders and control towers, the standards bodies, and legacy EDI next to JSON APIs.
