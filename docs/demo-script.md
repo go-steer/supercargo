@@ -74,7 +74,7 @@ hour per second.
 
 > Which bookings are on voyage 42W?
 
-> Draft a 24-hour delay for the whole voyage: engine repair, unscheduled
+> Draft a 72-hour delay for the whole voyage: engine repair, unscheduled
 > call at Halifax.
 
 - The draft opens a dialog showing exactly what each customer gets.
