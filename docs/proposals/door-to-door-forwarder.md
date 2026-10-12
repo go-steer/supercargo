@@ -8,6 +8,11 @@ they appear; the rest builds on what the demo already has.
 map), #103 (multi-hop), delegation (milestone 7), and the background in
 [multi-leg freight shipping](../reference/multi-leg-freight-and-api-orchestration.md).
 
+**See it move:** [`door-to-door-forwarder.html`](door-to-door-forwarder.html)
+walks through every message in this proposal, step by step, showing each
+envelope and what each company knows after it. It's one self-contained
+file: download it and open it in a browser (GitHub shows its source).
+
 ## Why
 
 The demo we have is real in its mechanics. Every message is signed by the

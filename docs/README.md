@@ -17,7 +17,7 @@ The HTML pages here (walk-throughs, mockups) are published at **https://go-steer
 
 ## Proposals
 
-- [Door to door through a freight forwarder](proposals/door-to-door-forwarder.md): the demo's next shape: a forwarder books a truck, a ship and a truck for one order, tracks the journey, and handles a delay's knock-on effects, with every party seeing only its share.
+- [Door to door through a freight forwarder](proposals/door-to-door-forwarder.md): the demo's next shape: a forwarder books a truck, a ship and a truck for one order, tracks the journey, and handles a delay's knock-on effects, with every party seeing only its share. Its [walk-through](proposals/door-to-door-forwarder.html) plays every message step by step (open the file in a browser).
 
 ## Reference
 

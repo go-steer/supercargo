@@ -1,0 +1,598 @@
+<!doctype html>
+<!--
+Copyright 2026 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+<!--
+A walk-through of the door-to-door proposal (door-to-door-forwarder.md):
+every message between the six companies, step by step, with what each
+company knows after it. Self-contained: open it in a browser, no network.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Door to door through a forwarder · supercargo</title>
+<style>
+:root {
+  --aurora-1: #217bfe; --aurora-2: #078efb; --aurora-3: #a770ef; --aurora-4: #ff5e62;
+  --aurora: linear-gradient(90deg, var(--aurora-1), var(--aurora-2), var(--aurora-3), var(--aurora-4));
+  --bg: #202124; --bg-surface: #1a1b1e; --bg-elevated: #2a2b2e;
+  --border: #3c4043; --border-soft: #5f6368; --text: #e8eaed; --text-dim: #9aa0a6;
+  --green: #81c995; --red: #f28b82; --yellow: #fdd663; --blue: #8ab4f8;
+  --purple: #c58af9; --cyan: #78d9ec; --orange: #fcad70; --pink: #ff8bcb;
+}
+body.light {
+  --bg: #f8f9fa; --bg-surface: #fff; --bg-elevated: #f1f3f4;
+  --border: #dadce0; --border-soft: #bdc1c6; --text: #202124; --text-dim: #5f6368;
+  --green: #188038; --red: #d50000; --yellow: #dc6d00; --blue: #1a73e8;
+  --purple: #9334e6; --cyan: #007b83; --orange: #c26401; --pink: #c5157a;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace; font-size: 13px;
+  background: var(--bg); color: var(--text);
+}
+header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-surface); flex-wrap: wrap; }
+.wordmark { font-weight: 700; font-size: 15px; background: var(--aurora); -webkit-background-clip: text; background-clip: text; color: transparent; }
+header .title { font-weight: 600; }
+header .dim { color: var(--text-dim); }
+header .spacer { flex: 1; }
+button { font: inherit; color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border-soft); border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--blue); }
+button:disabled { opacity: .4; cursor: default; }
+button.primary { border-color: var(--blue); color: var(--blue); }
+select { font: inherit; color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border-soft); border-radius: 4px; padding: 3px 6px; }
+
+main { flex: 1; display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(360px, 1fr); gap: 0; min-height: 0; }
+@media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+.stage { position: relative; border-right: 1px solid var(--border); display: flex; flex-direction: column; min-width: 0; }
+.scenes { display: flex; gap: 6px; padding: 10px 14px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
+.scene-tab { font-size: 12px; padding: 3px 9px; border-radius: 12px; }
+.scene-tab.on { border-color: transparent; background: linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, var(--aurora) border-box; border: 1px solid transparent; }
+.scene-tab.optional { border-style: dashed; }
+svg#map { width: 100%; height: auto; display: block; }
+.controls { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.progress { flex: 1; min-width: 140px; height: 4px; background: var(--bg-elevated); border-radius: 2px; overflow: hidden; }
+.progress > div { height: 100%; background: var(--aurora); width: 0; transition: width .3s; }
+.stepno { color: var(--text-dim); min-width: 90px; text-align: right; }
+
+/* the map */
+.lane { stroke: var(--border); stroke-width: 1.5; fill: none; }
+.lane.active { stroke: var(--blue); stroke-width: 2.5; }
+.lane.delegation { stroke-dasharray: 5 5; }
+.node rect { fill: var(--bg-surface); stroke: var(--border-soft); stroke-width: 1.2; rx: 8; }
+.node.active rect { stroke: var(--blue); stroke-width: 2.5; }
+.node.thinking rect { stroke: var(--purple); stroke-width: 2.5; }
+.node.human rect { stroke: var(--green); stroke-width: 2.5; }
+.node.unsigned rect { stroke: var(--yellow); stroke-width: 2.5; stroke-dasharray: 4 3; }
+.node .name { fill: var(--text); font-weight: 700; font-size: 14px; }
+.node .role { fill: var(--text-dim); font-size: 11px; }
+.node .domain { fill: var(--cyan); font-size: 10.5px; }
+.node .badge { font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+.env { pointer-events: none; }
+.env rect { fill: var(--bg-elevated); stroke: var(--blue); stroke-width: 1.5; }
+.env text { fill: var(--text); font-size: 11px; font-weight: 600; }
+.env.alert rect { stroke: var(--red); }
+.env.unsigned rect { stroke: var(--yellow); stroke-dasharray: 4 3; }
+.lane-label { fill: var(--text-dim); font-size: 10.5px; }
+.legend { display: flex; gap: 14px; padding: 6px 14px 10px; color: var(--text-dim); font-size: 11px; flex-wrap: wrap; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 5px; border: 2px solid; }
+
+/* the side panel */
+aside { display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+.card { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.card h2 { font-size: 12px; letter-spacing: .1em; color: var(--text-dim); margin: 0 0 8px; font-weight: 700; text-transform: uppercase; }
+.narration .who { font-weight: 700; margin-bottom: 6px; }
+.narration p { margin: 0 0 8px; line-height: 1.55; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; font-size: 14px; }
+.narration .why { color: var(--text-dim); border-left: 3px solid var(--purple); padding-left: 10px; }
+.tag { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .08em; padding: 0 6px; border-radius: 3px; border: 1px solid var(--border-soft); color: var(--text-dim); margin-right: 6px; }
+.tag.new { border-color: var(--orange); color: var(--orange); }
+.tag.signed { border-color: var(--green); color: var(--green); }
+.tag.unsigned { border-color: var(--yellow); color: var(--yellow); }
+.tag.human { border-color: var(--green); color: var(--green); }
+.tag.model { border-color: var(--purple); color: var(--purple); }
+.tag.code { border-color: var(--cyan); color: var(--cyan); }
+pre.json { margin: 8px 0 0; padding: 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; overflow: auto; font-size: 11.5px; line-height: 1.45; max-height: 300px; }
+.k { color: var(--blue); } .s { color: var(--green); } .n { color: var(--orange); } .b { color: var(--purple); }
+.knows table { width: 100%; border-collapse: collapse; }
+.knows td { vertical-align: top; padding: 5px 4px; border-top: 1px solid var(--border); }
+.knows td.co { white-space: nowrap; font-weight: 700; width: 1%; padding-right: 10px; }
+.knows ul { margin: 0; padding-left: 16px; }
+.knows li { margin: 1px 0; color: var(--text-dim); }
+.knows li.fresh { color: var(--text); }
+.knows li.fresh::marker { color: var(--blue); }
+.knows .none { color: var(--text-dim); font-style: italic; }
+.fineprint { color: var(--text-dim); font-size: 11px; padding: 10px 16px 16px; line-height: 1.5; }
+a { color: var(--blue); }
+</style>
+</head>
+<body>
+<header>
+  <span class="wordmark">supercargo</span>
+  <span class="title">Door to door through a forwarder</span>
+  <span class="dim">a walk-through of the proposal: every message, and who knows what</span>
+  <span class="spacer"></span>
+  <button id="theme" title="Light or dark">◐</button>
+</header>
+<main>
+  <section class="stage">
+    <div class="scenes" id="scenes"></div>
+    <svg id="map" viewBox="0 0 1100 530" role="img" aria-label="The six companies and the messages between them"></svg>
+    <div class="legend">
+      <span><i style="border-color:var(--blue)"></i>signed message</span>
+      <span><i style="border-color:var(--red)"></i>alert</span>
+      <span><i style="border-color:var(--purple)"></i>a model proposes</span>
+      <span><i style="border-color:var(--green)"></i>a person decides</span>
+      <span><i style="border-color:var(--yellow);border-style:dashed"></i>unsigned source</span>
+    </div>
+    <div class="controls">
+      <button id="first" title="Start over">↺ Start</button>
+      <button id="prev" title="Back (←)">◀ Back</button>
+      <button id="play" class="primary" title="Play (space)">▶ Play</button>
+      <button id="next" title="Next (→)">Next ▶</button>
+      <div class="progress"><div id="bar"></div></div>
+      <span class="stepno" id="stepno"></span>
+      <select id="speed" title="Playback speed">
+        <option value="5200">slow</option>
+        <option value="3600" selected>normal</option>
+        <option value="2200">fast</option>
+      </select>
+    </div>
+  </section>
+  <aside>
+    <div class="card narration" id="narration"></div>
+    <div class="card" id="message"></div>
+    <div class="card knows">
+      <h2>What each company knows</h2>
+      <table id="knows"></table>
+    </div>
+    <div class="fineprint">
+      <span class="tag new">PROPOSED</span> marks intents and members that don't exist yet; everything else is in the demo today.
+      Messages are signed JWS envelopes between two companies (DESIGN §A.4); bodies are trimmed for reading.
+      Names are fictional. Source: <a href="door-to-door-forwarder.md">the proposal</a>.
+    </div>
+  </aside>
+</main>
+
+<script>
+'use strict';
+
+// ── the cast ────────────────────────────────────────────────────────────
+const CO = {
+  cs: { name: 'Cymbal Shoes', role: 'seller · shipper', domain: 'cymbal-shoes.example', kid: 'cy-1', x: 60, y: 230 },
+  mf: { name: 'Meridian', role: 'forwarder · operator + shipper', domain: 'meridian-forwarding.example', kid: 'mf-1', x: 420, y: 230 },
+  ph: { name: 'Polder Haulage', role: 'road · Tilburg → Rotterdam', domain: 'polder-haulage.example', kid: 'ph-1', x: 820, y: 40 },
+  ob: { name: 'Ocean Blue', role: 'ocean · Rotterdam → Newark', domain: 'ocean-blue.example', kid: 'ob-1', x: 820, y: 230 },
+  gs: { name: 'Garden State', role: 'road · Newark port → DC', domain: 'garden-state-drayage.example', kid: 'gs-1', x: 820, y: 420 },
+  cf: { name: 'Cymbal Footwear', role: 'buyer · receiver', domain: 'cymbal-footwear.example', kid: 'cf-1', x: 420, y: 420 },
+};
+const W = 224, H = 74;
+const LANES = [['cs', 'mf'], ['mf', 'ph'], ['mf', 'ob'], ['mf', 'gs'], ['cf', 'mf'], ['gs', 'cf'], ['cs', 'cf', 'delegation']];
+
+// ── the steps ───────────────────────────────────────────────────────────
+// kind: msg (an envelope from → to), model (a model proposes), human (a
+// person decides), code (deterministic code), unsigned (data with no
+// signature). knows: what each company learns at this step.
+const SCENES = [
+  { id: 1, name: 'One order' },
+  { id: 2, name: 'The forwarder plans' },
+  { id: 3, name: 'The journey runs' },
+  { id: 4, name: 'A delay, a cascade' },
+  { id: 5, name: 'The receiver joins' },
+  { id: 6, name: 'Delivery' },
+  { id: 7, name: 'A carrier without a node', optional: true },
+];
+
+const iso = (d, t) => `2026-10-${d}T${t}:00Z`;
+const env = (from, to, intent, extra, body) => ({
+  header: Object.assign({ typ: 'ulp-envelope+jws', intent, sender: CO[from].domain, receiver: CO[to].domain, messageId: '…', sentAt: '…' }, extra || {}),
+  signedBy: `${CO[from].domain} (kid ${CO[from].kid}, Ed25519)`,
+  body,
+});
+
+const STEPS = [
+  // 1. One order
+  { scene: 1, kind: 'human', at: 'cs', who: 'Alex at Cymbal Shoes',
+    text: 'Alex asks Cymbal\'s assistant to ship one 40-foot high-cube of sneakers from the Tilburg warehouse to the Newark distribution center, by the 15th, on DAP terms, with Meridian. The assistant drafts the order; Alex reviews it in a dialog and confirms.',
+    why: 'DAP (Delivered At Place) means the seller arranges transport to the buyer\'s door, so Cymbal Shoes is the one hiring a forwarder. Under EXW, Cymbal Footwear would send this order instead; the protocol is the same.',
+    knows: { cs: ['the order it drafted (DAP, deliver by the 15th)', 'private: the launch, and the slot at dock 4 on the 15th'] } },
+  { scene: 1, kind: 'msg', from: 'cs', to: 'mf', intent: 'forwarding.request', proposed: true,
+    text: 'Cymbal\'s node signs the order and sends it to Meridian. Meridian\'s node fetches Cymbal\'s published keys, verifies the signature, checks it\'s fresh and not a replay, validates the body, and only then records the order.',
+    why: 'The delivery window is part of the contract, so it travels. Why it matters (the launch, the slot) stays with Cymbal.',
+    env: env('cs', 'mf', 'ulp.forwarding.request', null, {
+      incoterm: 'DAP', place_of_receipt: { type: 'door', address: 'Cymbal EU warehouse, Tilburg', un_location_code: 'NLTLB' },
+      place_of_delivery: { type: 'door', address: 'Cymbal Newark DC, dock 4', un_location_code: 'USEWR' },
+      containers: [{ equipment_size_type: '45G1', count: 1, gross_weight_kg: 12000 }],
+      cargo: { description: 'Footwear (sneakers)', hs_code: '6404' }, delivery_window: { latest: iso(15, '12:00') }, shipper_reference: 'CY-PO-55120' }),
+    knows: { mf: ['order from Cymbal: Tilburg door → Newark DC door, by the 15th'] } },
+
+  // 2. The forwarder plans
+  { scene: 2, kind: 'model', at: 'mf', who: 'Meridian\'s planning assistant',
+    text: 'Meridian\'s planning assistant drafts a plan: Polder Haulage trucks the container from Tilburg to Rotterdam, Ocean Blue sails Rotterdam to Newark on Aurora 42W, and Garden State Drayage trucks it from the port to the distribution center.',
+    why: 'The model sees only what the plan needs (places, cargo, the window), never the order\'s free text, and it can only propose.',
+    knows: { mf: ['draft plan: 3 legs (Polder, Ocean Blue, Garden State)'] } },
+  { scene: 2, kind: 'human', at: 'mf', who: 'Mia at Meridian',
+    text: 'Mia, an operator at Meridian, reviews the plan: each leg, its carrier, its dates, and exactly what each carrier will be told. She confirms.',
+    why: 'Anything with an external effect needs a person. Meridian\'s node builds each leg booking from the confirmed plan with deterministic code.' },
+  { scene: 2, kind: 'msg', from: 'mf', to: 'ph', intent: 'road.booking.request', proposed: true,
+    text: 'Leg 1 goes to Polder Haulage, signed by Meridian. Polder sees a pickup in Tilburg and a delivery to the port of Rotterdam, nothing more.',
+    why: 'Polder never learns who the cargo is for, where it ends up, or Cymbal\'s deadline: it doesn\'t need to.',
+    env: env('mf', 'ph', 'ulp.road.booking.request', { dialect: { standard: 'DSDC', version: '…' } }, {
+      pickup: { address: 'Cymbal EU warehouse, Tilburg', earliest: iso('06', '08:00') }, delivery: { address: 'ECT Delta terminal, Rotterdam', latest: iso('07', '12:00') },
+      containers: [{ equipment_size_type: '45G1', count: 1 }], shipper_reference: 'MF-0007-L1' }),
+    knows: { ph: ['booking from Meridian: Tilburg → Rotterdam port, 6th–7th'] } },
+  { scene: 2, kind: 'msg', from: 'ph', to: 'mf', intent: 'road.booking.confirmation', proposed: true, text: 'Polder confirms leg 1 with its own reference.',
+    env: env('ph', 'mf', 'ulp.road.booking.confirmation', { bookingRef: 'PH-4471' }, { carrier_booking_reference: 'PH-4471', status: 'confirmed' }),
+    knows: { mf: ['leg 1 confirmed: PH-4471'] } },
+  { scene: 2, kind: 'msg', from: 'mf', to: 'ob', intent: 'ocean.booking.request',
+    text: 'Leg 2 goes to Ocean Blue: the same ocean booking request the demo sends today, except the shipper is Meridian.',
+    why: 'For Ocean Blue nothing changes: it\'s a booking from a shipper it can verify. That Meridian is a forwarder is Meridian\'s business.',
+    env: env('mf', 'ob', 'ulp.ocean.booking.request', null, {
+      shipper_name: 'Meridian Forwarding', port_of_loading: 'NLRTM', port_of_discharge: 'USEWR', earliest_departure: '2026-10-07',
+      containers: [{ equipment_size_type: '45G1', count: 1, gross_weight_kg: 12000 }], cargo: { description: 'Footwear (sneakers)', hs_code: '6404' }, shipper_reference: 'MF-0007-L2' }),
+    knows: { ob: ['booking from Meridian: Rotterdam → Newark'] } },
+  { scene: 2, kind: 'msg', from: 'ob', to: 'mf', intent: 'ocean.booking.confirmation', text: 'Ocean Blue confirms, with the vessel and voyage, and starts the voyage clock.',
+    env: env('ob', 'mf', 'ulp.ocean.booking.confirmation', { bookingRef: 'OB-BKG-1042', dialect: { standard: 'DCSA_OCEAN_CONTAINER', version: '2.0.0' } }, { carrier_booking_reference: 'OB-BKG-1042', vessel: 'Ocean Blue Aurora', voyage: '42W', planned_arrival: iso(13, '08:00') }),
+    knows: { mf: ['leg 2 confirmed: OB-BKG-1042, Aurora 42W, arrives the 13th'] } },
+  { scene: 2, kind: 'msg', from: 'mf', to: 'gs', intent: 'road.booking.request', proposed: true,
+    text: 'Leg 3 goes to Garden State Drayage: pick the container up at Port Newark on the 13th and deliver it to the distribution center.',
+    why: 'Garden State does need the delivery address. It doesn\'t need to know about the ocean leg or the launch.',
+    env: env('mf', 'gs', 'ulp.road.booking.request', { dialect: { standard: 'DSDC', version: '…' } }, {
+      pickup: { address: 'Port Newark Container Terminal', earliest: iso(13, '14:00') }, delivery: { address: 'Cymbal Newark DC, dock 4', latest: iso(14, '12:00') }, shipper_reference: 'MF-0007-L3' }),
+    knows: { gs: ['booking from Meridian: Port Newark → Cymbal Newark DC, 13th–14th'] } },
+  { scene: 2, kind: 'msg', from: 'gs', to: 'mf', intent: 'road.booking.confirmation', proposed: true, text: 'Garden State confirms leg 3.',
+    env: env('gs', 'mf', 'ulp.road.booking.confirmation', { bookingRef: 'GS-0913' }, { carrier_booking_reference: 'GS-0913', status: 'confirmed' }),
+    knows: { mf: ['leg 3 confirmed: GS-0913'] } },
+  { scene: 2, kind: 'msg', from: 'mf', to: 'cs', intent: 'forwarding.confirmation', proposed: true,
+    text: 'Meridian confirms Cymbal\'s order with its own reference and the planned journey: truck, ship, truck, delivery on the 14th.',
+    why: 'Cymbal gets one reference and one journey. Which carriers do the legs is shown, but Cymbal has no relationship with them and doesn\'t need one.',
+    env: env('mf', 'cs', 'ulp.forwarding.confirmation', { bookingRef: 'MF-0007' }, { forwarder_reference: 'MF-0007', legs: [{ mode: 'road', from: 'NLTLB', to: 'NLRTM' }, { mode: 'ocean', from: 'NLRTM', to: 'USEWR', vessel: 'Ocean Blue Aurora 42W' }, { mode: 'road', from: 'USEWR', to: 'Cymbal Newark DC' }], planned_delivery: iso(14, '10:00') }),
+    knows: { cs: ['order confirmed: MF-0007, delivery planned the 14th'] } },
+
+  // 3. The journey runs
+  { scene: 3, kind: 'msg', from: 'ph', to: 'mf', intent: 'tnt.event',
+    text: 'Polder picks up the container in Tilburg and reports it, signed, to Meridian, the shipper of its leg.',
+    env: env('ph', 'mf', 'ulp.tnt.event', { bookingRef: 'PH-4471', dialect: { standard: 'DCSA_TNT', version: '2.2.0' } }, { event_id: 'PH-EV-01', event_type: 'TRANSPORT', event_type_code: 'DEPA', event_classifier_code: 'ACT', un_location_code: 'NLTLB', description: 'Picked up at the shipper\'s warehouse' }),
+    knows: { mf: ['leg 1: picked up, Tilburg (PH-EV-01)'] } },
+  { scene: 3, kind: 'code', at: 'mf', who: 'Meridian\'s orchestrator',
+    text: 'Meridian\'s orchestrator looks the event up in its plan: leg 1 of order MF-0007. It turns it into an event on the order, moving the milestone, place and time and nothing else.',
+    why: 'This is the only bridge between what Meridian bought (legs) and what it sold (orders), and it\'s code, not a model.' },
+  { scene: 3, kind: 'msg', from: 'mf', to: 'cs', intent: 'tnt.event',
+    text: 'Meridian tells Cymbal, under its own signature, and says which carrier event this came from.',
+    why: 'Cymbal trusts its counterparty, Meridian, as in forwarding today. If it wants the evidence, it asks Meridian, which holds Polder\'s signed event.',
+    env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007', dialect: { standard: 'DCSA_TNT', version: '2.2.0' } }, { event_id: 'MF-EV-01', event_type_code: 'DEPA', event_classifier_code: 'ACT', un_location_code: 'NLTLB', description: 'Picked up in Tilburg (leg 1, road)', derived_from: ['PH-EV-01'] }),
+    proposedField: 'derived_from',
+    knows: { cs: ['journey: picked up, Tilburg'] } },
+  { scene: 3, kind: 'msg', from: 'ph', to: 'mf', intent: 'tnt.event', text: 'Polder gates the container in at the Rotterdam terminal.',
+    env: env('ph', 'mf', 'ulp.tnt.event', { bookingRef: 'PH-4471' }, { event_id: 'PH-EV-02', event_type_code: 'ARRI', un_location_code: 'NLRTM', description: 'Delivered to the terminal' }),
+    knows: { mf: ['leg 1: at the Rotterdam terminal (PH-EV-02)'] } },
+  { scene: 3, kind: 'msg', from: 'ob', to: 'mf', intent: 'tnt.event', text: 'Ocean Blue loads it on the Aurora, which departs Rotterdam.',
+    env: env('ob', 'mf', 'ulp.tnt.event', { bookingRef: 'OB-BKG-1042' }, { event_id: 'EV-000003', event_type_code: 'DEPA', event_classifier_code: 'ACT', un_location_code: 'NLRTM', description: 'Ocean Blue Aurora 42W departed Port of Rotterdam' }),
+    knows: { mf: ['leg 2: departed Rotterdam (EV-000003)'] } },
+  { scene: 3, kind: 'msg', from: 'mf', to: 'cs', intent: 'tnt.event',
+    text: 'Cymbal\'s journey now shows the container on the water: one journey, three legs, each mark traceable to a carrier\'s signed event that Meridian holds.',
+    env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007' }, { event_id: 'MF-EV-03', event_type_code: 'DEPA', un_location_code: 'NLRTM', description: 'Departed Rotterdam on Ocean Blue Aurora 42W (leg 2, ocean)', derived_from: ['EV-000003'] }),
+    knows: { cs: ['journey: at sea on Aurora 42W, arriving Newark the 13th'] } },
+
+  // 4. A delay, a cascade
+  { scene: 4, kind: 'msg', from: 'ob', to: 'mf', intent: 'tnt.alert', alert: true,
+    text: 'Ocean Blue reports a 72-hour delay: engine repair, an unscheduled call at Halifax. Arrival in Newark moves from the 13th to the 16th.',
+    env: env('ob', 'mf', 'ulp.tnt.alert', { bookingRef: 'OB-BKG-1042' }, { alert_id: 'AL-000006', severity: 'high', kind: 'delay', reason: 'Engine repair, unscheduled call at Halifax', new_eta: iso(16, '08:00'), causes: ['EV-000005'] }),
+    knows: { mf: ['leg 2 DELAYED: arrives the 16th (AL-000006)'] } },
+  { scene: 4, kind: 'code', at: 'mf', who: 'Meridian\'s orchestrator',
+    text: 'The orchestrator checks the plan: Garden State\'s pickup at Port Newark is on the 13th, before the ship now arrives. Leg 3 can\'t happen as booked.',
+    why: 'A forwarder\'s real value: seeing the knock-on effect across carriers that don\'t know about each other.' },
+  { scene: 4, kind: 'model', at: 'mf', who: 'Meridian\'s planning assistant',
+    text: 'The planning assistant drafts a fix: move the pickup to the 16th at 18:00, delivery to the distribution center on the 17th.' },
+  { scene: 4, kind: 'human', at: 'mf', who: 'Mia at Meridian', text: 'Mia sees the cascade and the proposed amendment, and confirms it.' },
+  { scene: 4, kind: 'msg', from: 'mf', to: 'gs', intent: 'road.booking.amendment', proposed: true,
+    text: 'Meridian sends Garden State an amendment to leg 3. Garden State never learns why: only that the pickup moved.',
+    env: env('mf', 'gs', 'ulp.road.booking.amendment', { bookingRef: 'GS-0913' }, { pickup: { earliest: iso(16, '18:00') }, delivery: { latest: iso(17, '12:00') } }),
+    knows: { gs: ['amendment: pickup moved to the 16th, 18:00'] } },
+  { scene: 4, kind: 'msg', from: 'gs', to: 'mf', intent: 'road.booking.confirmation', proposed: true, text: 'Garden State confirms the new times.',
+    env: env('gs', 'mf', 'ulp.road.booking.confirmation', { bookingRef: 'GS-0913' }, { carrier_booking_reference: 'GS-0913', status: 'amended' }),
+    knows: { mf: ['leg 3 re-timed: pickup the 16th, delivery the 17th'] } },
+  { scene: 4, kind: 'msg', from: 'mf', to: 'cs', intent: 'tnt.alert', alert: true,
+    text: 'Cymbal gets one alert from Meridian, about its order: delivery moves from the 14th to the 17th, because of a delay at sea.',
+    why: 'One alert about the order, not three carriers\' worth of noise, and it says which carrier alert it came from.',
+    env: env('mf', 'cs', 'ulp.tnt.alert', { bookingRef: 'MF-0007' }, { alert_id: 'MF-AL-01', severity: 'high', kind: 'delay', reason: 'Vessel delayed 72 h (engine repair, Halifax); last truck re-timed', new_delivery: iso(17, '12:00'), derived_from: ['AL-000006'] }),
+    knows: { cs: ['ALERT: delivery moves to the 17th (MF-AL-01)'] } },
+  { scene: 4, kind: 'model', at: 'cs', who: 'Cymbal\'s alert summarizer',
+    text: 'Cymbal\'s own model explains what it means for Cymbal: the slot at dock 4 on the 15th is missed, and the launch stock is at risk. It suggests rebooking the slot or air-freighting part of the order.',
+    why: 'The private context (the launch, the slot) is used by Cymbal\'s model, inside Cymbal. Meridian never saw it.' },
+
+  // 5. The receiver joins
+  { scene: 5, kind: 'human', at: 'cs', who: 'Alex at Cymbal Shoes', text: 'Alex lets Cymbal Footwear track the order, and confirms.' },
+  { scene: 5, kind: 'msg', from: 'cs', to: 'cf', intent: 'delegation', lane: 'delegation',
+    text: 'Cymbal Shoes signs a delegation: Cymbal Footwear may read tracking for MF-0007 from Meridian, for 30 days.',
+    why: 'This is milestone 7, already designed: a receiver joins without a contract with the forwarder.',
+    env: { header: { typ: 'ulp-delegation+jws', issuer: 'cymbal-shoes.example', audience: 'meridian-forwarding.example', grantee: 'cymbal-footwear.example', scope: ['tnt:read'], bookingRef: 'MF-0007', expires: '2026-11-11' }, signedBy: 'cymbal-shoes.example (kid cy-1, Ed25519)', body: null },
+    knows: { cf: ['delegation: may track MF-0007 at Meridian'] } },
+  { scene: 5, kind: 'msg', from: 'cf', to: 'mf', intent: 'tnt.inquiry',
+    text: 'Cymbal Footwear\'s node asks Meridian where the container is, with the delegation attached. Meridian checks both signatures, the scope, the order and the expiry, and answers.',
+    env: env('cf', 'mf', 'ulp.tnt.inquiry', { bookingRef: 'MF-0007', attachments: { delegation: '…' } }, { question: 'When will the container reach our Newark DC?' }),
+    knows: { mf: ['question from Cymbal Footwear, delegated by Cymbal Shoes'] } },
+  { scene: 5, kind: 'msg', from: 'mf', to: 'cf', intent: 'tnt.inquiry.response',
+    text: 'Meridian answers from the order\'s journey: on the 17th, citing the events it derived that from.',
+    env: env('mf', 'cf', 'ulp.tnt.inquiry.response', { bookingRef: 'MF-0007', inReplyTo: '…' }, { answer: 'Delivery to Cymbal Newark DC is planned for the 17th by 12:00, after a 72-hour vessel delay.', sources: ['MF-AL-01', 'MF-EV-03'] }),
+    knows: { cf: ['answer: delivery on the 17th by 12:00'] } },
+
+  // 6. Delivery
+  { scene: 6, kind: 'msg', from: 'gs', to: 'cf', intent: 'pod.request', proposed: true,
+    text: 'Garden State\'s truck is at dock 4. Garden State signs a proof of delivery and sends it to Cymbal Footwear, the consignee.',
+    env: env('gs', 'cf', 'ulp.pod.request', { bookingRef: 'GS-0913' }, { container: 'OCBU0000004', delivered_at: iso(17, '09:40'), place: 'Cymbal Newark DC, dock 4', seal_intact: true }),
+    knows: { cf: ['proof of delivery from Garden State (signed)'] } },
+  { scene: 6, kind: 'human', at: 'cf', who: 'The dock team at Cymbal Footwear', text: 'A person at the dock checks the container and the seal, and confirms receipt.' },
+  { scene: 6, kind: 'msg', from: 'cf', to: 'gs', intent: 'pod.countersign', proposed: true,
+    text: 'Cymbal Footwear countersigns. Each side checks the other\'s signature and keeps the proof.',
+    why: 'Custody changes hands with both signatures: no dispute about whether, when, or in what state it arrived.',
+    env: env('cf', 'gs', 'ulp.pod.countersign', { bookingRef: 'GS-0913', inReplyTo: '…' }, { accepted: true, remarks: '' }),
+    knows: { gs: ['co-signed proof of delivery'] } },
+  { scene: 6, kind: 'msg', from: 'gs', to: 'mf', intent: 'tnt.event', text: 'Garden State reports the delivery to Meridian, citing the co-signed proof.',
+    env: env('gs', 'mf', 'ulp.tnt.event', { bookingRef: 'GS-0913' }, { event_id: 'GS-EV-04', event_type_code: 'DLV', description: 'Delivered, proof co-signed by the consignee' }),
+    knows: { mf: ['leg 3: delivered (GS-EV-04)'] } },
+  { scene: 6, kind: 'msg', from: 'mf', to: 'cs', intent: 'tnt.event', text: 'Meridian tells Cymbal Shoes the order is delivered. The journey is complete.',
+    env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007' }, { event_id: 'MF-EV-09', event_type_code: 'DLV', description: 'Delivered to Cymbal Newark DC, dock 4', derived_from: ['GS-EV-04'] }),
+    knows: { cs: ['journey: DELIVERED on the 17th'] } },
+
+  // 7. A carrier without a node (optional)
+  { scene: 7, kind: 'unsigned', from: 'ph', to: 'mf', intent: 'EDI 214',
+    text: 'Suppose Polder Haulage is a small trucker without a ULP node: it sends status messages as EDI files. Meridian\'s node translates them into the same events.',
+    why: 'Honest provenance: these events carry no carrier signature. Meridian vouches for them, and the journey marks them as from an unsigned source.',
+    env: { header: { format: 'X12 EDI 214 (shipment status)', transport: 'file drop', signature: 'none' }, signedBy: 'nobody', body: 'ST*214*0001~ B10*PH4471*MF00071*POLD~ AT7*AF*NS***20261006*0800~ MS1*TILBURG**NL~ SE*5*0001~' },
+    knows: { mf: ['leg 1: picked up (from EDI, unsigned)'] } },
+  { scene: 7, kind: 'msg', from: 'mf', to: 'cs', intent: 'tnt.event',
+    text: 'Cymbal still gets a signed event from Meridian, but it says the source was unsigned, so Cymbal\'s journey can show that mark differently.',
+    env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007' }, { event_id: 'MF-EV-01', event_type_code: 'DEPA', un_location_code: 'NLTLB', description: 'Picked up in Tilburg (leg 1, road)', derived_from: [{ source: 'EDI 214 from polder-haulage', signed: false }] }),
+    knows: { cs: ['journey: picked up, Tilburg (source unsigned, vouched by Meridian)'] } },
+];
+
+// ── state and rendering ─────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const NS = 'http://www.w3.org/2000/svg';
+const svg = $('map');
+let cur = 0, timer = null;
+
+function el(tag, attrs, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  if (text != null) e.textContent = text;
+  return e;
+}
+const center = (id) => ({ x: CO[id].x + W / 2, y: CO[id].y + H / 2 });
+
+// Where a line from a to b leaves a's box.
+function edge(a, b) {
+  const p = center(a), q = center(b), dx = q.x - p.x, dy = q.y - p.y;
+  const sx = dx === 0 ? Infinity : (W / 2 + 6) / Math.abs(dx), sy = dy === 0 ? Infinity : (H / 2 + 6) / Math.abs(dy);
+  const s = Math.min(sx, sy);
+  return { x: p.x + dx * s, y: p.y + dy * s };
+}
+
+function drawStatic() {
+  svg.replaceChildren();
+  const defs = el('defs');
+  const m = el('marker', { id: 'arrow', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' });
+  m.appendChild(el('path', { d: 'M0,0 L10,5 L0,10 z', fill: 'var(--blue)' }));
+  defs.appendChild(m);
+  svg.appendChild(defs);
+  const lanes = el('g', { id: 'lanes' });
+  for (const [a, b, kind] of LANES) {
+    const p = edge(a, b), q = edge(b, a);
+    lanes.appendChild(el('line', { class: 'lane' + (kind ? ' ' + kind : ''), x1: p.x, y1: p.y, x2: q.x, y2: q.y, 'data-lane': a + '-' + b }));
+  }
+  svg.appendChild(lanes);
+  for (const [id, c] of Object.entries(CO)) {
+    const g = el('g', { class: 'node', 'data-id': id, transform: `translate(${c.x},${c.y})` });
+    g.appendChild(el('rect', { width: W, height: H }));
+    g.appendChild(el('text', { class: 'name', x: 12, y: 24 }, c.name));
+    g.appendChild(el('text', { class: 'role', x: 12, y: 42 }, c.role));
+    g.appendChild(el('text', { class: 'domain', x: 12, y: 60 }, c.domain));
+    g.appendChild(el('text', { class: 'badge', x: W - 12, y: 20, 'text-anchor': 'end' }, ''));
+    svg.appendChild(g);
+  }
+  svg.appendChild(el('g', { id: 'flight' }));
+}
+
+function laneFor(a, b) {
+  return svg.querySelector(`[data-lane="${a}-${b}"]`) || svg.querySelector(`[data-lane="${b}-${a}"]`);
+}
+
+const BADGES = { model: ['MODEL', 'var(--purple)'], human: ['PERSON', 'var(--green)'], code: ['CODE', 'var(--cyan)'] };
+
+function renderMap(step, animate) {
+  svg.querySelectorAll('.node').forEach((n) => {
+    n.classList.remove('active', 'thinking', 'human', 'unsigned');
+    const b = n.querySelector('.badge'); b.textContent = '';
+  });
+  svg.querySelectorAll('.lane').forEach((l) => l.classList.remove('active'));
+  const flight = $('flight');
+  flight.replaceChildren();
+  if (step.kind === 'msg' || step.kind === 'unsigned') {
+    const lane = laneFor(step.from, step.to);
+    if (lane) lane.classList.add('active');
+    svg.querySelector(`.node[data-id="${step.from}"]`).classList.add(step.kind === 'unsigned' ? 'unsigned' : 'active');
+    svg.querySelector(`.node[data-id="${step.to}"]`).classList.add('active');
+    const p = edge(step.from, step.to), q = edge(step.to, step.from);
+    flight.appendChild(el('line', { x1: p.x, y1: p.y, x2: q.x, y2: q.y, stroke: step.alert ? 'var(--red)' : step.kind === 'unsigned' ? 'var(--yellow)' : 'var(--blue)', 'stroke-width': 2.5, 'marker-end': 'url(#arrow)', 'stroke-dasharray': step.kind === 'unsigned' ? '6 4' : null }));
+    const label = step.intent + (step.proposed ? ' ✱' : '');
+    const w = Math.max(90, label.length * 7 + 18);
+    const g = el('g', { class: 'env' + (step.alert ? ' alert' : '') + (step.kind === 'unsigned' ? ' unsigned' : '') });
+    g.appendChild(el('rect', { x: -w / 2, y: -12, width: w, height: 24, rx: 12 }));
+    g.appendChild(el('text', { x: 0, y: 4, 'text-anchor': 'middle' }, label));
+    flight.appendChild(g);
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!animate || reduce) { g.setAttribute('transform', `translate(${(p.x + q.x) / 2},${(p.y + q.y) / 2})`); return; }
+    const t0 = performance.now(), dur = 900;
+    const tick = (t) => {
+      if (!g.isConnected) return;
+      const k = Math.min(1, (t - t0) / dur), e = k < .5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+      const x = p.x + (q.x - p.x) * (.15 + .7 * e), y = p.y + (q.y - p.y) * (.15 + .7 * e);
+      g.setAttribute('transform', `translate(${x},${y})`);
+      if (k < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  } else {
+    const n = svg.querySelector(`.node[data-id="${step.at}"]`);
+    n.classList.add({ model: 'thinking', human: 'human', code: 'active' }[step.kind]);
+    const [text, color] = BADGES[step.kind];
+    const b = n.querySelector('.badge'); b.textContent = text; b.setAttribute('fill', color);
+  }
+}
+
+function jsonHTML(v, ind = 0) {
+  const pad = '  '.repeat(ind);
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  if (v === null) return '<span class="b">null</span>';
+  if (typeof v === 'string') return `<span class="s">"${esc(v)}"</span>`;
+  if (typeof v === 'number') return `<span class="n">${v}</span>`;
+  if (typeof v === 'boolean') return `<span class="b">${v}</span>`;
+  if (Array.isArray(v)) {
+    if (!v.length) return '[]';
+    if (v.every((x) => typeof x !== 'object' || x === null)) return '[' + v.map((x) => jsonHTML(x)).join(', ') + ']';
+    return '[\n' + v.map((x) => pad + '  ' + jsonHTML(x, ind + 1)).join(',\n') + '\n' + pad + ']';
+  }
+  const ks = Object.keys(v);
+  if (!ks.length) return '{}';
+  return '{\n' + ks.map((k) => `${pad}  <span class="k">"${esc(k)}"</span>: ${jsonHTML(v[k], ind + 1)}`).join(',\n') + '\n' + pad + '}';
+}
+
+function tag(cls, text) { const t = document.createElement('span'); t.className = 'tag ' + cls; t.textContent = text; return t; }
+
+function renderNarration(step) {
+  const box = $('narration');
+  box.replaceChildren();
+  const h = document.createElement('h2');
+  h.textContent = `Scene ${step.scene}: ${SCENES.find((s) => s.id === step.scene).name}`;
+  const who = document.createElement('div');
+  who.className = 'who';
+  if (step.kind === 'msg' || step.kind === 'unsigned') who.textContent = `${CO[step.from].name} → ${CO[step.to].name}`;
+  else who.textContent = step.who;
+  const kindTag = { msg: ['signed', 'SIGNED MESSAGE'], unsigned: ['unsigned', 'UNSIGNED SOURCE'], model: ['model', 'A MODEL PROPOSES'], human: ['human', 'A PERSON DECIDES'], code: ['code', 'DETERMINISTIC CODE'] }[step.kind];
+  who.prepend(tag(kindTag[0], kindTag[1]));
+  if (step.proposed) who.prepend(tag('new', 'PROPOSED'));
+  const p = document.createElement('p'); p.textContent = step.text;
+  box.append(h, who, p);
+  if (step.why) { const w = document.createElement('p'); w.className = 'why'; w.textContent = step.why; box.appendChild(w); }
+}
+
+function renderMessage(step) {
+  const box = $('message');
+  box.replaceChildren();
+  const h = document.createElement('h2');
+  box.appendChild(h);
+  if (!step.env) {
+    h.textContent = 'No message';
+    const p = document.createElement('div'); p.className = 'none'; p.style.color = 'var(--text-dim)';
+    p.textContent = { model: 'A model works inside one company. Nothing leaves until a person confirms.', human: 'A person decides inside one company. Their node does the signing.', code: 'Code inside one company. Nothing crosses to another company at this step.' }[step.kind] || '';
+    box.appendChild(p);
+    return;
+  }
+  h.textContent = step.kind === 'unsigned' ? 'The data, as it arrives' : 'The envelope';
+  const sig = document.createElement('div');
+  sig.append(tag(step.kind === 'unsigned' ? 'unsigned' : 'signed', step.kind === 'unsigned' ? 'NOT SIGNED' : 'SIGNED BY'));
+  sig.append(document.createTextNode(step.env.signedBy));
+  box.appendChild(sig);
+  const pre = document.createElement('pre'); pre.className = 'json';
+  const shown = step.env.body == null ? { header: step.env.header } : typeof step.env.body === 'string' ? { header: step.env.header, payload: step.env.body } : { header: step.env.header, body: step.env.body };
+  let html = jsonHTML(shown);
+  if (step.proposedField) html = html.replace(`"${step.proposedField}"</span>`, `"${step.proposedField}"</span> <span class="n">✱</span>`);
+  pre.innerHTML = html; // built from the constants above, escaped by jsonHTML
+  box.appendChild(pre);
+}
+
+function renderKnows(i) {
+  const known = Object.fromEntries(Object.keys(CO).map((k) => [k, []]));
+  for (let j = 0; j <= i; j++) {
+    for (const [co, items] of Object.entries(STEPS[j].knows || {})) for (const it of items) known[co].push({ it, fresh: j === i });
+  }
+  const t = $('knows');
+  t.replaceChildren();
+  for (const [id, c] of Object.entries(CO)) {
+    const tr = document.createElement('tr');
+    const a = document.createElement('td'); a.className = 'co'; a.textContent = c.name;
+    const b = document.createElement('td');
+    if (!known[id].length) { const s = document.createElement('span'); s.className = 'none'; s.textContent = 'nothing yet'; b.appendChild(s); }
+    else {
+      const ul = document.createElement('ul');
+      for (const { it, fresh } of known[id].slice(-4)) { const li = document.createElement('li'); li.textContent = it; if (fresh) li.className = 'fresh'; ul.appendChild(li); }
+      if (known[id].length > 4) { const li = document.createElement('li'); li.textContent = `…and ${known[id].length - 4} earlier`; ul.prepend(li); }
+      b.appendChild(ul);
+    }
+    tr.append(a, b);
+    t.appendChild(tr);
+  }
+}
+
+function renderScenes(step) {
+  const box = $('scenes');
+  box.replaceChildren();
+  for (const s of SCENES) {
+    const b = document.createElement('button');
+    b.className = 'scene-tab' + (s.id === step.scene ? ' on' : '') + (s.optional ? ' optional' : '');
+    b.textContent = `${s.id}. ${s.name}`;
+    if (s.optional) b.title = 'Optional: a stretch goal in the proposal';
+    b.onclick = () => { stop(); go(STEPS.findIndex((x) => x.scene === s.id), true); };
+    box.appendChild(b);
+  }
+}
+
+function go(i, animate) {
+  cur = Math.max(0, Math.min(STEPS.length - 1, i));
+  const step = STEPS[cur];
+  renderScenes(step);
+  renderMap(step, animate);
+  renderNarration(step);
+  renderMessage(step);
+  renderKnows(cur);
+  $('stepno').textContent = `step ${cur + 1} of ${STEPS.length}`;
+  $('bar').style.width = ((cur + 1) / STEPS.length * 100) + '%';
+  $('prev').disabled = cur === 0;
+  $('first').disabled = cur === 0;
+  $('next').disabled = cur === STEPS.length - 1;
+  if (location.hash !== '#' + (cur + 1)) history.replaceState(null, '', '#' + (cur + 1));
+}
+
+function stop() { clearInterval(timer); timer = null; $('play').textContent = '▶ Play'; }
+function play() {
+  if (timer) { stop(); return; }
+  if (cur === STEPS.length - 1) go(0, true);
+  $('play').textContent = '⏸ Pause';
+  timer = setInterval(() => { if (cur >= STEPS.length - 1) { stop(); return; } go(cur + 1, true); }, Number($('speed').value));
+}
+
+$('next').onclick = () => { stop(); go(cur + 1, true); };
+$('prev').onclick = () => { stop(); go(cur - 1, true); };
+$('first').onclick = () => { stop(); go(0, true); };
+$('play').onclick = play;
+$('speed').onchange = () => { if (timer) { stop(); play(); } };
+$('theme').onclick = () => document.body.classList.toggle('light');
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'SELECT') return;
+  if (e.key === 'ArrowRight') { stop(); go(cur + 1, true); }
+  else if (e.key === 'ArrowLeft') { stop(); go(cur - 1, true); }
+  else if (e.key === ' ') { e.preventDefault(); play(); }
+});
+
+// A link to a step (#21) works on load and while the page is open.
+const fromHash = () => (parseInt(location.hash.slice(1), 10) || 1) - 1;
+window.addEventListener('hashchange', () => { if (fromHash() !== cur) { stop(); go(fromHash(), false); } });
+
+drawStatic();
+go(fromHash(), false);
+</script>
+</body>
+</html>
