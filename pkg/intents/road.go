@@ -20,6 +20,7 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-steer/supercargo/pkg/envelope"
@@ -146,16 +147,22 @@ func (*RoadBookingConfirmationBody) Intent() string { return RoadBookingConfirma
 func (*RoadBookingAmendmentBody) Intent() string { return RoadBookingAmendment }
 
 var (
-	countryPattern    = regexp.MustCompile(`^[A-Z]{2}$`)
-	regionPattern     = regexp.MustCompile(`^[A-Z0-9]{1,3}$`)
-	postalPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 -]{1,11}$`)
-	accessKeyPattern  = regexp.MustCompile(`^[0-9]{44}$`)
+	countryPattern = regexp.MustCompile(`^[A-Z]{2}$`)
+	regionPattern  = regexp.MustCompile(`^[A-Z0-9]{1,3}$`)
+	postalPattern  = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9 -]{0,10}[A-Za-z0-9])?$`)
+	// A CT-e or MDF-e access key: 44 characters, digits except the issuer's
+	// CNPJ (positions 7-20), whose first 12 may be letters since Brazil's
+	// alphanumeric CNPJ (from July 2026).
+	accessKeyPattern = regexp.MustCompile(`^[0-9]{6}[0-9A-Z]{12}[0-9]{26}$`)
+	// A document number is opaque: never put one in a path or a URL.
 	docNumberPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9/_.-]{0,63}$`)
 	identifierPattern = map[string]*regexp.Regexp{
-		"EORI":    regexp.MustCompile(`^[A-Z]{2}[A-Za-z0-9]{1,15}$`),
-		"VAT":     regexp.MustCompile(`^[A-Z]{2}[A-Za-z0-9]{2,13}$`),
-		"BR:CNPJ": regexp.MustCompile(`^[0-9]{2}\.?[0-9]{3}\.?[0-9]{3}/?[0-9]{4}-?[0-9]{2}$`),
-		"BR:CPF":  regexp.MustCompile(`^[0-9]{3}\.?[0-9]{3}\.?[0-9]{3}-?[0-9]{2}$`),
+		"EORI": regexp.MustCompile(`^[A-Z]{2}[A-Za-z0-9]{1,15}$`),
+		"VAT":  regexp.MustCompile(`^[A-Z]{2}[A-Za-z0-9]{2,13}$`),
+		// Bare, or punctuated in full; the first 12 may be letters since
+		// the alphanumeric CNPJ.
+		"BR:CNPJ": regexp.MustCompile(`^([0-9A-Z]{12}[0-9]{2}|[0-9A-Z]{2}\.[0-9A-Z]{3}\.[0-9A-Z]{3}/[0-9A-Z]{4}-[0-9]{2})$`),
+		"BR:CPF":  regexp.MustCompile(`^([0-9]{11}|[0-9]{3}\.[0-9]{3}\.[0-9]{3}-[0-9]{2})$`),
 		"US:EIN":  regexp.MustCompile(`^[0-9]{2}-?[0-9]{7}$`),
 		"GLN":     regexp.MustCompile(`^[0-9]{13}$`),
 	}
@@ -250,8 +257,13 @@ func documents(field string, docs []DocumentRef, types map[string]bool) error {
 		return fmt.Errorf("%s has %d, want at most %d", field, len(docs), MaxDocuments)
 	}
 	var errs []error
+	seen := map[DocumentRef]bool{}
 	for i, d := range docs {
 		at := fmt.Sprintf("%s[%d]", field, i)
+		if seen[d] {
+			errs = append(errs, fmt.Errorf("%s: the same document twice", at))
+		}
+		seen[d] = true
 		switch {
 		case !types[d.Type]:
 			errs = append(errs, fmt.Errorf("%s.type: %s is not one of %v", at, logsafe.Quote(d.Type), slices.Sorted(maps.Keys(types))))
@@ -269,6 +281,16 @@ func documents(field string, docs []DocumentRef, types map[string]bool) error {
 	return errors.Join(errs...)
 }
 
+// sameStop reports whether two stops are the same place: the same
+// facility code, or the same UN/LOCODE and facility name (ignoring case
+// and surrounding space).
+func sameStop(a, b Stop) bool {
+	if a.FacilityCode != "" && a.FacilityCode == b.FacilityCode {
+		return true
+	}
+	return a.UNLocationCode == b.UNLocationCode && strings.EqualFold(strings.TrimSpace(a.Facility), strings.TrimSpace(b.Facility))
+}
+
 // Validate implements Body.
 func (b *RoadBookingRequestBody) Validate() error {
 	errs := []error{
@@ -281,8 +303,16 @@ func (b *RoadBookingRequestBody) Validate() error {
 	if b.Consignee != nil {
 		errs = append(errs, b.Consignee.validate("consignee"))
 	}
-	if b.Pickup.UNLocationCode == b.Delivery.UNLocationCode && b.Pickup.Facility == b.Delivery.Facility {
+	if sameStop(b.Pickup, b.Delivery) {
 		errs = append(errs, errors.New("delivery is the pickup"))
+	}
+	// The delivery can't have to end before the pickup may start.
+	if b.Pickup.Earliest != "" && b.Delivery.Latest != "" {
+		from, err1 := time.Parse(envelope.TimeLayout, b.Pickup.Earliest)
+		to, err2 := time.Parse(envelope.TimeLayout, b.Delivery.Latest)
+		if err1 == nil && err2 == nil && to.Before(from) {
+			errs = append(errs, errors.New("delivery.latest is before pickup.earliest"))
+		}
 	}
 	if len(b.Equipment) == 0 || len(b.Equipment) > MaxEquipmentLines {
 		errs = append(errs, fmt.Errorf("containers has %d lines, want 1-%d", len(b.Equipment), MaxEquipmentLines))
@@ -328,7 +358,11 @@ func (b *RoadBookingAmendmentBody) Validate() error {
 	if b.Pickup == nil && b.Delivery == nil {
 		errs = append(errs, errors.New("an amendment changes the pickup, the delivery, or both"))
 	}
-	for field, w := range map[string]*Window{"pickup": b.Pickup, "delivery": b.Delivery} {
+	for _, fw := range []struct {
+		field string
+		w     *Window
+	}{{"pickup", b.Pickup}, {"delivery", b.Delivery}} {
+		field, w := fw.field, fw.w
 		if w == nil {
 			continue
 		}

@@ -233,6 +233,10 @@ func crossCheck(h *envelope.Header, b Body) error {
 	if c, ok := b.(*RoadBookingConfirmationBody); ok && c.BookingRef != *h.BookingRef {
 		return fmt.Errorf("body.carrier_booking_reference %s is not header.bookingRef %s", logsafe.Quote(c.BookingRef), logsafe.Quote(*h.BookingRef))
 	}
+	if r, ok := b.(*RoadBookingRequestBody); ok && r.Shipper.Domain != "" && r.Shipper.Domain != h.Sender {
+		// The shipper of a leg is whoever signs its request.
+		return fmt.Errorf("body.shipper.domain %s is not header.sender %s", logsafe.Quote(r.Shipper.Domain), logsafe.Quote(h.Sender))
+	}
 	if a, ok := b.(*RoadBookingAmendmentBody); ok && a.BookingRef != *h.BookingRef {
 		return fmt.Errorf("body.carrier_booking_reference %s is not header.bookingRef %s", logsafe.Quote(a.BookingRef), logsafe.Quote(*h.BookingRef))
 	}

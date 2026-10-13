@@ -194,6 +194,7 @@ func (a *Assistant) run(ctx context.Context, c *Conversation, t *turnState, call
 		if len(r.Records) > maxRecords {
 			r.Records = r.Records[len(r.Records)-maxRecords:]
 		}
+		r.Records = withoutProvenance(r.Records)
 		return r, nil
 	case ToolStatus:
 		var in struct{ BookingRef string }
@@ -442,3 +443,34 @@ func (a *Assistant) shipperName() string {
 // space, as the confirmation dialog displays text: what the person sees
 // there is then byte for byte what is sent.
 func fold(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// withoutProvenance drops derived_from from event and alert bodies: a
+// re-issuer's account of its sources is partner text the shipper can't
+// check against its log, so it never reaches a model.
+func withoutProvenance(recs []store.RecordView) []store.RecordView {
+	out := make([]store.RecordView, len(recs))
+	for i, r := range recs {
+		out[i] = r
+		var body intents.Body
+		switch r.Intent {
+		case intents.TnTEvent:
+			e := &intents.TnTEventBody{}
+			if json.Unmarshal(r.Body, e) == nil && e.DerivedFrom != nil {
+				e.DerivedFrom = nil
+				body = e
+			}
+		case intents.TnTAlert:
+			a := &intents.TnTAlertBody{}
+			if json.Unmarshal(r.Body, a) == nil && a.DerivedFrom != nil {
+				a.DerivedFrom = nil
+				body = a
+			}
+		}
+		if body != nil {
+			if b, err := json.Marshal(body); err == nil {
+				out[i].Body = b
+			}
+		}
+	}
+	return out
+}

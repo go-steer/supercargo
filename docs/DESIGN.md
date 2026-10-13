@@ -651,12 +651,12 @@ The `kid` resolves against the issuer's profile. The distinct `typ` means a dele
 }
 ```
 - **Addresses** are international: an ISO 3166-1 alpha-2 `country`, an optional `region` (a state, a Brazilian UF), a `locality`, an optional `postal_code` and the `street`.
-- **Parties** carry identifiers by `scheme`, each at most once: `EORI`, `VAT`, `BR:CNPJ`, `BR:CPF`, `US:EIN`, `GLN`, each checked for its form (at most 8).
-- **Stops** are a facility with its UN/LOCODE (and optionally a terminal or depot code and an address), and a window: `earliest` and `latest`, UTC in whole seconds, not inverted. Pickup and delivery are different places.
+- **Parties** carry identifiers by `scheme`, each at most once: `EORI`, `VAT`, `BR:CNPJ`, `BR:CPF`, `US:EIN`, `GLN`, each checked for its form (at most 8). A CNPJ or CPF is bare or punctuated in full, and a CNPJ's first 12 characters may be capital letters (Brazil's alphanumeric CNPJ, issued from July 2026; the two check digits stay digits). The request's `shipper.domain`, if given, is the sender's: the shipper of a leg is whoever signs its request.
+- **Stops** are a facility with its UN/LOCODE (and optionally a terminal or depot code and an address), and a window: `earliest` and `latest`, UTC in whole seconds, not inverted. Pickup and delivery are different places (not the same facility code, nor the same UN/LOCODE and facility name, ignoring case), and the delivery's `latest` is not before the pickup's `earliest`.
 - **The confirmation** carries `carrier_booking_reference`, `status` (`confirmed` with `planned_pickup` and `planned_delivery`, in order; or `rejected` with neither, nor documents or a subscription), `subscription_id`, `messages`, and the references of documents the carrier issued:
-  - `fiscal_documents`: a Brazilian `CT-e` or `MDF-e`, by its 44-digit `access_key` and nothing else;
+  - `fiscal_documents`: a Brazilian `CT-e` or `MDF-e`, by its 44-character `access_key` and nothing else (digits, except that the issuer's CNPJ inside it, characters 7 to 18, may have letters);
   - `transport_documents`: an `e-CMR`, `CMR`, `CRT` or `MIC/DTA`, by its `number` and nothing else;
-  - at most 8 each. **The documents themselves never travel in a ULP body**: they stay where the law or their platform keeps them, and anyone with the reference can look them up there.
+  - at most 8 each, none twice. Document numbers are opaque strings: a node never puts one in a path or a URL. **The documents themselves never travel in a ULP body**: they stay where the law or their platform keeps them, and anyone with the reference can look them up there.
 - **The amendment** names the booking and new windows for its `pickup`, its `delivery`, or both, and never a reason: why it moved is the shipper's business. The carrier answers with a confirmation (`inReplyTo` the amendment).
 
 **`derived_from`** (a ULP extension on `ulp.tnt.event` and `ulp.tnt.alert`, optional, at most 20). A party that re-issues events from legs it booked (a forwarder) says where each came from, so its customer can tell evidence from hearsay and ask for it:
@@ -666,7 +666,7 @@ The `kid` resolves against the issuer's profile. The distinct `typ` means a dele
   { "source": "EDIFACT IFTSTA from polder-haulage.example", "reference": "PH4471-1", "signed": false }
 ]
 ```
-A `signed` source is a ULP event or alert the re-issuer holds and names by `id`; an unsigned one (an EDI message, a phone call) says what it was in `source`, with its own `reference` if it had one. The member sits inside the DCSA event body (as a ULP extension, which pf's models tolerate) rather than in the header, because it describes the event, not the envelope.
+A `signed` source is a ULP event or alert the re-issuer holds and names by `id` (each at most once); an unsigned one (an EDI message, a phone call) says what it was in `source`, with its own `reference` if it had one (a reference, as above), and has no `id`. **It is a claim, not evidence:** the receiver can't check it against its own log, so no model sees it (the alert summarizer and the assistants drop it) until a node can verify a signed source by fetching it. The member sits inside the DCSA event body (as a ULP extension, which pf's models tolerate) rather than in the header, because it describes the event, not the envelope.
 
 **`ulp.error`**
 ```json
@@ -684,6 +684,9 @@ These are evaluated after signature, replay and body validation, and **before** 
 | `tnt.inquiry` | `sender == booking.shipper` **or** a valid delegation is attached: signature by `booking.shipper`, `audience == self`, `grantee == sender`, `scope` includes `tnt:read`, matching `bookingRef`, not expired. An unknown booking and someone else's get the same `forbidden`. Until delegation lands (milestone 7), an inquiry carrying one is refused rather than having it ignored |
 | `ocean.tnt.request` | The same rule as `tnt.inquiry` (the booking's shipper, or from milestone 7 a delegate with `tnt:read`), the same single `forbidden` |
 | `tnt.event` / `tnt.alert` (inbound at the shipper) | `sender == booking.operator` (the booking is looked up under the sender, so another carrier never finds it), and the booking has an active subscription that lists this intent. Every failure is the same `forbidden`, so the answer reveals nothing about which bookings exist |
+| `road.booking.request` | As `ocean.booking.request`: the sender is not on a deny list, and the carrier may reject. The body's `shipper.domain`, if any, is the sender (checked with the body) |
+| `road.booking.amendment` | `sender == booking.shipper`, the booking looked up under the sender, so an unknown booking and someone else's get the same `forbidden` |
+| `road.booking.confirmation` | A response, accepted only as the reply to a request this node sent that carrier (its `inReplyTo`), never as a request of its own, like `ocean.booking.confirmation` |
 | Subscription endpoint | Must be on the sender's own domain (prevents using the operator to push data to third parties) |
 | Any intent | `sender != self`: a message from the node's own domain is refused on its claimed header, before any key is fetched (a bare `403`), and the node never sends one to itself (`node.ErrSelf`). Every intent is between two parties |
 

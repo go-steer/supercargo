@@ -140,6 +140,17 @@ func TestDecodeRoadRejects(t *testing.T) {
 		"an inverted window":        {A, `"delivery": {"latest": "2026-10-29T12:00:00Z"}`, `"delivery": {"earliest": "2026-10-30T12:00:00Z", "latest": "2026-10-29T12:00:00Z"}`},
 		"an amendment of another":   {A, `"carrier_booking_reference": "SR-BKG-0913"`, `"carrier_booking_reference": "SR-BKG-0001"`},
 		"a reason in an amendment":  {A, `"pickup"`, `"reason": "vessel delayed", "pickup"`},
+		"a half-punctuated CNPJ":    {R, `"12.345.678/0001-90"`, `"12345678/0001-90"`},
+		"a CNPJ with letter checks": {R, `"12.345.678/0001-90"`, `"12ABC34501DE3F"`},
+		"a lowercase CNPJ":          {R, `"12.345.678/0001-90"`, `"12abc34501de35"`},
+		"a half-punctuated CPF":     {R, `"12.345.678/0001-90"`, `"123.456.78909"`},
+		"a postal code ending -":    {R, `"postal_code": "07750-000"`, `"postal_code": "07750-"`},
+		"another's shipper domain":  {R, `"domain": "meridian-forwarding.example"`, `"domain": "cymbal-calcados.example"`},
+		"a delivery before pickup":  {R, `"latest": "2026-10-26T12:00:00Z"`, `"latest": "2026-10-24T13:00:00Z"`},
+		"the pickup, renamed":       {R, `"facility": "Cymbal Calçados DC, dock 2", "un_location_code": "BRSAO"`, `"facility": " santos brasil TECON terminal", "un_location_code": "BRSSZ"`},
+		"the pickup's facility":     {R, `"un_location_code": "BRSAO"`, `"un_location_code": "BRSAO", "facility_code": "BRSSZTCN"`},
+		"a document twice":          {C, `"transport_documents": [{"type": "CRT", "number": "BR-2026-0913"}]`, `"transport_documents": [{"type": "CRT", "number": "BR-2026-0913"}, {"type": "CRT", "number": "BR-2026-0913"}]`},
+		"letters in the key's date": {C, `"35261012345678000190570010000012341000012345"`, `"3526AB12345678000190570010000012341000012345"`},
 	} {
 		base := map[string]string{R: roadRequestJSON, C: roadConfirmationJSON, A: roadAmendmentJSON}[tc.intent]
 		body := strings.Replace(base, tc.from, tc.to, 1)
@@ -211,6 +222,9 @@ func TestDerivedFrom(t *testing.T) {
 		"a string, not an object": `["EV-000003"]`,
 		"signed as a string":      `[{"id": "EV-1", "signed": "true"}]`,
 		"signed left out (false)": `[{"id": "EV-1"}]`, // then it needs a source
+		"an unsigned source's id": `[{"id": "EV-1", "source": "X12 214", "signed": false}]`,
+		"the same source twice":   `[{"id": "EV-1", "signed": true}, {"id": "EV-1", "signed": true}]`,
+		"a reference with a path": `[{"source": "x", "reference": "PH/4471", "signed": false}]`,
 	}
 	for _, intent := range []string{TnTEvent, TnTAlert} {
 		base := map[string]string{TnTEvent: eventJSON, TnTAlert: alertJSON}[intent]
@@ -249,5 +263,32 @@ func TestRoadEdges(t *testing.T) {
 		if _, err := Decode(roadEnvelope(RoadBookingRequest, body)); !errors.Is(err, ErrInvalidBody) {
 			t.Errorf("%s: %v, want ErrInvalidBody", name, err)
 		}
+	}
+}
+
+// TestRoadIdentifiers: the forms a Brazilian identifier takes, including
+// the alphanumeric CNPJ (from July 2026) and an access key that carries one.
+func TestRoadIdentifiers(t *testing.T) {
+	for _, v := range []string{"12.345.678/0001-90", "12345678000190", "12ABC34501DE35", "12.ABC.345/01DE-35"} {
+		body := strings.Replace(roadRequestJSON, `"12.345.678/0001-90"`, `"`+v+`"`, 1)
+		if _, err := Decode(roadEnvelope(RoadBookingRequest, body)); err != nil {
+			t.Errorf("CNPJ %s: %v", v, err)
+		}
+	}
+	for _, v := range []string{"123.456.789-09", "12345678909"} {
+		body := strings.Replace(roadRequestJSON, `{"scheme": "BR:CNPJ", "value": "12.345.678/0001-90"}`, `{"scheme": "BR:CPF", "value": "`+v+`"}`, 1)
+		if _, err := Decode(roadEnvelope(RoadBookingRequest, body)); err != nil {
+			t.Errorf("CPF %s: %v", v, err)
+		}
+	}
+	key := "352610" + "12ABC34501DE35" + "570010000012341000012345"
+	body := strings.Replace(roadConfirmationJSON, `"35261012345678000190570010000012341000012345"`, `"`+key+`"`, 1)
+	if _, err := Decode(roadEnvelope(RoadBookingConfirmation, body)); err != nil {
+		t.Errorf("an access key with an alphanumeric CNPJ: %v", err)
+	}
+	// A request without the shipper's domain is fine: the sender is the shipper.
+	body = strings.Replace(roadRequestJSON, `"domain": "meridian-forwarding.example", `, ``, 1)
+	if _, err := Decode(roadEnvelope(RoadBookingRequest, body)); err != nil {
+		t.Errorf("a shipper without a domain: %v", err)
 	}
 }

@@ -735,3 +735,23 @@ func TestDraftFloatNumbers(t *testing.T) {
 		t.Errorf("equipment %+v", eq)
 	}
 }
+
+// TestWithoutProvenance: derived_from never reaches a model, and records
+// without it pass through untouched.
+func TestWithoutProvenance(t *testing.T) {
+	in := []store.RecordView{
+		{Intent: intents.TnTEvent, Body: json.RawMessage(`{"event_type":"TRANSPORT","derived_from":[{"source":"IFTSTA","signed":false}]}`)},
+		{Intent: intents.TnTAlert, Body: json.RawMessage(`{"alert_type":"DELAY","derived_from":[{"id":"EV-1","signed":true}]}`)},
+		{Intent: intents.TnTEvent, Body: json.RawMessage(`{"event_type":"EQUIPMENT"}`)},
+		{Intent: intents.BookingConfirmation, Body: json.RawMessage(`{"derived_from":"not ours to touch"}`)},
+	}
+	out := withoutProvenance(in)
+	for i := range 2 {
+		if strings.Contains(string(out[i].Body), "derived_from") || !strings.Contains(string(in[i].Body), "derived_from") {
+			t.Errorf("record %d: %s (was %s)", i, out[i].Body, in[i].Body)
+		}
+	}
+	if string(out[2].Body) != string(in[2].Body) || string(out[3].Body) != string(in[3].Body) {
+		t.Errorf("untouched records changed: %s, %s", out[2].Body, out[3].Body)
+	}
+}

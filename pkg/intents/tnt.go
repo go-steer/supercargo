@@ -93,22 +93,29 @@ func validateProvenance(ps []Provenance) error {
 		return fmt.Errorf("derived_from has %d sources, over %d", len(ps), MaxCitations)
 	}
 	var errs []error
+	ids := map[string]bool{}
 	for i, p := range ps {
 		at := fmt.Sprintf("derived_from[%d]", i)
 		if p.ID != "" {
 			errs = append(errs, ref(at+".id", p.ID))
+			if ids[p.ID] {
+				errs = append(errs, fmt.Errorf("%s: %s is listed twice", at, logsafe.Quote(p.ID)))
+			}
+			ids[p.ID] = true
 		}
 		if p.Source != "" {
 			errs = append(errs, text(at+".source", p.Source, 128, false))
 		}
 		if p.Reference != "" {
-			errs = append(errs, match(at+".reference", p.Reference, docNumberPattern))
+			errs = append(errs, ref(at+".reference", p.Reference))
 		}
 		switch {
 		case p.Signed && p.ID == "":
 			errs = append(errs, fmt.Errorf("%s: a signed source names the event or alert it was (id)", at))
 		case !p.Signed && p.Source == "":
 			errs = append(errs, fmt.Errorf("%s: an unsigned source says what it was (source)", at))
+		case !p.Signed && p.ID != "":
+			errs = append(errs, fmt.Errorf("%s: an id is for a signed ULP event or alert; an unsigned source has a reference", at))
 		}
 	}
 	return errors.Join(errs...)
