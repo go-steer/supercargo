@@ -476,6 +476,7 @@ Where pf's names differ from DCSA's published schemas (DCSA is camelCase, and sp
 | `ulp.delegation.grant` | shipper → operator (optional pre-notify) | REST | sync | ack |
 | `ulp.road.booking.request` | shipper of a truck leg → road carrier | REST | sync | `ulp.road.booking.confirmation` |
 | `ulp.road.booking.amendment` | shipper of a truck leg → road carrier | REST | sync | `ulp.road.booking.confirmation` |
+| `ulp.forwarding.request` | shipper → freight forwarder | REST | sync | `ulp.forwarding.confirmation` |
 | `ulp.error` | any | same as the request | as a response | n/a |
 
 The binding column is the **default**. Every intent is a signed envelope, so any binding can carry any intent ([A.7](#a7-transport-bindings)); a node must accept structured intents over REST and may also accept them over A2A.
@@ -495,6 +496,8 @@ The binding column is the **default**. Every intent is a signed envelope, so any
 | `road.booking.request` | absent (no booking yet) | absent | absent | required: `ULP_ROAD` `0.1` |
 | `road.booking.confirmation` | required, equal to the body's `carrier_booking_reference` | required | absent | required: `ULP_ROAD` `0.1` |
 | `road.booking.amendment` | required, equal to the body's `carrier_booking_reference` | absent | absent | required: `ULP_ROAD` `0.1` |
+| `forwarding.request` | absent (no order yet) | absent | absent | absent (ULP's own) |
+| `forwarding.confirmation` | required, equal to the body's `forwarder_reference` | required | absent | absent (ULP's own) |
 | `ulp.error` | optional | required | absent | absent |
 
 **Body rules.** Bodies are decoded with exact member names: a member the intent doesn't define, a duplicate, or one that differs from a defined member only in case is `invalid_body`. Otherwise one implementation could read `"Question"` where another reads `"question"`.
@@ -659,6 +662,44 @@ The `kid` resolves against the issuer's profile. The distinct `typ` means a dele
   - at most 8 each, none twice. Document numbers are opaque strings: a node never puts one in a path or a URL. **The documents themselves never travel in a ULP body**: they stay where the law or their platform keeps them, and anyone with the reference can look them up there.
 - **The amendment** names the booking and new windows for its `pickup`, its `delivery`, or both, and never a reason: why it moved is the shipper's business. The carrier answers with a confirmation (`inReplyTo` the amendment).
 
+<a id="forwarding-orders"></a>**Forwarding orders** (`ulp.forwarding.request` and `.confirmation`, ULP's own; the ULP payload specification has no forwarding order). A door-to-door order from a shipper to a freight forwarder, who plans the journey and books every leg itself ([the door-to-door proposal](proposals/door-to-door-forwarder.md)). The forwarder is the operator on the order, and the shipper on each leg it books, so the order's events, inquiries and status requests follow the existing rules under the order's reference.
+```json
+{
+  "shipper_reference": "CY-PO-55120",
+  "incoterms": { "rule": "DAP", "version": "2020", "named_place": "Cymbal Calçados DC, Cajamar" },
+  "shipper": { "name": "Cymbal Shoes B.V.", "domain": "cymbal-shoes.example",
+               "identifiers": [{ "scheme": "EORI", "value": "NL123456789" }] },
+  "consignee": { "name": "Cymbal Calçados Ltda", "domain": "cymbal-calcados.example",
+                 "identifiers": [{ "scheme": "BR:CNPJ", "value": "12.345.678/0001-90" }] },
+  "place_of_receipt":  { "type": "door", "un_location_code": "NLTLB", "earliest": "2026-10-06T06:00:00Z",
+                         "address": { "street": "Ringbaan Oost 100", "postal_code": "5013 CD", "locality": "Tilburg", "country": "NL" } },
+  "place_of_delivery": { "type": "door", "facility": "Cymbal Calçados DC, dock 2", "un_location_code": "BRSAO",
+                         "latest": "2026-10-27T12:00:00Z",
+                         "address": { "street": "Rodovia Anhanguera, km 33", "postal_code": "07750-000",
+                                      "locality": "Cajamar", "region": "SP", "country": "BR" } },
+  "containers": [{ "equipment_size_type": "45G1", "count": 1, "gross_weight_kg": 12000 }],
+  "cargo": { "description": "Footwear (sneakers)", "hs_code": "6404" },
+  "subscription": { "endpoint": "https://cymbal-shoes.example/ulp", "intents": ["ulp.tnt.event", "ulp.tnt.alert"] }
+}
+```
+- **The trade term travels:** `incoterms` is a rule of Incoterms 2020 (`EXW`, `FCA`, `CPT`, `CIP`, `DAP`, `DPU`, `DDP`, `FAS`, `FOB`, `CFR`, `CIF`), the version `2020`, and the named place. It says who arranges which part of the journey; under DAP the seller hires the forwarder, under EXW the buyer would send this order instead.
+- **Parties** are the road bodies' (identifiers by scheme, an international address); the consignee is required. The `shipper.domain`, if given, is the sender's.
+- **Places** are a `door` (found by its address, which it must have; a name is optional) or a `port` (a terminal, by its `facility`), with a UN/LOCODE, an optional facility code, and a window: `place_of_receipt.earliest` is when the cargo is ready, `place_of_delivery.latest` when it must have arrived (UTC, whole seconds, not before it's ready). The two are different places: not the same facility code, the same facility at one UN/LOCODE, or the same address (ignoring case and spacing).
+- **Why the date matters stays with the shipper.** The window is part of the contract, so it travels; the launch or the warehouse slot behind it does not.
+- **The confirmation** carries `forwarder_reference` (the order's reference from then on), `status`, `subscription_id`, `messages`, and when `confirmed`, the planned journey and `planned_delivery`:
+  ```json
+  { "forwarder_reference": "MF-0007", "status": "confirmed",
+    "legs": [
+      { "mode": "road",  "from": "NLTLB", "to": "NLRTM" },
+      { "mode": "ocean", "from": "NLRTM", "to": "BRSSZ", "carrier": "Ocean Blue", "vessel": "Ocean Blue Aurora 42W",
+        "planned_departure": "2026-10-07T18:00:00Z", "planned_arrival": "2026-10-23T08:00:00Z" },
+      { "mode": "road",  "from": "BRSSZ", "to": "BRSAO", "carrier": "Serra Transportes" } ],
+    "planned_delivery": "2026-10-26T10:00:00Z", "subscription_id": "SUB-0007" }
+  ```
+  - 1 to 8 `legs`, each `road`, `ocean` or `rail`, between UN/LOCODEs. Only a truck may start and end in one town, and only a ship has a `vessel`. Carrier names and times are optional: the forwarder says what it wants its customer to know, never what it pays.
+  - The journey is continuous: each leg starts where the one before ended, departs no earlier than that one arrives, and none arrives after `planned_delivery`.
+  - A `rejected` order carries no legs, delivery or subscription.
+
 **`derived_from`** (a ULP extension on `ulp.tnt.event` and `ulp.tnt.alert`, optional, at most 20). A party that re-issues events from legs it booked (a forwarder) says where each came from, so its customer can tell evidence from hearsay and ask for it:
 ```json
 "derived_from": [
@@ -687,6 +728,8 @@ These are evaluated after signature, replay and body validation, and **before** 
 | `road.booking.request` | As `ocean.booking.request`: the sender is not on a deny list, and the carrier may reject. The body's `shipper.domain`, if any, is the sender (checked with the body) |
 | `road.booking.amendment` | `sender == booking.shipper`, the booking looked up under the sender, so an unknown booking and someone else's get the same `forbidden` |
 | `road.booking.confirmation` | A response, accepted only as the reply to a request this node sent that carrier (its `inReplyTo`), never as a request of its own, like `ocean.booking.confirmation` |
+| `forwarding.request` | As `ocean.booking.request`: the sender is not on a deny list, and the forwarder may decline. The body's `shipper.domain`, if any, is the sender (checked with the body) |
+| `forwarding.confirmation` | A response, like `road.booking.confirmation` |
 | Subscription endpoint | Must be on the sender's own domain (prevents using the operator to push data to third parties) |
 | Any intent | `sender != self`: a message from the node's own domain is refused on its claimed header, before any key is fetched (a bare `403`), and the node never sends one to itself (`node.ErrSelf`). Every intent is between two parties |
 

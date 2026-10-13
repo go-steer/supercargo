@@ -153,11 +153,30 @@ def payloads():
                  "cargo": {"description": "Calçados (tênis)", "hs_code": "6404"}},
         "attachments": {"delegation": None},
     }
-    return request, confirmation, inquiry, event, road
+    # A door-to-door order (ULP's own body, no dialect), with the
+    # Incoterms rule and structured international addresses.
+    order = {
+        "header": header("ulp.forwarding.request", "cymbal-shoes.example", "meridian-forwarding.example"),
+        "body": {"shipper_reference": "CY-PO-55120",
+                 "incoterms": {"rule": "DAP", "version": "2020", "named_place": "Cymbal Calçados DC, Cajamar"},
+                 "shipper": {"name": "Cymbal Shoes B.V.", "domain": "cymbal-shoes.example",
+                             "identifiers": [{"scheme": "EORI", "value": "NL123456789"}]},
+                 "consignee": {"name": "Cymbal Calçados Ltda", "domain": "cymbal-calcados.example"},
+                 "place_of_receipt": {"type": "door", "un_location_code": "NLTLB",
+                                      "address": {"street": "Ringbaan Oost 100", "postal_code": "5013 CD",
+                                                  "locality": "Tilburg", "country": "NL"}},
+                 "place_of_delivery": {"type": "door", "un_location_code": "BRSAO", "latest": "2026-10-27T12:00:00Z",
+                                       "address": {"street": "Rodovia Anhanguera, km 33", "postal_code": "07750-000",
+                                                   "locality": "Cajamar", "region": "SP", "country": "BR"}},
+                 "containers": [{"equipment_size_type": "45G1", "count": 1, "gross_weight_kg": 12000}],
+                 "cargo": {"description": "Footwear (sneakers)", "hs_code": "6404"}},
+        "attachments": {"delegation": None},
+    }
+    return request, confirmation, inquiry, event, road, order
 
 
 def vectors(key, other):
-    request, confirmation, inquiry, event, road = payloads()
+    request, confirmation, inquiry, event, road, order = payloads()
     out = []
 
     def add(name, wire_obj, payload_text, error):
@@ -172,6 +191,7 @@ def vectors(key, other):
         ("inquiry_escaped_ascii", inquiry, lambda o: json.dumps(o, ensure_ascii=True)),
         ("tnt_event_with_dialect", event, lambda o: json.dumps(o)),
         ("road_booking_request_utf8", road, lambda o: json.dumps(o, ensure_ascii=False)),
+        ("forwarding_request_indented", order, lambda o: json.dumps(o, ensure_ascii=False, indent=2)),
     ]:
         text = dump(obj)
         add(name, seal(text.encode("utf-8"), key), text, None)

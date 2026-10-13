@@ -174,6 +174,49 @@ func TestGoldenMatchesCode(t *testing.T) {
 	t.Fatal("no confirmation_numbers vector")
 }
 
+// TestGoldenBodies: the golden vectors that show a protocol body (the
+// older ones exercise the envelope alone) carry a body the code accepts.
+func TestGoldenBodies(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/golden/envelope.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Vectors []struct{ Name, Payload string }
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatal(err)
+	}
+	bodies := map[string]string{
+		"tnt_event_with_dialect":      TnTEvent,
+		"road_booking_request_utf8":   RoadBookingRequest,
+		"forwarding_request_indented": ForwardingRequest,
+	}
+	for _, v := range file.Vectors {
+		want, ok := bodies[v.Name]
+		if !ok {
+			continue
+		}
+		delete(bodies, v.Name)
+		var p struct {
+			Header envelope.Header
+			Body   json.RawMessage
+		}
+		if err := json.Unmarshal([]byte(v.Payload), &p); err != nil {
+			t.Fatalf("%s: %v", v.Name, err)
+		}
+		if p.Header.Intent != want {
+			t.Errorf("%s: intent %s, want %s", v.Name, p.Header.Intent, want)
+		}
+		if _, err := DecodeBody(p.Header.Intent, p.Body); err != nil {
+			t.Errorf("%s: %v", v.Name, err)
+		}
+	}
+	for name := range bodies {
+		t.Errorf("no golden vector %s", name)
+	}
+}
+
 func TestSupported(t *testing.T) {
 	for _, in := range []string{BookingRequest, BookingConfirmation, Error, TnTEvent, TnTAlert, TnTInquiry, TnTInquiryResponse} {
 		if !Supported(in) {
