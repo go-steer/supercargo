@@ -115,15 +115,10 @@ var (
 // the order: the planned journey (confirmed) or a rejection. It is the
 // deterministic send step a person at the forwarder confirms; no model
 // calls it. The order records the answer only once the shipper's node
-// accepted it.
+// accepted it. If that acceptance was lost on the way, sending the same
+// answer again is safe: the shipper takes an answer it already holds
+// without changing anything.
 func (o *Orders) Answer(ctx context.Context, ref string, conf *intents.ForwardingConfirmationBody) error {
-	b, err := o.Bookings.Get(o.Node.Domain(), ref)
-	if err != nil || b.Order == nil {
-		return fmt.Errorf("%w: %s", ErrUnknownOrder, ref)
-	}
-	if b.Order.Confirmation.Status != intents.StatusPending {
-		return fmt.Errorf("%w: %s is %s", ErrAnswered, ref, b.Order.Confirmation.Status)
-	}
 	if conf.Status == intents.StatusPending {
 		return fmt.Errorf("%w: the final answer is confirmed or rejected", ErrInvalidAnswer)
 	}
@@ -144,6 +139,13 @@ func (o *Orders) Answer(ctx context.Context, ref string, conf *intents.Forwardin
 		delete(o.answering, ref)
 		o.mu.Unlock()
 	}()
+	b, err := o.Bookings.Get(o.Node.Domain(), ref)
+	if err != nil || b.Order == nil {
+		return fmt.Errorf("%w: %s", ErrUnknownOrder, ref)
+	}
+	if b.Order.Confirmation.Status != intents.StatusPending {
+		return fmt.Errorf("%w: %s is %s", ErrAnswered, ref, b.Order.Confirmation.Status)
+	}
 	conf.OrderRef = ref
 	if conf.Status == intents.StatusConfirmed {
 		// The subscription the order was given when taken stays its own.

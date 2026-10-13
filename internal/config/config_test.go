@@ -336,13 +336,14 @@ forwarder: { refPrefix: MF, deny: [mallory.example] }
 		t.Errorf("%+v", c.Forwarder)
 	}
 	for name, edit := range map[string][2]string{
-		"no shipper role":       {"roles: [operator, shipper]", "roles: [operator]"},
-		"no operator role":      {"roles: [operator, shipper]", "roles: [shipper]"},
-		"a dotted prefix":       {"refPrefix: MF", "refPrefix: M.F"},
-		"no prefix":             {"refPrefix: MF, ", ""},
-		"denying itself":        {"deny: [mallory.example]", "deny: [meridian-forwarding.example]"},
-		"the operator's prefix": {"forwarder:", "operator: { refPrefix: MF, road: { transit: 30h } }\nforwarder:"},
-		"an unknown key":        {"refPrefix: MF", "refPrefix: MF, lanes: []"},
+		"no shipper role":        {"roles: [operator, shipper]", "roles: [operator]"},
+		"no operator role":       {"roles: [operator, shipper]", "roles: [shipper]"},
+		"a dotted prefix":        {"refPrefix: MF", "refPrefix: M.F"},
+		"no prefix":              {"refPrefix: MF, ", ""},
+		"denying itself":         {"deny: [mallory.example]", "deny: [meridian-forwarding.example]"},
+		"the operator's prefix":  {"forwarder:", "operator: { refPrefix: MF, road: { transit: 30h } }\nforwarder:"},
+		"the truck legs' prefix": {"forwarder: { refPrefix: MF,", "operator: { refPrefix: OB, road: { transit: 30h } }\nforwarder: { refPrefix: OB-R,"},
+		"an unknown key":         {"refPrefix: MF", "refPrefix: MF, lanes: []"},
 	} {
 		in := strings.Replace(base, edit[0], edit[1], 1)
 		if in == base {

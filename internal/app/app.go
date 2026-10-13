@@ -828,7 +828,7 @@ func (a *App) sideOf(opener string, openedHere bool) string {
 }
 
 // operatorPushes are the intents the operator role pushes.
-var operatorPushes = map[string]bool{intents.TnTEvent: true, intents.TnTAlert: true}
+var operatorPushes = map[string]bool{intents.TnTEvent: true, intents.TnTAlert: true, intents.ForwardingConfirmation: true}
 
 func loadPool(path string) (*x509.CertPool, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: the operator's configured CA file

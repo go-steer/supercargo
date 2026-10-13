@@ -87,6 +87,13 @@ func TestOrder(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// A subscription the order didn't ask for.
+	unasked := anOrder()
+	unasked.Subscription = nil
+	s = shipperWith(t, orderAnswer(pending))
+	if _, err := s.Order(ctx, meridian, unasked); !errors.Is(err, ErrPlanMismatch) || s.Bookings.Len() != 0 {
+		t.Errorf("an unasked-for subscription: %v", err)
+	}
 	full := shipperWith(t, orderAnswer(pending))
 	full.Bookings = store.NewBookingsCap(0)
 	if _, err := full.Order(ctx, meridian, anOrder()); err == nil {
@@ -125,7 +132,7 @@ func TestOrderAnswers(t *testing.T) {
 	_ = bookings.Add(pendingOrder())
 	_ = bookings.Add(store.Booking{Ref: "OB-BKG-1", Operator: meridian}) // an ocean booking
 	answered := pendingOrder()
-	answered.Ref, answered.Order.Confirmation.Status = "MF-0006", intents.StatusConfirmed
+	answered.Ref, answered.Order.Confirmation.Status, answered.Order.Confirmation.OrderRef = "MF-0006", intents.StatusConfirmed, "MF-0006"
 	_ = bookings.Add(answered)
 	o := &OrderAnswers{Bookings: bookings}
 	id := "00000000-0000-4000-8000-000000000001"
@@ -153,6 +160,23 @@ func TestOrderAnswers(t *testing.T) {
 	}
 	if err := o.Authorize(context.Background(), answerFrom(meridian, "MF-0007", id, journey())); err != nil {
 		t.Errorf("the real answer: %v", err)
+	}
+	// The answer held, sent again (its reply lost): taken, changing nothing.
+	again := answerFrom(meridian, "MF-0006", id, answered.Order.Confirmation)
+	if err := o.Authorize(context.Background(), again); err != nil {
+		t.Errorf("the same answer again: %v", err)
+	}
+	if _, err := o.Handle(context.Background(), again); err != nil {
+		t.Error(err)
+	}
+	if b, _ := bookings.Get(meridian, "MF-0006"); b.Order.Confirmation.Status != intents.StatusConfirmed {
+		t.Error("a resent answer changed the order")
+	}
+	// The same answer, not in reply to the order: refused.
+	forbiddenAgain := answerFrom(meridian, "MF-0006", "00000000-0000-4000-8000-000000000002", answered.Order.Confirmation)
+	var r *node.Rejection
+	if err := o.Authorize(context.Background(), forbiddenAgain); !errors.As(err, &r) || r.Code != intents.CodeForbidden {
+		t.Errorf("the same answer, not in reply: %v", err)
 	}
 }
 
@@ -186,6 +210,14 @@ func TestOrderAnswersHandle(t *testing.T) {
 		if refused := tc.status == intents.StatusPending; refused != (err != nil) || refused == (len(told) == 1) {
 			t.Errorf("%s: %v, told %d", name, err, len(told))
 		}
+	}
+	// A subscription the order didn't ask for, added in the final answer.
+	bookings := store.NewBookings()
+	unsubscribed := pendingOrder()
+	unsubscribed.Order.Request.Subscription, unsubscribed.Order.Confirmation.SubscriptionID = nil, ""
+	_ = bookings.Add(unsubscribed)
+	if _, err := (&OrderAnswers{Bookings: bookings}).Handle(context.Background(), answerFrom(meridian, "MF-0007", id, journey())); err == nil {
+		t.Error("a subscription added in the final answer")
 	}
 	// Gone (a reset) between authorizing and handling.
 	o := &OrderAnswers{Bookings: store.NewBookings()}

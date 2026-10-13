@@ -53,6 +53,9 @@ func (s *Shipper) Order(ctx context.Context, forwarder string, req *intents.Forw
 	if req.Subscription != nil && conf.SubscriptionID == "" {
 		return nil, fmt.Errorf("%w: %s's answer to %s has no subscription_id", ErrPlanMismatch, forwarder, req.ShipperRef)
 	}
+	if req.Subscription == nil && conf.SubscriptionID != "" {
+		return nil, fmt.Errorf("%w: %s's answer to %s has a subscription the order didn't ask for", ErrPlanMismatch, forwarder, req.ShipperRef)
+	}
 	if conf.Status == intents.StatusConfirmed {
 		if err := intents.FitsOrder(req, conf); err != nil {
 			return nil, fmt.Errorf("%w: %s's answer to %s: %w", ErrPlanMismatch, forwarder, req.ShipperRef, err)
@@ -92,6 +95,11 @@ func (o *OrderAnswers) Authorize(_ context.Context, req *node.Request) error {
 		reason = "no order " + *h.BookingRef + " with forwarder " + h.Sender
 	case b.Order == nil:
 		reason = *h.BookingRef + " is not an order"
+	case b.Order.Confirmation.Status != intents.StatusPending && *h.InReplyTo == b.Order.MessageID &&
+		reflect.DeepEqual(b.Order.Confirmation, *req.Body.(*intents.ForwardingConfirmationBody)):
+		// The same answer again: a forwarder whose first push lost its
+		// reply resends it. Taken, changing nothing, so both sides agree.
+		return nil
 	case b.Order.Confirmation.Status != intents.StatusPending:
 		reason = "order " + b.Ref + " is already " + b.Order.Confirmation.Status
 	case *h.InReplyTo != b.Order.MessageID:
@@ -113,6 +121,12 @@ func (o *OrderAnswers) Handle(_ context.Context, req *node.Request) (*node.Reply
 	b, err := o.Bookings.Get(h.Sender, *h.BookingRef)
 	if err != nil {
 		return nil, err // authorized a moment ago
+	}
+	if b.Order.Confirmation.Status != intents.StatusPending {
+		return nil, nil // the answer held already, resent (Authorize)
+	}
+	if b.Order.Request.Subscription == nil && conf.SubscriptionID != "" {
+		return nil, node.Reject(intents.CodeInvalidBody, "The plan adds a subscription the order didn't ask for.", "subscription "+conf.SubscriptionID)
 	}
 	if conf.Status == intents.StatusConfirmed {
 		if err := intents.FitsOrder(&b.Order.Request, conf); err != nil {

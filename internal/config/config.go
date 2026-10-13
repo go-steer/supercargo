@@ -533,8 +533,9 @@ func (c *Config) validate() error {
 		if !refPrefix.MatchString(f.RefPrefix) {
 			return fmt.Errorf("forwarder: refPrefix %q must be 1-40 of [A-Za-z0-9-], starting with a letter or digit", f.RefPrefix)
 		}
-		if c.Operator != nil && c.Operator.RefPrefix == f.RefPrefix {
-			return errors.New("forwarder: refPrefix must differ from operator.refPrefix, or an order and a booking could share a reference")
+		if o := c.Operator; o != nil && (o.RefPrefix == f.RefPrefix || o.RefPrefix+"-R" == f.RefPrefix) {
+			// Truck legs on an ocean operator number under refPrefix-R.
+			return errors.New("forwarder: refPrefix must differ from operator.refPrefix (and from it plus -R), or an order and a booking could share a reference")
 		}
 		for _, d := range f.Deny {
 			if !envelope.ValidDomain(d) || d == c.Domain {

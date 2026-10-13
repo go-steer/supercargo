@@ -185,9 +185,13 @@ func TestForwardingAnswerRefused(t *testing.T) {
 	if mine, _ := cymbal.Customer.Bookings.Get("meridian-forwarding.example", "MF-0007"); mine.Order.Confirmation.Status != intents.StatusPending {
 		t.Errorf("a refused answer changed the order: %+v", mine.Order.Confirmation)
 	}
-	// The real answer still gets through; then nothing more does.
+	// The real answer still gets through; the same answer again (its reply
+	// lost on the way) is taken without changing anything; nothing else is.
 	if err := send("MF-0007", theirs.Order.MessageID, plan()); err != nil {
 		t.Fatal(err)
+	}
+	if err := send("MF-0007", theirs.Order.MessageID, plan()); err != nil {
+		t.Errorf("the same answer again: %v", err)
 	}
 	if err := send("MF-0007", theirs.Order.MessageID, &intents.ForwardingConfirmationBody{Status: intents.StatusRejected}); !errors.As(err, &re) || re.Code != intents.CodeForbidden {
 		t.Errorf("an answer after the answer: %v", err)
