@@ -196,7 +196,7 @@ func TestControlPlanAndBook(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	RegisterControl(mux, orch.Orders, orch)
+	RegisterControl(mux, orch.Orders, orch, nil)
 	do := func(method, path string) int {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(method, path, nil))

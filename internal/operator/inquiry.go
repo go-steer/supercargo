@@ -394,6 +394,16 @@ type recordView struct {
 	Alert *intents.TnTAlertBody `json:"alert,omitempty"`
 }
 
+// codesOnly describes an event from its codes alone: "TRANSPORT DEPA ACT
+// at NLRTM" (with its container, for an equipment event).
+func codesOnly(e *intents.TnTEventBody) string {
+	s := e.EventType + " " + e.EventTypeCode + " " + e.EventClassifierCode + " at " + e.UNLocationCode
+	if e.EquipmentReference != "" {
+		s += ", " + e.EquipmentReference
+	}
+	return s
+}
+
 func (r recordView) id() string {
 	if r.Event != nil {
 		return r.Event.EventID
@@ -402,7 +412,9 @@ func (r recordView) id() string {
 }
 
 // viewRecords decodes the log's records: the operator's own, validated
-// when published, so one that doesn't decode is skipped.
+// when published, so one that doesn't decode is skipped. An event a
+// forwarder re-issued from a leg (derived_from) carries the leg carrier's
+// description: the model gets one written from its codes instead.
 func viewRecords(recs []store.Record) []recordView {
 	var out []recordView
 	for _, r := range recs {
@@ -410,6 +422,9 @@ func viewRecords(recs []store.Record) []recordView {
 		case intents.TnTEvent:
 			var e intents.TnTEventBody
 			if json.Unmarshal(r.Body, &e) == nil {
+				if e.DerivedFrom != nil {
+					e.Description = codesOnly(&e)
+				}
 				e.DerivedFrom = nil // provenance is never model input
 				out = append(out, recordView{Kind: "event", Event: &e})
 			}

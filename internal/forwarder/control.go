@@ -56,7 +56,34 @@ type AnswerResponse struct {
 // confirmation happens before the call, and reaching the socket takes the
 // node user's own access. The orders themselves are listed with the
 // carrier side's bookings (GET /bookings).
-func RegisterControl(mux *http.ServeMux, o *Orders, orch *Orchestrator) {
+// ProposalsResponse is the answer to GET /orders/{ref}/proposals and
+// POST /proposals/{id}/confirm.
+type ProposalsResponse struct {
+	Proposals []Proposal `json:"proposals,omitempty"`
+	Error     string     `json:"error,omitempty"`
+}
+
+func RegisterControl(mux *http.ServeMux, o *Orders, orch *Orchestrator, relay *Relay) {
+	if relay != nil {
+		mux.HandleFunc("GET /orders/{ref}/proposals", func(w http.ResponseWriter, r *http.Request) {
+			control.Answer(w, http.StatusOK, ProposalsResponse{Proposals: relay.Proposals(r.PathValue("ref"))})
+		})
+		// The person at the forwarder confirmed a proposal: send its
+		// amendment to the leg's carrier.
+		mux.HandleFunc("POST /proposals/{id}/confirm", func(w http.ResponseWriter, r *http.Request) {
+			p, err := relay.Confirm(context.WithoutCancel(r.Context()), r.PathValue("id"))
+			switch {
+			case errors.Is(err, ErrUnknownProposal):
+				control.Answer(w, http.StatusNotFound, ProposalsResponse{Error: err.Error()})
+			case errors.Is(err, ErrProposalClosed):
+				control.Answer(w, http.StatusConflict, ProposalsResponse{Error: err.Error()})
+			case err != nil:
+				control.Answer(w, http.StatusBadGateway, ProposalsResponse{Error: err.Error(), Proposals: []Proposal{p}})
+			default:
+				control.Answer(w, http.StatusOK, ProposalsResponse{Proposals: []Proposal{p}})
+			}
+		})
+	}
 	if orch != nil {
 		mux.HandleFunc("GET /orders/{ref}/plan", func(w http.ResponseWriter, r *http.Request) {
 			steps, err := orch.Plan(r.PathValue("ref"))
