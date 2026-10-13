@@ -19,8 +19,10 @@ companion proposal on how each company's ERP, TMS and telematics plug in.
 **See it move:** [`door-to-door-forwarder.html`](door-to-door-forwarder.html)
 walks through every message in this proposal, step by step, for either
 region. It shows each envelope or EDI file, and what each company knows
-after it. It's one self-contained file: download it and open it in a
-browser (GitHub only shows its source).
+after it. Open it at
+**https://go-steer.github.io/supercargo/proposals/door-to-door-forwarder.html**
+(GitHub only shows the file's source); it's one self-contained file, so a
+downloaded copy works offline too.
 
 ## Why
 
