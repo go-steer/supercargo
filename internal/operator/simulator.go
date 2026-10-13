@@ -99,6 +99,7 @@ type step struct {
 	// afterArrival marks steps that move when the arrival does.
 	afterArrival bool
 	arrive       bool // the ARRI ACT step
+	estimate     bool // an ARRI EST step, pointless once arrived
 }
 
 // Step offsets from the planned departure and arrival.
@@ -307,13 +308,19 @@ func (s *Simulator) roadTimeline(b store.Booking) (*timeline, error) {
 	for _, ref := range refs {
 		steps = append(steps, equipment("PICK", from, pickup, ref, false))
 	}
-	steps = append(steps, step{at: pickup.Add(roadDepartAfter), body: func(id string, at time.Time) intents.Body {
+	// A leg planned shorter than the departure's offset still departs
+	// before it arrives.
+	depart := pickup.Add(roadDepartAfter)
+	if delivery.Before(depart) {
+		depart = delivery
+	}
+	steps = append(steps, step{at: depart, body: func(id string, at time.Time) intents.Body {
 		return &intents.TnTEventBody{EventID: id, EventType: intents.EventTypeTransport, EventClassifierCode: intents.ClassifierActual,
 			EventTypeCode: "DEPA", EventDateTime: stamp(at), UNLocationCode: from.UNLocationCode, FacilityName: clip(from.Facility, 128),
 			Description: describe("Truck departed %s for %s", from.Facility, to.Facility)}
 	}})
 	if pickup.Add(roadEstimate).Before(delivery) {
-		steps = append(steps, step{at: pickup.Add(roadEstimate), body: func(id string, _ time.Time) intents.Body { return s.estimate(id, tl, "") }})
+		steps = append(steps, step{at: pickup.Add(roadEstimate), estimate: true, body: func(id string, _ time.Time) intents.Body { return s.estimate(id, tl, "") }})
 	}
 	steps = append(steps, step{at: delivery, afterArrival: true, arrive: true, body: func(id string, at time.Time) intents.Body {
 		return &intents.TnTEventBody{EventID: id, EventType: intents.EventTypeTransport, EventClassifierCode: intents.ClassifierActual,
@@ -331,7 +338,9 @@ func (s *Simulator) roadTimeline(b store.Booking) (*timeline, error) {
 // Replan follows a truck leg's amended plan. Before anything has happened
 // on the leg, it plays again from its new plan. Once it has begun (a
 // container picked up), only the delivery and what follows move, and a new
-// estimate says so. A finished leg stays finished: ErrUnknownBooking.
+// estimate says so. Either way a delay already announced (Disrupt) stays
+// on top of the new plan: the shipper was told of it, and nothing says
+// it's over. A finished leg stays finished: ErrUnknownBooking.
 func (s *Simulator) Replan(b store.Booking) error {
 	s.init()
 	if b.Road == nil {
@@ -348,15 +357,19 @@ func (s *Simulator) Replan(b store.Booking) error {
 	case !ok:
 		return ErrUnknownBooking
 	case !tl.begun:
+		fresh.shift(tl.delayed)
 		s.lines[b.Ref] = fresh
 		return nil
 	case tl.arrived:
 		return ErrArrived
 	}
 	tl.booking = b
-	if d := fresh.arrival.Sub(tl.arrival); d != 0 {
+	if d := fresh.arrival.Add(tl.delayed).Sub(tl.arrival); d != 0 {
 		tl.shift(d)
 		tl.delayed -= d // a new plan, not a delay
+		// A delivery moved earlier than a step still to come (the estimate)
+		// mustn't fire after it.
+		sort.SliceStable(tl.steps, func(i, j int) bool { return tl.steps[i].at.Before(tl.steps[j].at) })
 		_ = s.publish(tl, s.estimate(s.nextID("EV"), tl, "new delivery plan"))
 	}
 	return nil
@@ -424,6 +437,9 @@ func (s *Simulator) Advance() {
 				tl.arrived = true
 			}
 			tl.begun = true
+			if st.estimate && tl.arrived {
+				continue // a re-plan brought the arrival before it
+			}
 			// A failure is reported to OnError; the voyage goes on.
 			_ = s.publish(tl, st.body(s.nextID("EV"), st.at))
 		}

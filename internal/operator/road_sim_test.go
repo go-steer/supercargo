@@ -186,3 +186,70 @@ func TestTruckReplanRejects(t *testing.T) {
 		t.Error("started a leg without planned times")
 	}
 }
+
+// TestTruckReplanKeepsDelay: a delay announced before an amendment stays
+// on top of the new plan, before the pick-up and after it.
+func TestTruckReplanKeepsDelay(t *testing.T) {
+	for _, onTheRoad := range []bool{false, true} {
+		s := newTruckSim(t)
+		if onTheRoad {
+			for range 5 {
+				s.advance(time.Second)
+			}
+		}
+		if _, err := s.sim.Disrupt("SR-BKG-0913", 6*time.Hour, "Road closed near Jundiaí."); err != nil {
+			t.Fatal(err)
+		}
+		// The delivery window moves to the 26th, 08:00 at the earliest: the
+		// plan's delivery, then 6 hours late.
+		if _, err := s.amend.Handle(context.Background(), amendment(meridian, "SR-BKG-0913", &intents.RoadBookingAmendmentBody{
+			Delivery: &intents.Window{Earliest: "2026-10-26T08:00:00Z"}})); err != nil || s.errs[1] != nil {
+			t.Fatalf("amended: %v, %v", err, s.errs)
+		}
+		for range 60 {
+			s.advance(time.Second)
+		}
+		var arrival string
+		for _, b := range s.pub.list() {
+			if e, ok := b.(*intents.TnTEventBody); ok && e.EventTypeCode == "ARRI" && e.EventClassifierCode == intents.ClassifierActual {
+				arrival = e.EventDateTime
+			}
+		}
+		if arrival != "2026-10-26T14:00:00Z" {
+			t.Errorf("on the road %v: arrived %s, want the new plan plus the delay; %s", onTheRoad, arrival, s.events())
+		}
+	}
+}
+
+// TestTruckReplanEarlier: a delivery moved earlier than the estimate still
+// to come fires before it; a leg planned shorter than the departure's
+// offset departs before it arrives.
+func TestTruckReplanEarlier(t *testing.T) {
+	s := newTruckSim(t)
+	s.advance(3 * time.Second) // picked up (2026-10-24 14:00), not yet departed
+	b, _ := s.bookings.Get(serra, "SR-BKG-0913")
+	b.Road.Confirmation.PlannedDelivery = "2026-10-24T14:20:00Z"
+	if err := s.sim.Replan(b); err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		s.advance(time.Second)
+	}
+	// The re-plan's estimate goes out at once; the one planned for later
+	// isn't sent after the arrival.
+	if got := s.events(); got != "PICK ACT OCBU0000004, ARRI EST, DEPA ACT, ARRI ACT, DROP ACT OCBU0000004" {
+		t.Errorf("leg: %s", got)
+	}
+	short := newTruckSim(t)
+	b, _ = short.bookings.Get(serra, "SR-BKG-0913")
+	b.Road.Confirmation.PlannedDelivery = b.Road.Confirmation.PlannedPickup
+	if err := short.sim.Replan(b); err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		short.advance(time.Second)
+	}
+	if got := short.events(); got != "PICK ACT OCBU0000004, DEPA ACT, ARRI ACT, DROP ACT OCBU0000004" {
+		t.Errorf("a leg with no transit: %s", got)
+	}
+}
