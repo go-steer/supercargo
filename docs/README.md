@@ -19,6 +19,8 @@ The HTML pages here (walk-throughs, mockups) are published at **https://go-steer
 
 - [Door to door through a freight forwarder](proposals/door-to-door-forwarder.md): the demo's next shape: a forwarder books a truck, a ship and a truck for one order (Europe to South America, with a North American variant), works with a carrier that only speaks EDI, tracks the journey, and handles a delay's knock-on effects, with every party seeing only its share. Its [walk-through](proposals/door-to-door-forwarder.html) plays every message step by step (open the file in a browser).
 
+- [Connecting each company's own systems](proposals/backend-integration.md): the node's integration surface on its other side (ERP, TMS, telematics, WMS, EDI, fiscal documents), as ports with memory, REST, MCP and EDI adapters; mock backends for the demo; integration guides and a conformance kit, so a company can see what it would build.
+
 ## Reference
 
 - [Multi-leg freight shipping and API orchestration](reference/multi-leg-freight-and-api-orchestration.md): Incoterms and who books, freight forwarders and control towers, the standards bodies, and legacy EDI next to JSON APIs.

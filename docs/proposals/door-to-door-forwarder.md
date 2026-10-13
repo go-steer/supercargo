@@ -11,8 +11,10 @@ bodies and dialects), flagged where they appear. The rest builds on what
 the demo already has.
 
 **Related:** #80 (the truck leg and proof of delivery), #83 (the route
-map), #103 (multi-hop), delegation (milestone 7), and the background in
-[multi-leg freight shipping](../reference/multi-leg-freight-and-api-orchestration.md).
+map), #103 (multi-hop), delegation (milestone 7), the background in
+[multi-leg freight shipping](../reference/multi-leg-freight-and-api-orchestration.md),
+and [connecting each company's own systems](backend-integration.md), the
+companion proposal on how each company's ERP, TMS and telematics plug in.
 
 **See it move:** [`door-to-door-forwarder.html`](door-to-door-forwarder.html)
 walks through every message in this proposal, step by step, for either
