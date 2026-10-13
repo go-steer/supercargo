@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- A mock EDIFACT road carrier for the demo: `ulpmock edifact` acknowledges each transport instruction (IFTMIN) from its forwarder with an APERAK and an e-CMR number, and reports the trip as IFTSTA statuses on an accelerated clock, through file drops. `internal/edi` gains the carrier's side (`WriteAPERAK`, `WriteIFTSTA`, `ParseIFTMIN`).
+
 - The forwarder's relay and the delay cascade: each event a leg's carrier signs is re-issued to the order's shipper as the forwarder's own event on the order, with `derived_from` naming the leg's signed event. A ship's delay is projected onto the order: if the truck after it would collect too early, the shipper gets the forwarder's delay alert on the order (the delivery moved by as much, in the forwarder's words, citing the re-issued events), and a proposal to re-time the truck waits until a person confirms it (`GET /orders/{ref}/proposals`, `POST /proposals/{id}/confirm`), which amends the truck's leg with its carrier.
 
 - The forwarder's orchestrator: a forwarder plans each order on its lane (`forwarder.lanes`, the routing guide) and, once a person confirms (`POST /orders/{ref}/book`), books the legs in journey order with their carriers (the ship from the day the cargo is ready; the truck collecting the ship's containers 30 hours after its arrival, to the order's door by its date), then answers the order with the journey. A refused leg stops the booking, and booking again resumes after the legs already booked. `GET /orders/{ref}/plan` shows the plan.
