@@ -121,6 +121,7 @@ type App struct {
 	// its orders' legs (nil unless configured).
 	Orders       *forwarder.Orders
 	Orchestrator *forwarder.Orchestrator
+	Relay        *forwarder.Relay
 }
 
 // New builds an App from cfg.
@@ -271,6 +272,12 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		// has (config requires it).
 		a.Orchestrator = &forwarder.Orchestrator{Orders: a.Orders, Legs: a.Shipper, Lanes: cfg.Forwarder.Lanes,
 			Name: cfg.Name, Endpoint: RESTURL(cfg), Now: time.Now}
+		// The legs' events, re-issued to the orders' shippers; a delay's
+		// proposals wait for a person.
+		a.Relay = &forwarder.Relay{Orders: a.Orders, Publish: a.Publisher, Amend: a.Shipper, Now: time.Now,
+			OnProposal: func(p forwarder.Proposal) {
+				a.Logger.Info("proposal", "id", p.ID, "order", p.OrderRef, "leg", p.Leg, "why", p.Why)
+			}}
 	}
 	{
 		// One control API for every role; startup fails on a route two
@@ -294,7 +301,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			roles = append(roles, func(m *http.ServeMux) { shipper.RegisterControl(m, a.Shipper, cache) })
 		}
 		if a.Orders != nil {
-			roles = append(roles, func(m *http.ServeMux) { forwarder.RegisterControl(m, a.Orders, a.Orchestrator) })
+			roles = append(roles, func(m *http.ServeMux) { forwarder.RegisterControl(m, a.Orders, a.Orchestrator, a.Relay) })
 		}
 		if err := registerRoutes(mux, roles...); err != nil {
 			return nil, err
@@ -746,10 +753,14 @@ func (a *App) shipperRole(handlers map[string]node.Handler) error {
 		},
 	}
 	inbound := &shipper.Inbound{Bookings: a.Customer.Bookings, Log: a.Customer.Events, Now: time.Now,
-		OnEvent: func(b store.Booking, e *intents.TnTEventBody) { a.record(activity.ActionRecorded, b.Ref, e) },
+		OnEvent: func(b store.Booking, e *intents.TnTEventBody) {
+			a.record(activity.ActionRecorded, b.Ref, e)
+			a.relay(func(r *forwarder.Relay) error { return r.Event(b, e) })
+		},
 		OnAlert: func(b store.Booking, al *intents.TnTAlertBody) {
 			a.record(activity.ActionRecorded, b.Ref, al)
 			a.Summarizer.Enqueue(b, al)
+			a.relay(func(r *forwarder.Relay) error { return r.Alert(b, al) })
 		},
 	}
 	handlers[intents.TnTEvent] = inbound
@@ -758,6 +769,18 @@ func (a *App) shipperRole(handlers map[string]node.Handler) error {
 	handlers[intents.ForwardingConfirmation] = &shipper.OrderAnswers{Bookings: a.Customer.Bookings,
 		OnAnswer: func(b store.Booking) { a.orderEntry(b, "answered by its forwarder") }}
 	return nil
+}
+
+// relay hands a leg's verified event or alert to a forwarder's relay (a
+// node without one has nothing to relay). A failure is logged: the leg's
+// record stands either way.
+func (a *App) relay(f func(*forwarder.Relay) error) {
+	if a.Relay == nil {
+		return
+	}
+	if err := f(a.Relay); err != nil {
+		a.Logger.Warn("relay", "error", err)
+	}
 }
 
 // orderEntry logs what happened to a forwarding order. (The activity
