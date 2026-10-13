@@ -82,3 +82,50 @@ func TestRoadCarrierFromConfig(t *testing.T) {
 		t.Errorf("profile %+v", doc.Profile)
 	}
 }
+
+// TestCustomerRoadLeg: a shipper books a truck leg through its node,
+// records it, takes the carrier's signed events for it, and amends it.
+func TestCustomerRoadLeg(t *testing.T) {
+	p := startPair(t, `, road: { transit: 30h }`)
+	ctx := context.Background()
+	body := &intents.RoadBookingRequestBody{
+		ShipperRef:          "CY-L3",
+		Shipper:             intents.Party{Name: "Cymbal Shoes", Domain: "cymbal-shoes.example"},
+		Pickup:              intents.Stop{Facility: "Santos Brasil Tecon terminal", UNLocationCode: "BRSSZ"},
+		Delivery:            intents.Stop{Facility: "Cymbal Calçados DC, dock 2", UNLocationCode: "BRSAO"},
+		Equipment:           []intents.Equipment{{ISOType: "45G1", Count: 1, GrossWeightKg: 12000}},
+		EquipmentReferences: []string{"OCBU0000004"},
+		Cargo:               intents.Cargo{Description: "Footwear (sneakers)", HSCode: "6404"},
+		Subscription:        &intents.Subscription{Endpoint: "https://cymbal-shoes.example/ulp", Intents: []string{intents.TnTEvent, intents.TnTAlert}},
+	}
+	c, err := p.shipper.Shipper.BookRoad(ctx, "ocean-blue.example", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := p.shipper.Customer.Bookings.Get("ocean-blue.example", c.BookingRef); err != nil || b.Road == nil {
+		t.Fatalf("not recorded: %+v, %v", b, err)
+	}
+	// The carrier's simulator picks the container up: its signed event is
+	// accepted and logged on the shipper's side.
+	deadline := time.Now().Add(15 * time.Second)
+	for len(p.shipper.Customer.Events.List("ocean-blue.example", c.BookingRef)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("no event for the truck leg")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	later := time.Now().Add(72 * time.Hour).UTC().Truncate(time.Hour).Format("2006-01-02T15:04:05Z")
+	a, err := p.shipper.Shipper.AmendRoad(ctx, "ocean-blue.example", c.BookingRef, &intents.RoadBookingAmendmentBody{Delivery: &intents.Window{Earliest: later}})
+	if err != nil || a.Status != intents.StatusConfirmed || a.PlannedDelivery != later {
+		t.Fatalf("amended: %+v, %v", a, err)
+	}
+	if b, _ := p.shipper.Customer.Bookings.Get("ocean-blue.example", c.BookingRef); b.Road.Request.Delivery.Earliest != later || b.Road.Confirmation.PlannedDelivery != later {
+		t.Errorf("recorded %+v", b.Road)
+	}
+	if _, err := p.shipper.Shipper.AmendRoad(ctx, "ocean-blue.example", "OB-BKG-R-9999", &intents.RoadBookingAmendmentBody{Delivery: &intents.Window{Earliest: later}}); err == nil {
+		t.Error("amended a leg we don't hold")
+	}
+	if _, err := p.shipper.Shipper.Status(ctx, "ocean-blue.example", c.BookingRef); err == nil {
+		t.Error("an ocean status request for a truck leg")
+	}
+}

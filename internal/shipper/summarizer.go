@@ -196,7 +196,7 @@ func (s *Summarizer) summarize(ctx context.Context, b store.Booking, alert *inte
 	}
 	var ship *business.Shipment
 	if s.Business != nil {
-		if sh, ok := s.Business.For(b.Request.ShipperRef); ok {
+		if sh, ok := s.Business.For(b.ShipperRef()); ok {
 			ship = &sh
 		}
 	}
@@ -302,8 +302,12 @@ type bookingFacts struct {
 }
 
 func shipperView(b store.Booking) bookingFacts {
-	v := bookingFacts{BookingRef: b.Ref, Operator: b.Operator, Origin: ports.Location(b.Request.PortOfLoading), Destination: ports.Location(b.Request.PortOfDischarge),
+	from, to := b.Places()
+	v := bookingFacts{BookingRef: b.Ref, Operator: b.Operator, Origin: ports.Location(from), Destination: ports.Location(to),
 		PlannedArrival: b.Confirmation.PlannedArrival, Cargo: b.Request.Cargo.Description}
+	if r := b.Road; r != nil {
+		v.PlannedArrival, v.Cargo = r.Confirmation.PlannedDelivery, r.Request.Cargo.Description
+	}
 	if name, voyage := b.Confirmation.Vessel(); name != "" {
 		v.Vessel = name + " " + voyage
 	}
