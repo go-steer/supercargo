@@ -199,6 +199,7 @@ func TestRelayUnsigned(t *testing.T) {
 		{edi.Status{Meaning: edi.Delivered, Code: "21"}, "ARRI", intents.EventTypeTransport, "NLRTM", ""},
 	} {
 		s := tc.s
+		at = at.Add(time.Minute) // a status each
 		s.Reference, s.Time, s.Sender, s.CarrierRef = "MF-0007-L1", at, polder, "PH4471"
 		n := len(pub.bodies)
 		if err := r.Unsigned(polder, s); err != nil {
@@ -207,7 +208,7 @@ func TestRelayUnsigned(t *testing.T) {
 		e := pub.bodies[n].(*intents.TnTEventBody)
 		if e.EventTypeCode != tc.code || e.EventType != tc.typ || e.UNLocationCode != tc.loc || e.EquipmentReference != tc.equip ||
 			len(e.DerivedFrom) != 1 || e.DerivedFrom[0].Signed || e.DerivedFrom[0].Source != "EDIFACT IFTSTA from polder-haulage.example" ||
-			e.DerivedFrom[0].Reference != "PH4471" || e.EventDateTime != "2026-10-06T07:00:00Z" {
+			e.DerivedFrom[0].Reference != "PH4471" || e.EventDateTime != stamp(at) {
 			t.Errorf("%s: %+v", s.Meaning, e)
 		}
 	}
@@ -219,6 +220,7 @@ func TestRelayUnsigned(t *testing.T) {
 	}
 	// A consignment number ULP can't carry is left out, not refused.
 	n := len(pub.bodies)
+	at = at.Add(time.Minute)
 	if err := r.Unsigned(polder, edi.Status{Reference: "MF-0007-L1", Meaning: edi.Departed, Code: "13", Time: at, CarrierRef: "", Sender: polder}); err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +228,7 @@ func TestRelayUnsigned(t *testing.T) {
 		t.Errorf("reference %q", e.DerivedFrom[0].Reference)
 	}
 	pub.fail = errors.New("closed")
-	if err := r.Unsigned(polder, edi.Status{Reference: "MF-0007-L1", Meaning: edi.Departed, Code: "13", Time: at, Sender: polder}); err == nil {
+	if err := r.Unsigned(polder, edi.Status{Reference: "MF-0007-L1", Meaning: edi.Departed, Code: "13", Time: at.Add(time.Minute), Sender: polder}); err == nil {
 		t.Error("a publish failure")
 	}
 	if refOK("") || refOK("-x") || refOK("a.b") || !refOK("PH4471") {

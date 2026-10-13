@@ -314,6 +314,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			roles = append(roles, func(m *http.ServeMux) { forwarder.RegisterControl(m, a.Orders, a.Orchestrator, a.Relay) })
 		}
 		if err := registerRoutes(mux, roles...); err != nil {
+			a.closeDrops()
 			return nil, err
 		}
 		a.controlAPI = mux
@@ -322,9 +323,11 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		}
 	}
 	if a.google, err = googleClient(cfg); err != nil {
+		a.closeDrops()
 		return nil, err
 	}
 	if err := a.mcpServer(); err != nil {
+		a.closeDrops()
 		return nil, err
 	}
 	a.Server = &http.Server{

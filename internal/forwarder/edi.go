@@ -57,6 +57,7 @@ type Gateway struct {
 	Log        *slog.Logger
 
 	mu         sync.Mutex
+	base       int64
 	seq        int
 	instructed map[string]instructed // by reference
 	held       []heldStatus          // statuses whose leg isn't recorded yet
@@ -103,26 +104,35 @@ func (g *Gateway) Instruct(ctx context.Context, carrier string, i edi.Instructio
 	}
 	g.mu.Lock()
 	prev, sent := g.instructed[i.Reference]
+	var control string
 	if !sent {
-		g.seq++
-		control := fmt.Sprintf("GW%08d", g.seq)
-		data, err := edi.WriteIFTMIN(i, edi.Envelope{Sender: g.Self, Recipient: p.ID, Control: control, At: g.Now(), Location: p.Zone})
-		if err != nil {
-			g.mu.Unlock()
-			return edi.Ack{}, fmt.Errorf("forwarder: the instruction for %s: %w", i.Reference, err)
-		}
-		if _, err := p.Out.Put(control, data); err != nil {
-			g.mu.Unlock()
-			return edi.Ack{}, fmt.Errorf("forwarder: sending the instruction for %s: %w", i.Reference, err)
-		}
 		if g.instructed == nil {
 			g.instructed = map[string]instructed{}
 		}
+		if g.base == 0 {
+			// Control references stay unique across restarts: they count
+			// from the clock, not from 1.
+			g.base = g.Now().UnixMilli() % 1e13
+		}
+		g.seq++
+		control = fmt.Sprintf("G%013d", (g.base+int64(g.seq))%1e13)
 		prev = instructed{carrier: carrier, instruction: i}
-		g.instructed[i.Reference] = prev
-		g.Log.Info("instruction sent", "carrier", carrier, "reference", i.Reference)
+		g.instructed[i.Reference] = prev // claimed before it's written: the order's claim keeps out a second Book
 	}
 	g.mu.Unlock()
+	if !sent {
+		data, err := edi.WriteIFTMIN(i, edi.Envelope{Sender: g.Self, Recipient: p.ID, Control: control, At: g.Now(), Location: p.Zone})
+		if err == nil {
+			_, err = p.Out.Put(control, data)
+		}
+		if err != nil {
+			g.mu.Lock()
+			delete(g.instructed, i.Reference)
+			g.mu.Unlock()
+			return edi.Ack{}, fmt.Errorf("forwarder: sending the instruction for %s: %w", i.Reference, err)
+		}
+		g.Log.Info("instruction sent", "carrier", carrier, "reference", i.Reference)
+	}
 	if sent && (prev.carrier != carrier || !reflect.DeepEqual(prev.instruction, i)) {
 		return edi.Ack{}, fmt.Errorf("forwarder: %s was instructed already, differently (to %s): a change is a new instruction", i.Reference, prev.carrier)
 	}
@@ -151,6 +161,16 @@ func (g *Gateway) Instruct(ctx context.Context, carrier string, i edi.Instructio
 		case <-time.After(every):
 		}
 	}
+}
+
+// Instructed is the instruction sent under ref, and its acknowledgement
+// if it came: a retried booking sends the same instruction again (or, if
+// the carrier refused it, a new one under a new reference).
+func (g *Gateway) Instructed(ref string) (edi.Instruction, *edi.Ack, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	in, ok := g.instructed[ref]
+	return in.instruction, in.ack, ok
 }
 
 // Step takes the replies that arrived from each partner. A reply that
@@ -215,6 +235,10 @@ func (g *Gateway) statuses(carrier string, p *EDIPartner, data []byte) error {
 			continue
 		}
 		err := g.Status(carrier, s)
+		if errors.Is(err, ErrSkipped) {
+			g.Log.Warn("edi status skipped", "carrier", carrier, "reference", s.Reference, "error", err)
+			continue
+		}
 		if errors.Is(err, ErrNoLeg) {
 			// Acknowledged, but its leg not recorded yet: held, not lost.
 			g.mu.Lock()

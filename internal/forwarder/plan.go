@@ -172,9 +172,17 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 		}
 	}
 	req := b.Order.Request
+	// available is when the cargo can go (the order's ready time, then
+	// each leg's handover); ready, no earlier than now, is what new
+	// bookings ask for. A leg booked before (an instruction sent again)
+	// may leave between the two.
+	var available time.Time
+	if t, ok := parseTime(req.PlaceOfReceipt.Earliest); ok {
+		available = t
+	}
 	ready := o.Now().UTC().Truncate(time.Second) // times on the wire are whole seconds
-	if t, ok := parseTime(req.PlaceOfReceipt.Earliest); ok && t.After(ready) {
-		ready = t
+	if available.After(ready) {
+		ready = available
 	}
 	latest, hasLatest := parseTime(req.PlaceOfDelivery.Latest)
 	var containers []string
@@ -188,6 +196,7 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 				return nil, fmt.Errorf("%w: leg %d was booked with %s, %s → %s", ErrPlanChanged, i+1, done.Carrier, done.From, done.To)
 			}
 			ready, containers = afterLeg(done, ready), done.Containers
+			available = ready
 			continue
 		}
 		if hasLatest && ready.After(latest) {
@@ -202,9 +211,9 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 		// that leaves before the cargo is ready, or (last) delivers late.
 		// It's booked with the carrier, but not recorded: the person takes
 		// it up with them (ULP can't cancel a leg yet).
-		if dep, ok := parseTime(leg.Departure); !ok || dep.Before(ready) {
+		if dep, ok := parseTime(leg.Departure); !ok || dep.Before(available) {
 			return nil, fmt.Errorf("%w: %s planned leg %d (%s) to leave %s, before the cargo is ready (%s)",
-				ErrPlanUnfit, s.Name, i+1, leg.Ref, leg.Departure, ready.Format(envelope.TimeLayout))
+				ErrPlanUnfit, s.Name, i+1, leg.Ref, leg.Departure, available.Format(envelope.TimeLayout))
 		}
 		if arr, ok := parseTime(leg.Arrival); last && hasLatest && (!ok || arr.After(latest)) {
 			return nil, fmt.Errorf("%w: %s planned leg %d (%s) to arrive %s, after the order's delivery date %s",
@@ -223,6 +232,7 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 		}
 		b.Order.Legs = append(b.Order.Legs, *leg)
 		ready, containers = afterLeg(*leg, ready), leg.Containers
+		available = ready
 	}
 	conf := &intents.ForwardingConfirmationBody{Status: intents.StatusConfirmed}
 	for _, l := range b.Order.Legs {
@@ -332,17 +342,37 @@ func (o *Orchestrator) bookEDI(ctx context.Context, b store.Booking, i int, s St
 	for _, e := range req.Equipment {
 		containers = append(containers, edi.Container{SizeType: e.ISOType, Count: e.Count, GrossWeightKg: e.GrossWeightKg})
 	}
-	ack, err := o.EDI.Instruct(ctx, s.Carrier, edi.Instruction{Reference: ref, ShipperRef: req.ShipperRef,
+	instruction := edi.Instruction{Reference: ref, ShipperRef: req.ShipperRef,
 		Pickup: pickup, Delivery: delivery, Containers: containers,
-		CargoDescription: clip(req.Cargo.Description, 70), HSCode: req.Cargo.HSCode})
+		CargoDescription: clip(req.Cargo.Description, 70), HSCode: req.Cargo.HSCode}
+	// A retried booking: the instruction already sent goes again, so the
+	// carrier sees one instruction, not two (its pickup time was the ready
+	// time then). One the carrier refused is sent anew under the next
+	// attempt's reference, MF-0007-L1-2.
+	for attempt := 2; ; attempt++ {
+		sent, ack, ok := o.EDI.Instructed(instruction.Reference)
+		if !ok {
+			break
+		}
+		if ack == nil || ack.Accepted {
+			instruction = sent
+			break
+		}
+		if attempt > 9 {
+			return nil, fmt.Errorf("%w: leg %d, %s refused it %d times", ErrLegRefused, i+1, s.Name, attempt-1)
+		}
+		instruction.Reference = fmt.Sprintf("%s-%d", ref, attempt)
+	}
+	ack, err := o.EDI.Instruct(ctx, s.Carrier, instruction)
 	if err != nil {
 		return nil, fmt.Errorf("forwarder: leg %d with %s: %w", i+1, s.Name, err)
 	}
 	if !ack.Accepted {
 		return nil, fmt.Errorf("%w: leg %d, %s didn't accept the instruction", ErrLegRefused, i+1, s.Name)
 	}
-	leg.Ref, leg.CarrierRef, leg.Documents, leg.Unsigned = ref, ack.CarrierRef, ack.TransportDocuments, true
-	leg.Departure, leg.Arrival = stamp(ready), stamp(ready.Add(p.Transit))
+	leg.Ref, leg.CarrierRef, leg.Documents, leg.Unsigned = instruction.Reference, ack.CarrierRef, ack.TransportDocuments, true
+	pickupAt := instruction.Pickup.Earliest.UTC()
+	leg.Departure, leg.Arrival = stamp(pickupAt), stamp(pickupAt.Add(p.Transit))
 	return leg, nil
 }
 
