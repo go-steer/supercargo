@@ -115,6 +115,10 @@ var specs = map[string]spec{
 	RoadBookingRequest:      {bookingRef: forbidden, inReplyTo: forbidden, delegation: forbidden, dialect: &DialectULPRoad, newBody: func() Body { return &RoadBookingRequestBody{} }},
 	RoadBookingConfirmation: {bookingRef: required, inReplyTo: required, delegation: forbidden, dialect: &DialectULPRoad, newBody: func() Body { return &RoadBookingConfirmationBody{} }},
 	RoadBookingAmendment:    {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, dialect: &DialectULPRoad, newBody: func() Body { return &RoadBookingAmendmentBody{} }},
+	// A door-to-door order to a forwarder: requested (no order yet), and
+	// confirmed with the forwarder's reference and the planned journey.
+	ForwardingRequest:      {bookingRef: forbidden, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &ForwardingRequestBody{} }},
+	ForwardingConfirmation: {bookingRef: required, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &ForwardingConfirmationBody{} }},
 }
 
 // Supported reports whether Decode has a body type for intent.
@@ -236,6 +240,13 @@ func crossCheck(h *envelope.Header, b Body) error {
 	if r, ok := b.(*RoadBookingRequestBody); ok && r.Shipper.Domain != "" && r.Shipper.Domain != h.Sender {
 		// The shipper of a leg is whoever signs its request.
 		return fmt.Errorf("body.shipper.domain %s is not header.sender %s", logsafe.Quote(r.Shipper.Domain), logsafe.Quote(h.Sender))
+	}
+	if r, ok := b.(*ForwardingRequestBody); ok && r.Shipper.Domain != "" && r.Shipper.Domain != h.Sender {
+		// The shipper of an order is whoever signs it.
+		return fmt.Errorf("body.shipper.domain %s is not header.sender %s", logsafe.Quote(r.Shipper.Domain), logsafe.Quote(h.Sender))
+	}
+	if c, ok := b.(*ForwardingConfirmationBody); ok && c.OrderRef != *h.BookingRef {
+		return fmt.Errorf("body.forwarder_reference %s is not header.bookingRef %s", logsafe.Quote(c.OrderRef), logsafe.Quote(*h.BookingRef))
 	}
 	if a, ok := b.(*RoadBookingAmendmentBody); ok && a.BookingRef != *h.BookingRef {
 		return fmt.Errorf("body.carrier_booking_reference %s is not header.bookingRef %s", logsafe.Quote(a.BookingRef), logsafe.Quote(*h.BookingRef))

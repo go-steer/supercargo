@@ -117,6 +117,7 @@ func TestDecodeRoadRejects(t *testing.T) {
 		"a long region":             {R, `"region": "SP"`, `"region": "SAOP"`},
 		"a bad postal code":         {R, `"postal_code": "07750-000"`, `"postal_code": "-07750"`},
 		"no street":                 {R, `"street": "Rodovia Anhanguera, km 33"`, `"street": ""`},
+		"a stop's address abroad":   {R, `"un_location_code": "BRSAO"`, `"un_location_code": "BRSAO", "address": {"street": "Rua Augusta 1", "locality": "Lisboa", "country": "PT"}`},
 		"a bad LOCODE":              {R, `"un_location_code": "BRSSZ"`, `"un_location_code": "Santos"`},
 		"a bad facility code":       {R, `"facility_code": "BRSSZTCN"`, `"facility_code": "-TCN"`},
 		"a local time":              {R, `"earliest": "2026-10-24T14:00:00Z"`, `"earliest": "2026-10-24T14:00:00-03:00"`},

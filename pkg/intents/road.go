@@ -247,9 +247,18 @@ func (s *Stop) validate(field string) error {
 		errs = append(errs, match(field+".facility_code", s.FacilityCode, facilityCodePattern))
 	}
 	if s.Address != nil {
-		errs = append(errs, s.Address.validate(field+".address"))
+		errs = append(errs, s.Address.validate(field+".address"), countryOf(field, s.UNLocationCode, s.Address))
 	}
 	return errors.Join(errs...)
+}
+
+// countryOf requires a place's address to be in its UN/LOCODE's country
+// (the code's first two letters).
+func countryOf(field, locode string, a *Address) error {
+	if unLocodePattern.MatchString(locode) && countryPattern.MatchString(a.Country) && a.Country != locode[:2] {
+		return fmt.Errorf("%s.address.country %s is not the country of %s", field, a.Country, locode)
+	}
+	return nil
 }
 
 func documents(field string, docs []DocumentRef, types map[string]bool) error {
