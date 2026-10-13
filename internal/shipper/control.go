@@ -42,6 +42,20 @@ type BookResponse struct {
 	Error        string                           `json:"error,omitempty"`
 }
 
+// OrderRequest is the body of the control API's POST /orders: a
+// door-to-door order the person has already confirmed, for a forwarder.
+type OrderRequest struct {
+	Forwarder string                        `json:"forwarder"`
+	Order     intents.ForwardingRequestBody `json:"order"`
+}
+
+// OrderResponse is its answer: the forwarder's (pending, confirmed or
+// rejected), or why there is none.
+type OrderResponse struct {
+	Answer *intents.ForwardingConfirmationBody `json:"answer,omitempty"`
+	Error  string                              `json:"error,omitempty"`
+}
+
 // ControlHandler is the shipper's control API (internal/control). Booking
 // goes through the running node so the node records the booking, and so
 // accepts the operator's pushes for it.
@@ -132,6 +146,32 @@ func RegisterControl(mux *http.ServeMux, s *Shipper, profiles rest.Profiles) {
 			return
 		}
 		control.Answer(w, http.StatusOK, BookResponse{Confirmation: conf})
+	})
+	mux.HandleFunc("POST /orders", func(w http.ResponseWriter, r *http.Request) {
+		var req OrderRequest
+		if err := control.Decode(r, &req); err != nil {
+			control.Answer(w, http.StatusBadRequest, OrderResponse{Error: err.Error()})
+			return
+		}
+		if !envelope.ValidDomain(req.Forwarder) || req.Forwarder == s.Node.Domain() {
+			control.Answer(w, http.StatusBadRequest, OrderResponse{Error: "forwarder must be another party's lowercase domain"})
+			return
+		}
+		if err := req.Order.Validate(); err != nil {
+			control.Answer(w, http.StatusBadRequest, OrderResponse{Error: "order: " + err.Error()})
+			return
+		}
+		conf, err := s.Order(r.Context(), req.Forwarder, &req.Order)
+		switch {
+		case errors.Is(err, ErrNoShipperRole):
+			control.Answer(w, http.StatusForbidden, OrderResponse{Error: err.Error()})
+		case errors.Is(err, business.ErrLeak):
+			control.Answer(w, http.StatusUnprocessableEntity, OrderResponse{Error: leakMessage})
+		case err != nil:
+			control.Answer(w, http.StatusBadGateway, OrderResponse{Error: err.Error()})
+		default:
+			control.Answer(w, http.StatusOK, OrderResponse{Answer: conf})
+		}
 	})
 	// operatorOf finds the operator of ref when the request names none;
 	// it answers and reports false when it can't.

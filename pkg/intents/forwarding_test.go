@@ -83,6 +83,12 @@ func TestDecodeForwarding(t *testing.T) {
 	if _, err := Decode(forwardingEnvelope(ForwardingConfirmation, `{"forwarder_reference": "MF-0007", "status": "rejected", "messages": [{"code": "no_capacity", "detail": "No space this month"}]}`)); err != nil {
 		t.Errorf("a rejection: %v", err)
 	}
+	if _, err := Decode(forwardingEnvelope(ForwardingConfirmation, `{"forwarder_reference": "MF-0007", "status": "pending", "subscription_id": "SUB-0007"}`)); err != nil {
+		t.Errorf("a pending order: %v", err)
+	}
+	if _, err := Decode(forwardingEnvelope(ForwardingConfirmation, `{"forwarder_reference": "MF-0007", "status": "pending", "planned_delivery": "2026-10-26T10:00:00Z"}`)); !errors.Is(err, ErrInvalidBody) {
+		t.Errorf("a pending order with a plan: %v", err)
+	}
 	// A port-to-door order, legs without times, and a train.
 	port := strings.Replace(forwardingRequestJSON, `"type": "door", "un_location_code": "NLTLB"`, `"type": "port", "facility": "Euromax terminal", "facility_code": "NLRTMEMX", "un_location_code": "NLRTM"`, 1)
 	if _, err := Decode(forwardingEnvelope(ForwardingRequest, port)); err != nil {
@@ -258,7 +264,7 @@ var forwardingWants = map[string]string{
 	"no legs":                   `legs has 0, want 1-8`,
 	"no planned delivery":       `a confirmation plans the delivery`,
 	"a bad planned delivery":    `planned_delivery: "the 26th"`,
-	"an unknown status":         `status: "maybe"`,
+	"an unknown status":         `status: "maybe" is not pending, confirmed or rejected`,
 	"a rejection with a plan":   `a rejection carries no plan or subscription`,
 	"a gap between legs":        `legs[2] starts at BRRIG, not where legs[1] ends (BRSSZ)`,
 	"an unknown mode":           `legs[1].mode: "air"`,

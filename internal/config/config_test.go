@@ -317,6 +317,47 @@ func TestRoadCarrier(t *testing.T) {
 	}
 }
 
+// TestForwarder: a forwarder needs the operator and shipper roles, and no
+// operator section; its prefix and deny list are checked.
+func TestForwarder(t *testing.T) {
+	base := `domain: meridian-forwarding.example
+name: Meridian Forwarding
+roles: [operator, shipper]
+listen: ":8443"
+keys: [{ kid: mf-1, privateKeyFile: /keys/mf-1.pem }]
+tls: { mode: local-ca, certFile: /certs/mf.pem, keyFile: /certs/mf-key.pem, caFile: /certs/ca.pem }
+forwarder: { refPrefix: MF, deny: [mallory.example] }
+`
+	c, err := Parse([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Forwarder.RefPrefix != "MF" || c.Operator != nil || len(c.Forwarder.Deny) != 1 {
+		t.Errorf("%+v", c.Forwarder)
+	}
+	for name, edit := range map[string][2]string{
+		"no shipper role":       {"roles: [operator, shipper]", "roles: [operator]"},
+		"no operator role":      {"roles: [operator, shipper]", "roles: [shipper]"},
+		"a dotted prefix":       {"refPrefix: MF", "refPrefix: M.F"},
+		"no prefix":             {"refPrefix: MF, ", ""},
+		"denying itself":        {"deny: [mallory.example]", "deny: [meridian-forwarding.example]"},
+		"the operator's prefix": {"forwarder:", "operator: { refPrefix: MF, road: { transit: 30h } }\nforwarder:"},
+		"an unknown key":        {"refPrefix: MF", "refPrefix: MF, lanes: []"},
+	} {
+		in := strings.Replace(base, edit[0], edit[1], 1)
+		if in == base {
+			t.Fatalf("%s: edit didn't apply", name)
+		}
+		if _, err := Parse([]byte(in)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// A forwarder that also trucks: both sections, different prefixes.
+	if _, err := Parse([]byte(strings.Replace(base, "forwarder:", "operator: { refPrefix: MF-T, road: { transit: 30h } }\nforwarder:", 1))); err != nil {
+		t.Errorf("forwarder and road carrier: %v", err)
+	}
+}
+
 // TestRoles: a node may have several roles; the one-role form still
 // works; each role's section follows its role.
 func TestRoles(t *testing.T) {

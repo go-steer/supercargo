@@ -44,6 +44,7 @@ import (
 	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/forwarder"
 	"github.com/go-steer/supercargo/internal/googleauth"
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/llm/anthropic"
@@ -116,6 +117,8 @@ type App struct {
 	Publisher *operator.Publisher
 	Simulator *operator.Simulator
 	Control   *http.Server
+	// Orders is a forwarder's order desk (nil unless configured).
+	Orders *forwarder.Orders
 }
 
 // New builds an App from cfg.
@@ -256,6 +259,9 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	if a.Publisher != nil {
 		a.Publisher.Pusher = n
 	}
+	if a.Orders != nil {
+		a.Orders.Node = n
+	}
 	if a.Customer != nil {
 		a.Shipper = &shipper.Shipper{Node: n, Bookings: a.Customer.Bookings, Events: a.Customer.Events, Now: time.Now,
 			NoBooking: !cfg.Has(config.RoleShipper)}
@@ -280,6 +286,9 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		}
 		if a.Shipper != nil {
 			roles = append(roles, func(m *http.ServeMux) { shipper.RegisterControl(m, a.Shipper, cache) })
+		}
+		if a.Orders != nil {
+			roles = append(roles, func(m *http.ServeMux) { forwarder.RegisterControl(m, a.Orders) })
 		}
 		if err := registerRoutes(mux, roles...); err != nil {
 			return nil, err
@@ -620,8 +629,10 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	}
 	a.gauges = reg
 	deny := map[string]bool{}
-	for _, d := range o.Deny {
-		deny[d] = true
+	if o != nil {
+		for _, d := range o.Deny {
+			deny[d] = true
+		}
 	}
 	model, err := NewModel(cfg.LLM, operator.FakeInquiryModel())
 	if err != nil {
@@ -642,6 +653,21 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 				InputTokens: c.Usage.InputTokens, OutputTokens: c.Usage.OutputTokens,
 				LatencyMS: c.Latency.Round(time.Millisecond).Milliseconds(), Outcome: c.Outcome, Reason: c.Reason}})
 		},
+	}
+	if f := cfg.Forwarder; f != nil {
+		fdeny := map[string]bool{}
+		for _, d := range f.Deny {
+			fdeny[d] = true
+		}
+		// The node is set once it exists (New), like the publisher's.
+		a.Orders = &forwarder.Orders{Bookings: a.Carrier.Bookings, RefPrefix: f.RefPrefix, Deny: fdeny, Now: time.Now,
+			OnOrder:  func(b store.Booking) { a.orderEntry(b, "taken") },
+			OnAnswer: func(b store.Booking) { a.orderEntry(b, "answered") },
+		}
+		handlers[intents.ForwardingRequest] = a.Orders
+	}
+	if o == nil {
+		return nil // a forwarder only: it carries nothing itself
 	}
 	if r := o.Road; r != nil {
 		// A road carrier: its booking system plans each leg (in memory
@@ -722,7 +748,16 @@ func (a *App) shipperRole(handlers map[string]node.Handler) error {
 	}
 	handlers[intents.TnTEvent] = inbound
 	handlers[intents.TnTAlert] = inbound
+	// A forwarder's final answer to an order taken as pending.
+	handlers[intents.ForwardingConfirmation] = &shipper.OrderAnswers{Bookings: a.Customer.Bookings,
+		OnAnswer: func(b store.Booking) { a.orderEntry(b, "answered by its forwarder") }}
 	return nil
+}
+
+// orderEntry logs what happened to a forwarding order. (The activity
+// stream gains order entries with the forwarder's views.)
+func (a *App) orderEntry(b store.Booking, what string) {
+	a.Logger.Info("order "+what, "order", b.Ref, "shipper", b.Shipper, "forwarder", b.Operator, "status", b.Order.Confirmation.Status)
 }
 
 func skillIDs(all []skills.Skill) []string {

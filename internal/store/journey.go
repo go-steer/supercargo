@@ -146,6 +146,13 @@ func BuildJourney(b Booking, recs []Record) Journey {
 		// A truck leg's plan: from pickup to delivery.
 		c.PlannedDeparture, c.PlannedArrival = r.Confirmation.PlannedPickup, r.Confirmation.PlannedDelivery
 	}
+	if o := b.Order; o != nil {
+		// An order's plan, door to door (its legs come with the UI work).
+		c.PlannedArrival = o.Confirmation.PlannedDelivery
+		if legs := o.Confirmation.Legs; len(legs) > 0 {
+			c.PlannedDeparture = legs[0].PlannedDeparture
+		}
+	}
 	pol, pod := b.Places()
 	j := Journey{Booking: b.Ref, Operator: b.Operator, Shipper: b.Shipper, Legs: []Leg{}, Calls: []Call{}, Alerts: []AlertRef{}}
 

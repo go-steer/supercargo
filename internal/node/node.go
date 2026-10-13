@@ -203,6 +203,10 @@ var capabilityTable = []struct {
 	// Road bookings in ULP_ROAD: the tag names the dialect, as the ocean
 	// ones name DCSA's.
 	{"dev.ulp.logistics.road", []string{intents.RoadBookingRequest, intents.RoadBookingAmendment}, []string{"ulp:service", "ulp:road:booking"}},
+	// Door-to-door orders: a forwarder takes them; its customer takes the
+	// answer that follows a pending one.
+	{"dev.ulp.logistics.forwarding", []string{intents.ForwardingRequest}, []string{"ulp:service", "ulp:forwarding:order"}},
+	{"dev.ulp.logistics.forwarding.customer", []string{intents.ForwardingConfirmation}, []string{"ulp:subscriber", "ulp:forwarding:order"}},
 	{"dev.ulp.logistics.tracking", []string{intents.OceanTnTRequest, intents.TnTInquiry}, []string{"ulp:service", "ulp:dcsa:track-and-trace"}},
 	{"dev.ulp.logistics.tracking.subscriber", []string{intents.TnTEvent, intents.TnTAlert}, []string{"ulp:subscriber", "ulp:dcsa:track-and-trace"}},
 }
