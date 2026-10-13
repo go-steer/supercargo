@@ -522,7 +522,7 @@ func TestProfileServed(t *testing.T) {
 	if _, ok := doc.Capability("dev.ulp.logistics.tracking"); ok || len(doc.Profile.Capabilities) != 1 {
 		t.Errorf("capabilities %+v", doc.Profile.Capabilities)
 	}
-	if !doc.SupportsDialect("DCSA_TNT") || !doc.SupportsDialect("DCSA_OCEAN_CONTAINER") {
+	if !doc.SupportsDialect("DCSA_TNT") || !doc.SupportsDialect("DCSA_OCEAN_CONTAINER") || doc.SupportsDialect("ULP_ROAD") {
 		t.Errorf("supported_dialects %v", doc.Profile.SupportedDialects)
 	}
 }

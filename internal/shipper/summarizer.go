@@ -209,6 +209,9 @@ func (s *Summarizer) summarize(ctx context.Context, b store.Booking, alert *inte
 		// The model sees the alert with only the causes this shipper holds.
 		checked := *alert
 		checked.CauseEventIDs = causes
+		// A re-issuer's provenance is partner text the shipper can't check
+		// against its log: it never reaches the model.
+		checked.DerivedFrom = nil
 		if checked.CauseEventIDs == nil {
 			checked.CauseEventIDs = []string{}
 		}
@@ -257,6 +260,7 @@ func (s *Summarizer) records(b store.Booking, alert *intents.TnTAlertBody) ([]su
 			if json.Unmarshal(r.Body, rec.Event) != nil {
 				continue // verified when received; never happens
 			}
+			rec.Event.DerivedFrom = nil // unchecked partner text: not for the model
 		case intents.TnTAlert:
 			rec.Kind, rec.Alert = "alert", &intents.TnTAlertBody{}
 			if json.Unmarshal(r.Body, rec.Alert) != nil {
@@ -269,6 +273,7 @@ func (s *Summarizer) records(b store.Booking, alert *intents.TnTAlertBody) ([]su
 				}
 			}
 			rec.Alert.CauseEventIDs = checked
+			rec.Alert.DerivedFrom = nil
 		default:
 			continue
 		}

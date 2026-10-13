@@ -405,11 +405,13 @@ func viewRecords(recs []store.Record) []recordView {
 		case intents.TnTEvent:
 			var e intents.TnTEventBody
 			if json.Unmarshal(r.Body, &e) == nil {
+				e.DerivedFrom = nil // provenance is never model input
 				out = append(out, recordView{Kind: "event", Event: &e})
 			}
 		case intents.TnTAlert:
 			var a intents.TnTAlertBody
 			if json.Unmarshal(r.Body, &a) == nil {
+				a.DerivedFrom = nil
 				out = append(out, recordView{Kind: "alert", Alert: &a})
 			}
 		}

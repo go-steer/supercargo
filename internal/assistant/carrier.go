@@ -184,6 +184,7 @@ func (a *Assistant) runCarrier(ctx context.Context, call llm.ToolCall) (any, err
 		if len(r.Records) > maxRecords {
 			r.Records = r.Records[len(r.Records)-maxRecords:]
 		}
+		r.Records = withoutProvenance(r.Records)
 		return r, nil
 	case ToolDraftDisruption:
 		return a.draftDisruption(ctx, call.Input)

@@ -110,6 +110,11 @@ var specs = map[string]spec{
 	TnTInquiryResponse:  {bookingRef: required, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &TnTInquiryResponseBody{} }},
 	OceanTnTRequest:     {bookingRef: required, inReplyTo: forbidden, delegation: optional, dialect: &DialectDCSATnT, newBody: func() Body { return &TnTStatusRequestBody{} }},
 	OceanTnTResponse:    {bookingRef: required, inReplyTo: required, delegation: forbidden, dialect: &DialectDCSATnT, newBody: func() Body { return &TnTStatusResponseBody{} }},
+	// A truck leg: requested (no booking yet), confirmed in reply to a
+	// request or an amendment, and amended by the shipper of the leg.
+	RoadBookingRequest:      {bookingRef: forbidden, inReplyTo: forbidden, delegation: forbidden, dialect: &DialectULPRoad, newBody: func() Body { return &RoadBookingRequestBody{} }},
+	RoadBookingConfirmation: {bookingRef: required, inReplyTo: required, delegation: forbidden, dialect: &DialectULPRoad, newBody: func() Body { return &RoadBookingConfirmationBody{} }},
+	RoadBookingAmendment:    {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, dialect: &DialectULPRoad, newBody: func() Body { return &RoadBookingAmendmentBody{} }},
 }
 
 // Supported reports whether Decode has a body type for intent.
@@ -224,6 +229,16 @@ func Dialects() []string {
 func crossCheck(h *envelope.Header, b Body) error {
 	if c, ok := b.(*BookingConfirmationBody); ok && c.BookingRef != *h.BookingRef {
 		return fmt.Errorf("body.carrier_booking_reference %s is not header.bookingRef %s", logsafe.Quote(c.BookingRef), logsafe.Quote(*h.BookingRef))
+	}
+	if c, ok := b.(*RoadBookingConfirmationBody); ok && c.BookingRef != *h.BookingRef {
+		return fmt.Errorf("body.carrier_booking_reference %s is not header.bookingRef %s", logsafe.Quote(c.BookingRef), logsafe.Quote(*h.BookingRef))
+	}
+	if r, ok := b.(*RoadBookingRequestBody); ok && r.Shipper.Domain != "" && r.Shipper.Domain != h.Sender {
+		// The shipper of a leg is whoever signs its request.
+		return fmt.Errorf("body.shipper.domain %s is not header.sender %s", logsafe.Quote(r.Shipper.Domain), logsafe.Quote(h.Sender))
+	}
+	if a, ok := b.(*RoadBookingAmendmentBody); ok && a.BookingRef != *h.BookingRef {
+		return fmt.Errorf("body.carrier_booking_reference %s is not header.bookingRef %s", logsafe.Quote(a.BookingRef), logsafe.Quote(*h.BookingRef))
 	}
 	if r, ok := b.(*TnTInquiryResponseBody); ok && r.DataScope.BookingRef != *h.BookingRef {
 		return fmt.Errorf("body.dataScope.bookingRef %s is not header.bookingRef %s", logsafe.Quote(r.DataScope.BookingRef), logsafe.Quote(*h.BookingRef))

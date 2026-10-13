@@ -504,7 +504,7 @@ func TestConfirmationAccessors(t *testing.T) {
 }
 
 func TestDialects(t *testing.T) {
-	if got := Dialects(); len(got) != 2 || got[0] != "DCSA_OCEAN_CONTAINER" || got[1] != "DCSA_TNT" {
+	if got := Dialects(); len(got) != 3 || got[0] != "DCSA_OCEAN_CONTAINER" || got[1] != "DCSA_TNT" || got[2] != "ULP_ROAD" {
 		t.Errorf("Dialects() = %v", got)
 	}
 	if d, ok := DialectFor(TnTEvent); !ok || d != DialectDCSATnT {

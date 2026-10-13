@@ -194,6 +194,7 @@ func (a *Assistant) run(ctx context.Context, c *Conversation, t *turnState, call
 		if len(r.Records) > maxRecords {
 			r.Records = r.Records[len(r.Records)-maxRecords:]
 		}
+		r.Records = withoutProvenance(r.Records)
 		return r, nil
 	case ToolStatus:
 		var in struct{ BookingRef string }
@@ -248,24 +249,34 @@ type statusResult struct {
 // missing IDs among them, so a large booking still fits a tool result.
 func trimStatus(st *shipper.StatusResponse) statusResult {
 	out := statusResult{StatusResponse: st}
-	if st.Status == nil || len(st.Status.Events) <= maxRecords {
+	if st.Status == nil {
 		return out
 	}
 	trimmed := *st.Status
-	out.OmittedEvents = len(trimmed.Events) - maxRecords
-	trimmed.Events = trimmed.Events[out.OmittedEvents:]
+	if n := len(trimmed.Events) - maxRecords; n > 0 {
+		out.OmittedEvents = n
+	}
+	// A copy without derived_from: unchecked partner text, never for a model.
+	trimmed.Events = slices.Clone(trimmed.Events[out.OmittedEvents:])
+	for i := range trimmed.Events {
+		trimmed.Events[i].DerivedFrom = nil
+	}
+	resp := *st
+	resp.Status = &trimmed
+	out.StatusResponse = &resp
+	if out.OmittedEvents == 0 {
+		return out
+	}
 	kept := map[string]bool{}
 	for _, e := range trimmed.Events {
 		kept[e.EventID] = true
 	}
-	resp := *st
-	resp.Status, resp.Missing = &trimmed, nil
+	resp.Missing = nil
 	for _, id := range st.Missing {
 		if kept[id] {
 			resp.Missing = append(resp.Missing, id)
 		}
 	}
-	out.StatusResponse = &resp
 	return out
 }
 
@@ -442,3 +453,34 @@ func (a *Assistant) shipperName() string {
 // space, as the confirmation dialog displays text: what the person sees
 // there is then byte for byte what is sent.
 func fold(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// withoutProvenance drops derived_from from event and alert bodies: a
+// re-issuer's account of its sources is partner text the shipper can't
+// check against its log, so it never reaches a model.
+func withoutProvenance(recs []store.RecordView) []store.RecordView {
+	out := make([]store.RecordView, len(recs))
+	for i, r := range recs {
+		out[i] = r
+		var body intents.Body
+		switch r.Intent {
+		case intents.TnTEvent:
+			e := &intents.TnTEventBody{}
+			if json.Unmarshal(r.Body, e) == nil && e.DerivedFrom != nil {
+				e.DerivedFrom = nil
+				body = e
+			}
+		case intents.TnTAlert:
+			a := &intents.TnTAlertBody{}
+			if json.Unmarshal(r.Body, a) == nil && a.DerivedFrom != nil {
+				a.DerivedFrom = nil
+				body = a
+			}
+		}
+		if body != nil {
+			if b, err := json.Marshal(body); err == nil {
+				out[i].Body = b
+			}
+		}
+	}
+	return out
+}
