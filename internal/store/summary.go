@@ -98,6 +98,13 @@ func Summarize(b Booking, recs []Record) Summary {
 		s.Status, s.PlannedDeparture = r.Confirmation.Status, r.Confirmation.PlannedPickup
 		s.PlannedArrival, s.ETA = r.Confirmation.PlannedDelivery, r.Confirmation.PlannedDelivery
 	}
+	if o := b.Order; o != nil {
+		// An order: pending until planned; its delivery is the arrival.
+		s.Status, s.PlannedArrival, s.ETA = o.Confirmation.Status, o.Confirmation.PlannedDelivery, o.Confirmation.PlannedDelivery
+		if legs := o.Confirmation.Legs; len(legs) > 0 {
+			s.PlannedDeparture = legs[0].PlannedDeparture
+		}
+	}
 	if s.Containers == nil {
 		s.Containers = []string{}
 	}

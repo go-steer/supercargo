@@ -81,6 +81,7 @@ type Config struct {
 	Discovery Discovery  `yaml:"discovery"`
 	Security  Security   `yaml:"security"`
 	Operator  *Operator  `yaml:"operator"`
+	Forwarder *Forwarder `yaml:"forwarder"` // operator and shipper
 	Simulator *Simulator `yaml:"simulator"` // operator only
 	Control   *Control   `yaml:"control"`
 	Business  *Business  `yaml:"business"` // shipper only
@@ -245,6 +246,15 @@ type Operator struct {
 	// Road makes this operator a road carrier too (or only one, without
 	// the ocean fields above): it takes road bookings and amendments.
 	Road *Road `yaml:"road"`
+}
+
+// Forwarder makes the node a freight forwarder: it takes door-to-door
+// orders as their operator (and books their legs as the legs' shipper),
+// so it needs the operator and shipper roles.
+type Forwarder struct {
+	// RefPrefix starts each order reference, e.g. "MF".
+	RefPrefix string   `yaml:"refPrefix"`
+	Deny      []string `yaml:"deny"` // domains whose orders are refused
 }
 
 // Ocean reports whether the operator takes ocean bookings: it has the
@@ -516,9 +526,26 @@ func (c *Config) validate() error {
 	if c.Security.ReplayRetention <= 2*c.Security.MaxSkew {
 		return fmt.Errorf("security: replayRetention %v must exceed twice maxSkew (%v)", c.Security.ReplayRetention, c.Security.MaxSkew)
 	}
+	if f := c.Forwarder; f != nil {
+		if !c.Has(RoleOperator) || !c.Has(RoleShipper) {
+			return errors.New("forwarder: a forwarder needs the operator role (toward its customers) and the shipper role (toward its carriers)")
+		}
+		if !refPrefix.MatchString(f.RefPrefix) {
+			return fmt.Errorf("forwarder: refPrefix %q must be 1-40 of [A-Za-z0-9-], starting with a letter or digit", f.RefPrefix)
+		}
+		if o := c.Operator; o != nil && (o.RefPrefix == f.RefPrefix || o.RefPrefix+"-R" == f.RefPrefix) {
+			// Truck legs on an ocean operator number under refPrefix-R.
+			return errors.New("forwarder: refPrefix must differ from operator.refPrefix (and from it plus -R), or an order and a booking could share a reference")
+		}
+		for _, d := range f.Deny {
+			if !envelope.ValidDomain(d) || d == c.Domain {
+				return fmt.Errorf("forwarder: deny entry %q is not a lowercase domain", d)
+			}
+		}
+	}
 	switch {
-	case c.Has(RoleOperator) && c.Operator == nil:
-		return errors.New("operator: the operator role needs an operator section")
+	case c.Has(RoleOperator) && c.Operator == nil && c.Forwarder == nil:
+		return errors.New("operator: the operator role needs an operator section (or a forwarder section)")
 	case !c.Has(RoleOperator) && c.Operator != nil:
 		return errors.New("operator: an operator section needs the operator role")
 	case c.Operator != nil:

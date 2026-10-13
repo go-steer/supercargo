@@ -44,6 +44,10 @@ const (
 	PlacePort = "port"
 )
 
+// StatusPending is an order received and given its reference, whose plan
+// a later ulp.forwarding.confirmation brings (confirmed or rejected).
+const StatusPending = "pending"
+
 // Transport modes of a planned leg.
 const (
 	ModeRoad  = "road"
@@ -110,7 +114,10 @@ type PlannedLeg struct {
 
 // ForwardingConfirmationBody is the body of ulp.forwarding.confirmation:
 // the forwarder's reference for the order and, if it takes it, the
-// journey it plans and when the cargo will be delivered.
+// journey it plans and when the cargo will be delivered. The answer to
+// the order may be "pending" (received; the plan follows): the forwarder
+// then sends a second confirmation, confirmed or rejected, in reply to
+// the same order.
 type ForwardingConfirmationBody struct {
 	OrderRef        string       `json:"forwarder_reference"`
 	Status          string       `json:"status"` // confirmed or rejected
@@ -263,12 +270,18 @@ func (b *ForwardingConfirmationBody) Validate() error {
 		} else if _, err := timestamp("planned_delivery", b.PlannedDelivery); err != nil {
 			errs = append(errs, err)
 		}
+	case StatusPending:
+		// Received, with its reference (and subscription): the plan
+		// follows in a later confirmation.
+		if len(b.Legs) > 0 || b.PlannedDelivery != "" {
+			errs = append(errs, errors.New("a pending order carries no plan yet"))
+		}
 	case StatusRejected:
 		if len(b.Legs) > 0 || b.PlannedDelivery != "" || b.SubscriptionID != "" {
 			errs = append(errs, errors.New("a rejection carries no plan or subscription"))
 		}
 	default:
-		errs = append(errs, fmt.Errorf("status: %s is not %s or %s", logsafe.Quote(b.Status), StatusConfirmed, StatusRejected))
+		errs = append(errs, fmt.Errorf("status: %s is not %s, %s or %s", logsafe.Quote(b.Status), StatusPending, StatusConfirmed, StatusRejected))
 	}
 	if len(b.Legs) <= MaxLegs {
 		errs = append(errs, legs(b.Legs, b.PlannedDelivery))
@@ -278,6 +291,39 @@ func (b *ForwardingConfirmationBody) Validate() error {
 	}
 	errs = append(errs, validateMessages(b.Messages))
 	return errors.Join(errs...)
+}
+
+// FitsOrder holds a confirmed answer to the order it answers: the journey
+// runs from the place of receipt to the place of delivery, and delivers
+// no later than the order asked. The forwarder checks it before sending,
+// and the shipper on receipt.
+func FitsOrder(req *ForwardingRequestBody, conf *ForwardingConfirmationBody) error {
+	if len(conf.Legs) == 0 {
+		return errors.New("no journey")
+	}
+	var errs []error
+	if from := req.PlaceOfReceipt.UNLocationCode; conf.Legs[0].From != from {
+		errs = append(errs, fmt.Errorf("the journey starts at %s, not the place of receipt %s", conf.Legs[0].From, from))
+	}
+	if to := req.PlaceOfDelivery.UNLocationCode; conf.Legs[len(conf.Legs)-1].To != to {
+		errs = append(errs, fmt.Errorf("the journey ends at %s, not the place of delivery %s", conf.Legs[len(conf.Legs)-1].To, to))
+	}
+	if latest, ok := parsedTime(req.PlaceOfDelivery.Latest); ok {
+		if planned, ok := parsedTime(conf.PlannedDelivery); ok && planned.After(latest) {
+			errs = append(errs, fmt.Errorf("planned_delivery %s is after the latest asked for (%s)", conf.PlannedDelivery, req.PlaceOfDelivery.Latest))
+		}
+	}
+	if earliest, ok := parsedTime(req.PlaceOfReceipt.Earliest); ok {
+		if dep, ok := parsedTime(conf.Legs[0].PlannedDeparture); ok && dep.Before(earliest) {
+			errs = append(errs, fmt.Errorf("the journey departs %s, before the cargo is ready (%s)", conf.Legs[0].PlannedDeparture, req.PlaceOfReceipt.Earliest))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func parsedTime(s string) (time.Time, bool) {
+	t, err := time.Parse(envelope.TimeLayout, s)
+	return t, err == nil
 }
 
 // legs checks a planned journey: each leg valid and starting where the one

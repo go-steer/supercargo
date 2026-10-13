@@ -35,8 +35,8 @@ var (
 )
 
 // Booking is what a party records about one booking: an ocean booking
-// (Request and Confirmation), or a truck leg (Road, with Request and
-// Confirmation left empty).
+// (Request and Confirmation), a truck leg (Road), or a forwarding order
+// (Order), with Request and Confirmation left empty for the last two.
 type Booking struct {
 	Ref          string
 	Shipper      string // domain of the party that requested it
@@ -44,7 +44,17 @@ type Booking struct {
 	Request      intents.BookingRequestBody
 	Confirmation intents.BookingConfirmationBody
 	Road         *RoadBooking
+	Order        *OrderBooking
 	CreatedAt    time.Time
+}
+
+// OrderBooking is a forwarding order: the shipper's request, the ID of
+// the message it came in (the forwarder's answers reply to it), and the
+// forwarder's latest answer (pending, then confirmed or rejected).
+type OrderBooking struct {
+	Request      intents.ForwardingRequestBody
+	MessageID    string
+	Confirmation intents.ForwardingConfirmationBody
 }
 
 // RoadBooking is a truck leg's request, as amended, and the carrier's
@@ -56,42 +66,58 @@ type RoadBooking struct {
 
 // Subscription is the booking's subscription, or nil.
 func (b *Booking) Subscription() *intents.Subscription {
-	if b.Road != nil {
+	switch {
+	case b.Road != nil:
 		return b.Road.Request.Subscription
+	case b.Order != nil:
+		return b.Order.Request.Subscription
 	}
 	return b.Request.Subscription
 }
 
 // SubscriptionID is the subscription's ID from the confirmation.
 func (b *Booking) SubscriptionID() string {
-	if b.Road != nil {
+	switch {
+	case b.Road != nil:
 		return b.Road.Confirmation.SubscriptionID
+	case b.Order != nil:
+		return b.Order.Confirmation.SubscriptionID
 	}
 	return b.Confirmation.SubscriptionID
 }
 
 // EquipmentRefs are the booking's containers: the eBL's, or those a truck
-// leg collects.
+// leg collects. An order names none: its legs do.
 func (b *Booking) EquipmentRefs() []string {
-	if b.Road != nil {
+	switch {
+	case b.Road != nil:
 		return slices.Clone(b.Road.Request.EquipmentReferences)
+	case b.Order != nil:
+		return nil
 	}
 	return b.Confirmation.EquipmentRefs()
 }
 
 // Places are where the booking starts and ends (UN/LOCODEs): the ports of
-// loading and discharge, or a truck leg's pickup and delivery.
+// loading and discharge, a truck leg's pickup and delivery, or an order's
+// places of receipt and delivery.
 func (b *Booking) Places() (from, to string) {
-	if b.Road != nil {
+	switch {
+	case b.Road != nil:
 		return b.Road.Request.Pickup.UNLocationCode, b.Road.Request.Delivery.UNLocationCode
+	case b.Order != nil:
+		return b.Order.Request.PlaceOfReceipt.UNLocationCode, b.Order.Request.PlaceOfDelivery.UNLocationCode
 	}
 	return b.Request.PortOfLoading, b.Request.PortOfDischarge
 }
 
 // ShipperRef is the shipper's own reference for the booking.
 func (b *Booking) ShipperRef() string {
-	if b.Road != nil {
+	switch {
+	case b.Road != nil:
 		return b.Road.Request.ShipperRef
+	case b.Order != nil:
+		return b.Order.Request.ShipperRef
 	}
 	return b.Request.ShipperRef
 }
@@ -234,15 +260,22 @@ func clone(b Booking) Booking {
 		c.EBL = &e
 	}
 	c.Messages = slices.Clone(c.Messages)
+	// The road and order bodies nest deeply (parties, addresses, stops); a
+	// JSON round trip copies all of it, and they're JSON by nature. (Plain
+	// structs of strings, numbers and slices: they always marshal and
+	// unmarshal.)
 	if b.Road != nil {
-		// The road bodies nest deeply (parties, addresses, stops); a JSON
-		// round trip copies all of it, and they're JSON by nature.
-		// (Plain structs of strings, numbers and slices: they always
-		// marshal and unmarshal.)
-		raw, _ := json.Marshal(b.Road)
-		r := &RoadBooking{}
-		_ = json.Unmarshal(raw, r)
-		b.Road = r
+		b.Road = roundTrip(b.Road)
+	}
+	if b.Order != nil {
+		b.Order = roundTrip(b.Order)
 	}
 	return b
+}
+
+func roundTrip[T any](v *T) *T {
+	raw, _ := json.Marshal(v)
+	out := new(T)
+	_ = json.Unmarshal(raw, out)
+	return out
 }
