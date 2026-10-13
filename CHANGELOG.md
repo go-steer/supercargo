@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- The docs' HTML pages (proposal walk-throughs, the UI mockup) are published to GitHub Pages at https://go-steer.github.io/supercargo/ by `.github/workflows/pages.yml`, built by `dev/tools/build-pages` with an index.
+
 - `docs/` has subfolders, indexed in `docs/README.md`: `guides/` (the Cloud Run runbook and the demo script moved there), `proposals/`, `reference/` (a guide to multi-leg freight, forwarders and EDI, as background), and `ui/`. `DESIGN.md` stays at the top.
 
 - `docs/guides/demo-script.md`: how to present the hosted demo, scene by scene, from Gemini Enterprise finding a carrier to a question over A2A, with what to type, what to point at, why each step matters, and what to do when something goes wrong. Linked from the runbook.

@@ -8,6 +8,8 @@
 | [`reference/`](reference/) | **Background**: how the domain works outside this repository, for context when designing. Not a spec for what we build. |
 | [`ui/`](ui/) | **UI design notes and mockups.** |
 
+The HTML pages here (walk-throughs, mockups) are published at **https://go-steer.github.io/supercargo/**, where they run; GitHub itself only shows their source.
+
 ## Guides
 
 - [Run the demo on Cloud Run](guides/runbook-cloudrun.md): from an empty project to Gemini Enterprise drafting a booking over MCP that a person confirms in the browser.
