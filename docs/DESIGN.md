@@ -655,7 +655,7 @@ The `kid` resolves against the issuer's profile. The distinct `typ` means a dele
 ```
 - **Addresses** are international: an ISO 3166-1 alpha-2 `country`, an optional `region` (a state, a Brazilian UF), a `locality`, an optional `postal_code` and the `street`.
 - **Parties** carry identifiers by `scheme`, each at most once: `EORI`, `VAT`, `BR:CNPJ`, `BR:CPF`, `US:EIN`, `GLN`, each checked for its form (at most 8). A CNPJ or CPF is bare or punctuated in full, and a CNPJ's first 12 characters may be capital letters (Brazil's alphanumeric CNPJ, issued from July 2026; the two check digits stay digits). The request's `shipper.domain`, if given, is the sender's: the shipper of a leg is whoever signs its request.
-- **Stops** are a facility with its UN/LOCODE (and optionally a terminal or depot code and an address), and a window: `earliest` and `latest`, UTC in whole seconds, not inverted. Pickup and delivery are different places (not the same facility code, nor the same UN/LOCODE and facility name, ignoring case), and the delivery's `latest` is not before the pickup's `earliest`.
+- **Stops** are a facility with its UN/LOCODE (and optionally a terminal or depot code and an address, which must be in the UN/LOCODE's country), and a window: `earliest` and `latest`, UTC in whole seconds, not inverted. Pickup and delivery are different places (not the same facility code, nor the same UN/LOCODE and facility name, ignoring case), and the delivery's `latest` is not before the pickup's `earliest`.
 - **The confirmation** carries `carrier_booking_reference`, `status` (`confirmed` with `planned_pickup` and `planned_delivery`, in order; or `rejected` with neither, nor documents or a subscription), `subscription_id`, `messages`, and the references of documents the carrier issued:
   - `fiscal_documents`: a Brazilian `CT-e` or `MDF-e`, by its 44-character `access_key` and nothing else (digits, except that the issuer's CNPJ inside it, characters 7 to 18, may have letters);
   - `transport_documents`: an `e-CMR`, `CMR`, `CRT` or `MIC/DTA`, by its `number` and nothing else;
@@ -684,7 +684,7 @@ The `kid` resolves against the issuer's profile. The distinct `typ` means a dele
 ```
 - **The trade term travels:** `incoterms` is a rule of Incoterms 2020 (`EXW`, `FCA`, `CPT`, `CIP`, `DAP`, `DPU`, `DDP`, `FAS`, `FOB`, `CFR`, `CIF`), the version `2020`, and the named place. It says who arranges which part of the journey; under DAP the seller hires the forwarder, under EXW the buyer would send this order instead.
 - **Parties** are the road bodies' (identifiers by scheme, an international address); the consignee is required. The `shipper.domain`, if given, is the sender's.
-- **Places** are a `door` (found by its address, which it must have; a name is optional) or a `port` (a terminal, by its `facility`), with a UN/LOCODE, an optional facility code, and a window: `place_of_receipt.earliest` is when the cargo is ready, `place_of_delivery.latest` when it must have arrived (UTC, whole seconds, not before it's ready). The two are different places: not the same facility code, the same facility at one UN/LOCODE, or the same address (ignoring case and spacing).
+- **Places** are a `door` (found by its address, which it must have; a name is optional) or a `port` (a terminal, by its `facility`), with a UN/LOCODE, an optional facility code, an address in the UN/LOCODE's country, and a window: `place_of_receipt.earliest` is when the cargo is ready, `place_of_delivery.latest` when it must have arrived (UTC, whole seconds, not before it's ready). The two are different places: not the same facility code, the same facility at one UN/LOCODE, or the same address (ignoring case and spacing).
 - **Why the date matters stays with the shipper.** The window is part of the contract, so it travels; the launch or the warehouse slot behind it does not.
 - **The confirmation** carries `forwarder_reference` (the order's reference from then on), `status`, `subscription_id`, `messages`, and when `confirmed`, the planned journey and `planned_delivery`:
   ```json
@@ -697,7 +697,7 @@ The `kid` resolves against the issuer's profile. The distinct `typ` means a dele
     "planned_delivery": "2026-10-26T10:00:00Z", "subscription_id": "SUB-0007" }
   ```
   - 1 to 8 `legs`, each `road`, `ocean` or `rail`, between UN/LOCODEs. Only a truck may start and end in one town, and only a ship has a `vessel`. Carrier names and times are optional: the forwarder says what it wants its customer to know, never what it pays.
-  - The journey is continuous: each leg starts where the one before ended, departs no earlier than that one arrives, and none arrives after `planned_delivery`.
+  - The journey is continuous: each leg starts where the one before ended, and every planned time (each leg's departure, then its arrival) is no earlier than the one before it and no later than `planned_delivery`. A leg without times takes nothing out of that order.
   - A `rejected` order carries no legs, delivery or subscription.
 
 **`derived_from`** (a ULP extension on `ulp.tnt.event` and `ulp.tnt.alert`, optional, at most 20). A party that re-issues events from legs it booked (a forwarder) says where each came from, so its customer can tell evidence from hearsay and ask for it:

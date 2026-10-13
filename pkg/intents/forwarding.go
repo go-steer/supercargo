@@ -162,7 +162,7 @@ func (p *Place) validate(field string) error {
 		errs = append(errs, match(field+".facility_code", p.FacilityCode, facilityCodePattern))
 	}
 	if p.Address != nil {
-		errs = append(errs, p.Address.validate(field+".address"))
+		errs = append(errs, p.Address.validate(field+".address"), countryOf(field, p.UNLocationCode, p.Address))
 	}
 	return errors.Join(errs...)
 }
@@ -222,7 +222,15 @@ func (l *PlannedLeg) validate(field string) error {
 	errs := []error{
 		match(field+".from", l.From, unLocodePattern),
 		match(field+".to", l.To, unLocodePattern),
-		window(field+".planned", l.PlannedDeparture, l.PlannedArrival),
+	}
+	// Their order is legs' to check, with the rest of the journey.
+	if l.PlannedDeparture != "" {
+		_, err := timestamp(field+".planned_departure", l.PlannedDeparture)
+		errs = append(errs, err)
+	}
+	if l.PlannedArrival != "" {
+		_, err := timestamp(field+".planned_arrival", l.PlannedArrival)
+		errs = append(errs, err)
 	}
 	switch l.Mode {
 	case ModeRoad, ModeRail:
@@ -272,13 +280,15 @@ func (b *ForwardingConfirmationBody) Validate() error {
 	return errors.Join(errs...)
 }
 
-// legs checks a planned journey: each leg valid, each starting where the
-// one before ended and not before it arrives, and none arriving after the
-// planned delivery.
+// legs checks a planned journey: each leg valid and starting where the one
+// before ended, and every planned time (each leg's departure, then its
+// arrival) no earlier than the one before it and no later than the
+// planned delivery. A leg without times takes nothing out of the order.
 func legs(ls []PlannedLeg, delivery string) error {
 	var errs []error
 	end, _ := time.Parse(envelope.TimeLayout, delivery)
-	var arrived time.Time
+	var last time.Time // the latest planned time so far, at lastAt
+	var lastAt string
 	for i, l := range ls {
 		at := fmt.Sprintf("legs[%d]", i)
 		errs = append(errs, l.validate(at))
@@ -290,14 +300,18 @@ func legs(ls []PlannedLeg, delivery string) error {
 		if i > 0 && l.From != ls[i-1].To {
 			errs = append(errs, fmt.Errorf("%s starts at %s, not where legs[%d] ends (%s)", at, l.From, i-1, ls[i-1].To))
 		}
-		if dep, err := time.Parse(envelope.TimeLayout, l.PlannedDeparture); err == nil && !arrived.IsZero() && dep.Before(arrived) {
-			errs = append(errs, fmt.Errorf("%s departs before legs[%d] arrives", at, i-1))
-		}
-		if arr, err := time.Parse(envelope.TimeLayout, l.PlannedArrival); err == nil {
-			arrived = arr
-			if !end.IsZero() && arr.After(end) {
-				errs = append(errs, fmt.Errorf("%s arrives after planned_delivery", at))
+		for _, pt := range []struct{ name, value string }{{"planned_departure", l.PlannedDeparture}, {"planned_arrival", l.PlannedArrival}} {
+			t, err := time.Parse(envelope.TimeLayout, pt.value)
+			if err != nil {
+				continue // absent, or malformed (the leg's own check says so)
 			}
+			if !last.IsZero() && t.Before(last) {
+				errs = append(errs, fmt.Errorf("%s.%s is before %s", at, pt.name, lastAt))
+			}
+			if !end.IsZero() && t.After(end) {
+				errs = append(errs, fmt.Errorf("%s.%s is after planned_delivery", at, pt.name))
+			}
+			last, lastAt = t, at+"."+pt.name
 		}
 	}
 	return errors.Join(errs...)
