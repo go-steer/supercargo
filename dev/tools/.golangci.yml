@@ -65,6 +65,10 @@ linters:
           - unparam
 
   settings:
+    misspell:
+      # ECT is a Rotterdam terminal operator (ECT Delta), not "etc".
+      ignore-rules:
+        - ect
     errcheck:
       # Noise patterns where checking the error has no useful action:
       # writing to stderr for a diagnostic, closing a file in defer,
