@@ -255,6 +255,79 @@ type Forwarder struct {
 	// RefPrefix starts each order reference, e.g. "MF".
 	RefPrefix string   `yaml:"refPrefix"`
 	Deny      []string `yaml:"deny"` // domains whose orders are refused
+	// Lanes are the journeys the forwarder runs: its routing guide. An
+	// order is planned on the lane from its place of receipt to its place
+	// of delivery.
+	Lanes []Lane `yaml:"lanes"`
+}
+
+// Lane is one journey, door to door: its legs, in order, each ending
+// where the next starts.
+type Lane struct {
+	From string    `yaml:"from"` // UN/LOCODE of the place of receipt
+	To   string    `yaml:"to"`   // UN/LOCODE of the place of delivery
+	Legs []LaneLeg `yaml:"legs"`
+}
+
+// LaneLeg is one leg of a lane: who carries it, by what mode, to where.
+type LaneLeg struct {
+	Mode    string `yaml:"mode"`    // road or ocean
+	Carrier string `yaml:"carrier"` // the carrier's domain
+	Name    string `yaml:"name"`    // the carrier's name, as the customer is told it
+	To      string `yaml:"to"`      // UN/LOCODE where the leg ends (the last leg's is the lane's To)
+	// Facility is the terminal or depot at To where this leg hands over
+	// to the next (not for the last leg: the order says where it ends).
+	Facility string `yaml:"facility"`
+	// EDI marks a road carrier without a ULP node, booked over EDIFACT.
+	EDI bool `yaml:"edi"`
+}
+
+// LaneMaxLegs bounds a lane: a planned journey has at most 8 legs.
+const LaneMaxLegs = 8
+
+var locode = regexp.MustCompile(`^[A-Z]{2}[A-Z2-9]{3}$`)
+
+func (l *Lane) validate(self string) error {
+	if !locode.MatchString(l.From) || !locode.MatchString(l.To) || l.From == l.To {
+		return fmt.Errorf("from %q and to %q must be two different UN/LOCODEs", l.From, l.To)
+	}
+	if len(l.Legs) == 0 || len(l.Legs) > LaneMaxLegs {
+		return fmt.Errorf("%d legs, want 1-%d", len(l.Legs), LaneMaxLegs)
+	}
+	from := l.From
+	for i, leg := range l.Legs {
+		at := fmt.Sprintf("legs[%d]", i)
+		switch {
+		case leg.Mode != "road" && leg.Mode != "ocean":
+			return fmt.Errorf("%s: mode %q is not road or ocean", at, leg.Mode)
+		case leg.EDI && leg.Mode != "road":
+			return fmt.Errorf("%s: only a road leg is booked over EDI", at)
+		case !envelope.ValidDomain(leg.Carrier) || leg.Carrier == self:
+			return fmt.Errorf("%s: carrier %q is not another party's lowercase domain", at, leg.Carrier)
+		case !textOK(leg.Name, 128):
+			return fmt.Errorf("%s: name must be 1-128 characters of plain text", at)
+		case !locode.MatchString(leg.To) || (leg.To == from && leg.Mode == "ocean"):
+			return fmt.Errorf("%s: to %q must be a UN/LOCODE (another port, for an ocean leg)", at, leg.To)
+		}
+		last := i == len(l.Legs)-1
+		if last && leg.To != l.To {
+			return fmt.Errorf("%s: the last leg ends at %s, not the lane's %s", at, leg.To, l.To)
+		}
+		if !last && !textOK(leg.Facility, 128) {
+			return fmt.Errorf("%s: a leg handing over needs the facility (1-128 characters of plain text) where it does", at)
+		}
+		if last && leg.Facility != "" {
+			return fmt.Errorf("%s: the last leg ends where the order says; no facility", at)
+		}
+		from = leg.To
+	}
+	return nil
+}
+
+// textOK is a one-line display text of 1-max characters, plain (no
+// control or bidi characters: unsafeRune).
+func textOK(s string, max int) bool {
+	return s != "" && utf8.RuneCountInString(s) <= max && utf8.ValidString(s) && !strings.ContainsFunc(s, unsafeRune)
 }
 
 // Ocean reports whether the operator takes ocean bookings: it has the
@@ -541,6 +614,16 @@ func (c *Config) validate() error {
 			if !envelope.ValidDomain(d) || d == c.Domain {
 				return fmt.Errorf("forwarder: deny entry %q is not a lowercase domain", d)
 			}
+		}
+		seen := map[[2]string]bool{}
+		for i, l := range f.Lanes {
+			if err := l.validate(c.Domain); err != nil {
+				return fmt.Errorf("forwarder: lanes[%d]: %w", i, err)
+			}
+			if seen[[2]string{l.From, l.To}] {
+				return fmt.Errorf("forwarder: lanes[%d]: a second lane %s → %s", i, l.From, l.To)
+			}
+			seen[[2]string{l.From, l.To}] = true
 		}
 	}
 	switch {

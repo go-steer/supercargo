@@ -55,6 +55,24 @@ type OrderBooking struct {
 	Request      intents.ForwardingRequestBody
 	MessageID    string
 	Confirmation intents.ForwardingConfirmationBody
+	// Legs are the legs the forwarder booked for the order, in journey
+	// order (the forwarder's record; empty on the shipper's side).
+	Legs []LegRef
+}
+
+// LegRef is one leg a forwarder booked for an order: with whom, under
+// which reference (the leg's own booking, held as the leg's shipper), and
+// what the carrier planned.
+type LegRef struct {
+	Mode       string // road or ocean
+	Carrier    string // the carrier's domain
+	Name       string // the carrier's name, as the customer is told it
+	Ref        string // the leg's booking reference with the carrier
+	From, To   string // UN/LOCODEs
+	Departure  string // planned, UTC
+	Arrival    string
+	Vessel     string   // an ocean leg's vessel and voyage
+	Containers []string // the containers it carries, once known
 }
 
 // RoadBooking is a truck leg's request, as amended, and the carrier's

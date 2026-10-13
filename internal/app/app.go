@@ -117,8 +117,10 @@ type App struct {
 	Publisher *operator.Publisher
 	Simulator *operator.Simulator
 	Control   *http.Server
-	// Orders is a forwarder's order desk (nil unless configured).
-	Orders *forwarder.Orders
+	// Orders is a forwarder's order desk, and Orchestrator plans and books
+	// its orders' legs (nil unless configured).
+	Orders       *forwarder.Orders
+	Orchestrator *forwarder.Orchestrator
 }
 
 // New builds an App from cfg.
@@ -259,12 +261,16 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	if a.Publisher != nil {
 		a.Publisher.Pusher = n
 	}
-	if a.Orders != nil {
-		a.Orders.Node = n
-	}
 	if a.Customer != nil {
 		a.Shipper = &shipper.Shipper{Node: n, Bookings: a.Customer.Bookings, Events: a.Customer.Events, Now: time.Now,
 			NoBooking: !cfg.Has(config.RoleShipper)}
+	}
+	if a.Orders != nil {
+		a.Orders.Node = n
+		// The legs are booked through the shipper side, which a forwarder
+		// has (config requires it).
+		a.Orchestrator = &forwarder.Orchestrator{Orders: a.Orders, Legs: a.Shipper, Lanes: cfg.Forwarder.Lanes,
+			Name: cfg.Name, Endpoint: RESTURL(cfg), Now: time.Now}
 	}
 	{
 		// One control API for every role; startup fails on a route two
@@ -288,7 +294,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			roles = append(roles, func(m *http.ServeMux) { shipper.RegisterControl(m, a.Shipper, cache) })
 		}
 		if a.Orders != nil {
-			roles = append(roles, func(m *http.ServeMux) { forwarder.RegisterControl(m, a.Orders) })
+			roles = append(roles, func(m *http.ServeMux) { forwarder.RegisterControl(m, a.Orders, a.Orchestrator) })
 		}
 		if err := registerRoutes(mux, roles...); err != nil {
 			return nil, err
