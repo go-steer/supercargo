@@ -59,8 +59,8 @@ type Status struct {
 	CarrierRef        string    // the carrier's consignment number (CNI), if given
 	Code              string    // the STS status code, raw
 	Meaning           Meaning   // the code's meaning, or Unknown
-	Time              time.Time // when it happened (DTM+334), UTC
-	UNLocode          string    // where (LOC+175, 5 or 8), if given
+	Time              time.Time // when it happened (DTM+334), in UTC
+	UNLocode          string    // where it happened (LOC+175), if given
 	Facility          string    // the place's name (LOC or NAD), if given
 	Equipment         string    // the container (EQD+CN), ISO 6346, if given
 	TransportDocument string    // the transport document (RFF+AAS), an e-CMR's number, if given
@@ -71,24 +71,35 @@ type Status struct {
 var codePattern = regexp.MustCompile(`^[A-Z0-9]{1,3}$`)
 
 // ParseIFTSTA parses an interchange of IFTSTA messages into statuses, in
-// order. The subset:
+// order, reading times without a zone as UTC. It is ParseIFTSTAIn with
+// time.UTC.
+func ParseIFTSTA(data []byte) ([]Status, error) { return ParseIFTSTAIn(data, time.UTC) }
+
+// ParseIFTSTAIn parses an interchange of IFTSTA messages into statuses,
+// in order. The subset:
 //
 //	CNI+<seq>+<carrier ref>          a consignment; its RFF (CU, AAS) apply to its statuses
 //	STS+1+<code>                     a status, in a consignment; then, for it:
-//	RFF+CU:<reference>  RFF+AAS:<document>
-//	DTM+334:<time>:<203|204|102>     when (required)
-//	LOC+<175|5|8>+<locode>:139:6:<name>   where
-//	NAD+<qualifier>+++<name>         the facility's name, if LOC has none
+//	RFF+CU:<reference>  RFF+AAS:<document>   if the consignment has them, the same
+//	DTM+334:<time>:<203|204|303|304> when (required)
+//	LOC+175+<locode>:139:6:<name>    where it happened
+//	NAD+<qualifier>+++<name>         the facility's name, if LOC has none (one per status, any qualifier)
 //	EQD+CN+<container number>        the container
 //
-// Times carry no zone in these formats and are read as UTC, which the
-// demo partner guide requires. Other segments and qualifiers are ignored.
-// A status without a
-// reference or a time, an STS outside a consignment, a malformed code,
-// time, UN/LOCODE, container number or document number, or a repeated
-// time, place or container on one status is refused, and so is the whole
-// interchange with it.
-func ParseIFTSTA(data []byte) ([]Status, error) {
+// Formats 203 and 204 carry no zone and are read in loc, the zone agreed
+// with the partner (nil is UTC); 303 and 304 carry their offset (see
+// parseTime). A date without a time (102) is refused. Other segments and
+// qualifiers, LOC's place of departure (5) and destination (8) among
+// them, are ignored. A status without a reference or a time, an STS
+// outside a consignment, a malformed code, time, UN/LOCODE, container
+// number or document number, a repeated time, place, facility name or
+// container on one status, a reference or document given twice at one level, or one on a
+// status that contradicts its consignment's is refused, and so is the
+// whole interchange with it.
+func ParseIFTSTAIn(data []byte, loc *time.Location) ([]Status, error) {
+	if loc == nil {
+		loc = time.UTC
+	}
 	ic, err := Parse(data)
 	if err != nil {
 		return nil, err
@@ -98,7 +109,7 @@ func ParseIFTSTA(data []byte) ([]Status, error) {
 		if m.Type != "IFTSTA" {
 			return nil, contentErr("message %s is %s, not IFTSTA", m.Ref, m.Type)
 		}
-		got, err := statuses(m, ic.Sender, controlRef(ic, m))
+		got, err := statuses(m, ic.Sender, controlRef(ic, m), loc)
 		if err != nil {
 			return nil, err
 		}
@@ -107,9 +118,14 @@ func ParseIFTSTA(data []byte) ([]Status, error) {
 	return out, nil
 }
 
-func statuses(m Message, sender, ref string) ([]Status, error) {
+// refsSeen records the references one level (a consignment or a status)
+// has given itself.
+type refsSeen struct{ cu, aas bool }
+
+func statuses(m Message, sender, ref string, loc *time.Location) ([]Status, error) {
 	var out []Status
 	var consignment, cur *Status
+	var consignmentRefs, curRefs refsSeen
 	var nadName string
 	flush := func() error {
 		if cur == nil {
@@ -139,6 +155,7 @@ func statuses(m Message, sender, ref string) ([]Status, error) {
 				return nil, contentErr("consignment number %q is not a reference", carrierRef)
 			}
 			consignment = &Status{CarrierRef: carrierRef, Sender: sender, ControlRef: ref}
+			consignmentRefs = refsSeen{}
 			continue
 		case "STS":
 			if consignment == nil {
@@ -153,18 +170,20 @@ func statuses(m Message, sender, ref string) ([]Status, error) {
 			}
 			st := *consignment
 			st.Code, st.Meaning = code, MeaningOf(code)
-			cur = &st
+			cur, curRefs = &st, refsSeen{}
 			continue
 		}
-		target := cur
-		if target == nil {
-			target = consignment
-		}
-		if target == nil {
+		if consignment == nil {
 			continue // message level: BGM, DTM+137
 		}
 		if s.Tag == "RFF" {
-			if err := applyRef(target, s); err != nil {
+			var err error
+			if cur == nil {
+				err = applyRef(consignment, &consignmentRefs, nil, s)
+			} else {
+				err = applyRef(cur, &curRefs, consignment, s)
+			}
+			if err != nil {
 				return nil, err
 			}
 		}
@@ -174,11 +193,15 @@ func statuses(m Message, sender, ref string) ([]Status, error) {
 		var err error
 		switch s.Tag {
 		case "DTM":
-			err = applyTime(cur, s)
+			err = applyTime(cur, s, loc)
 		case "LOC":
 			err = applyLoc(cur, s)
 		case "NAD":
-			if n := s.Value(3, 0); n != "" && nadName == "" {
+			if n := s.Value(3, 0); n != "" {
+				if nadName != "" {
+					err = contentErr("status %s has two facility names (NAD)", cur.Code)
+					break
+				}
 				err = text("facility name", n, false)
 				nadName = n
 			}
@@ -195,33 +218,49 @@ func statuses(m Message, sender, ref string) ([]Status, error) {
 	return out, nil
 }
 
-func applyRef(st *Status, s Segment) error {
+// applyRef sets a reference (CU) or transport document (AAS) on st, a
+// consignment (parent nil) or a status (parent its consignment). Each is
+// given at most once per level, and a status's must match its
+// consignment's, so no later segment silently overrides an earlier one.
+func applyRef(st *Status, seen *refsSeen, parent *Status, s Segment) error {
 	v := s.Value(0, 1)
 	switch s.Value(0, 0) {
 	case "CU":
 		if !refPattern.MatchString(v) {
 			return contentErr("reference %q (RFF+CU) is not a reference", v)
 		}
-		st.Reference = v
+		if seen.cu {
+			return contentErr("two references (RFF+CU) at one level, %q and %q", st.Reference, v)
+		}
+		if parent != nil && parent.Reference != "" && parent.Reference != v {
+			return contentErr("status reference %q (RFF+CU) contradicts its consignment's %q", v, parent.Reference)
+		}
+		seen.cu, st.Reference = true, v
 	case "AAS":
 		if !docPattern.MatchString(v) {
 			return contentErr("transport document %q is malformed", v)
 		}
-		st.TransportDocument = v
+		if seen.aas {
+			return contentErr("two transport documents (RFF+AAS) at one level, %q and %q", st.TransportDocument, v)
+		}
+		if parent != nil && parent.TransportDocument != "" && parent.TransportDocument != v {
+			return contentErr("status transport document %q (RFF+AAS) contradicts its consignment's %q", v, parent.TransportDocument)
+		}
+		seen.aas, st.TransportDocument = true, v
 	}
 	return nil
 }
 
 // A consignment passes on references only, so a status's time, place and
 // container are its own, each set at most once.
-func applyTime(st *Status, s Segment) error {
+func applyTime(st *Status, s Segment, loc *time.Location) error {
 	if s.Value(0, 0) != "334" {
 		return nil
 	}
 	if !st.Time.IsZero() {
 		return contentErr("status %s has two times", st.Code)
 	}
-	t, err := parseTime(s.Value(0, 1), s.Value(0, 2))
+	t, err := parseTime(s.Value(0, 1), s.Value(0, 2), loc)
 	if err != nil {
 		return err
 	}
@@ -230,9 +269,7 @@ func applyTime(st *Status, s Segment) error {
 }
 
 func applyLoc(st *Status, s Segment) error {
-	switch s.Value(0, 0) {
-	case "175", "5", "8":
-	default:
+	if s.Value(0, 0) != "175" { // the place of the status itself
 		return nil
 	}
 	if st.UNLocode != "" {

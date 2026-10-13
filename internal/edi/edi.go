@@ -27,8 +27,8 @@
 // The message subsets are this demo's: faithful to EDIFACT's D.04A
 // directories in shape (segments, qualifiers, code lists where it matters),
 // not a certified implementation guide. A real partner's guide decides its
-// qualifiers and status codes; status codes are mapped through a CodeMap
-// for that reason.
+// qualifiers and status codes; status codes are mapped through one table
+// (MeaningOf) for that reason.
 package edi
 
 import (
@@ -38,6 +38,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -87,6 +88,9 @@ func (s Separators) valid() error {
 		}
 		set[c] = true
 	}
+	if s.Decimal != '.' && s.Decimal != ',' {
+		return syntaxErr("UNA: decimal mark %q is not . or ,", s.Decimal)
+	}
 	if r := s.Repetition; r != ' ' && (set[r] || r < 0x21 || r > 0x7e || (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')) {
 		return syntaxErr("UNA: repetition separator %q must be a space or other punctuation", r)
 	}
@@ -134,8 +138,10 @@ var tagPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]{2}$`)
 
 // Parse parses an interchange: an optional UNA, an optional UNB/UNZ
 // envelope, and one or more UNH/UNT messages, nothing else. Whitespace
-// between segments is ignored; inside a value, control characters are not
-// allowed.
+// between segments is ignored; inside a value, C0 controls and DEL are
+// not allowed. Other characters a person or model shouldn't be shown
+// (C1, bidirectional and other format characters) are refused by the
+// message parsers in the fields they return, not here.
 func Parse(data []byte) (*Interchange, error) {
 	if len(data) > MaxInterchange {
 		return nil, syntaxErr("interchange is %d bytes, over %d", len(data), MaxInterchange)
@@ -227,11 +233,12 @@ func structure(sep Separators, segs []Segment) (*Interchange, error) {
 	if i < len(segs) && segs[i].Tag == "UNB" {
 		unb := segs[i]
 		ic.Sender, ic.Recipient, ic.Control = unb.Value(1, 0), unb.Value(2, 0), unb.Value(4, 0)
-		if ic.Sender == "" || ic.Recipient == "" || ic.Control == "" {
-			return nil, syntaxErr("UNB needs a sender, a recipient and a control reference")
+		if !partyPattern.MatchString(ic.Sender) || !partyPattern.MatchString(ic.Recipient) || !controlPattern.MatchString(ic.Control) {
+			return nil, syntaxErr("UNB needs a sender, a recipient and a control reference, each well-formed")
 		}
 		i++
 	}
+	refs := map[string]bool{}
 	for i < len(segs) && segs[i].Tag != "UNZ" {
 		unh := segs[i]
 		if unh.Tag != "UNH" {
@@ -241,6 +248,13 @@ func structure(sep Separators, segs []Segment) (*Interchange, error) {
 		if m.Ref == "" || m.Type == "" {
 			return nil, syntaxErr("UNH needs a reference and a message type")
 		}
+		if !controlPattern.MatchString(m.Ref) {
+			return nil, syntaxErr("message reference %q is malformed", m.Ref)
+		}
+		if refs[m.Ref] {
+			return nil, syntaxErr("two messages are %s", m.Ref)
+		}
+		refs[m.Ref] = true
 		j := i + 1
 		for j < len(segs) && segs[j].Tag != "UNT" {
 			if t := segs[j].Tag; t == "UNH" || t == "UNB" || t == "UNZ" || t == "UNA" {
@@ -252,7 +266,7 @@ func structure(sep Separators, segs []Segment) (*Interchange, error) {
 			return nil, syntaxErr("message %s has no UNT", m.Ref)
 		}
 		unt := segs[j]
-		if n, err := strconv.Atoi(unt.Value(0, 0)); err != nil || n != j-i+1 {
+		if n, ok := count(unt.Value(0, 0)); !ok || n != j-i+1 {
 			return nil, syntaxErr("message %s: UNT counts %q segments, it has %d", m.Ref, unt.Value(0, 0), j-i+1)
 		}
 		if unt.Value(1, 0) != m.Ref {
@@ -268,7 +282,7 @@ func structure(sep Separators, segs []Segment) (*Interchange, error) {
 			return nil, syntaxErr("interchange %s has no UNZ", ic.Control)
 		}
 		unz := segs[i]
-		if n, err := strconv.Atoi(unz.Value(0, 0)); err != nil || n != len(ic.Messages) {
+		if n, ok := count(unz.Value(0, 0)); !ok || n != len(ic.Messages) {
 			return nil, syntaxErr("UNZ counts %q messages, there are %d", unz.Value(0, 0), len(ic.Messages))
 		}
 		if unz.Value(1, 0) != ic.Control {
@@ -285,6 +299,15 @@ func structure(sep Separators, segs []Segment) (*Interchange, error) {
 		return nil, syntaxErr("no message")
 	}
 	return ic, nil
+}
+
+// count reads a UNT or UNZ count: digits only, no sign.
+func count(v string) (int, bool) {
+	if !countPattern.MatchString(v) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v)
+	return n, err == nil
 }
 
 // escape releases every separator in v.
@@ -344,9 +367,9 @@ func (m Message) all() []Segment {
 }
 
 // Write writes an interchange with the default separators: a UNB/UNZ
-// envelope (syntax UNOW, UTF-8) around msgs.
+// envelope (syntax UNOW, UTF-8) around msgs, prepared at at, written in
+// at's own location (pass at.In(loc) for another).
 func Write(sender, recipient, control string, at time.Time, msgs ...Message) []byte {
-	at = at.UTC()
 	segs := []Segment{Seg("UNB", E("UNOW", "4"), E(sender), E(recipient), E(at.Format("060102"), at.Format("1504")), E(control))}
 	for _, m := range msgs {
 		segs = append(segs, m.all()...)
@@ -360,7 +383,52 @@ var (
 	refPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 	locodePattern = regexp.MustCompile(`^[A-Z]{2}[A-Z2-9]{3}$`)
 	docPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9/_.-]{0,63}$`)
+	partyPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.:_-]{0,34}$`) // UNB sender and recipient, an..35
+	// controlPattern is an interchange's or a message's reference, an..14.
+	controlPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,13}$`)
+	countPattern   = regexp.MustCompile(`^[0-9]{1,6}$`)
 )
+
+// checkText checks a free-text value: present if required, at most max
+// characters, valid UTF-8, and made only of letters, marks, digits,
+// punctuation, symbols and spaces (Unicode L, M, N, P, S and Zs). That
+// leaves out what could hide or reorder what a person or a model is
+// shown: C0 and C1 controls, DEL, format characters (the bidirectional
+// controls, zero-width characters, the BOM, soft hyphens and tag
+// characters among them), private-use and unassigned code points,
+// noncharacters, variation selectors (which can carry hidden bytes),
+// letters and symbols that show as blank (the Hangul fillers, the blank
+// braille pattern), runs of more than maxMarks nonspacing marks (which
+// can draw over other text), and line and paragraph separators. A script
+// that needs a zero-width joiner, a variation selector or long stacks of
+// marks can't be written; EDIFACT text rarely is.
+func checkText(field, v string, required bool, max int) error {
+	if required && v == "" {
+		return contentErr("%s is missing", field)
+	}
+	if !utf8.ValidString(v) {
+		return contentErr("%s is not valid UTF-8", field)
+	}
+	if utf8.RuneCountInString(v) > max {
+		return contentErr("%s is over %d characters", field, max)
+	}
+	marks := 0
+	for _, r := range v {
+		if !unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S, unicode.Zs) ||
+			unicode.In(r, unicode.Noncharacter_Code_Point, unicode.Variation_Selector) || invisible[r] {
+			return contentErr("%s has a control, format, invisible or unassigned character (%U)", field, r)
+		}
+		if unicode.Is(unicode.Mn, r) {
+			marks++
+			if marks > maxMarks {
+				return contentErr("%s has more than %d combining marks in a row", field, maxMarks)
+			}
+		} else {
+			marks = 0
+		}
+	}
+	return nil
+}
 
 // validContainer reports whether n is an ISO 6346 container number with
 // a correct check digit.
@@ -373,6 +441,8 @@ func validContainer(n string) bool {
 		c := n[i]
 		var v int
 		switch {
+		case i == 3 && c != 'U' && c != 'J' && c != 'Z':
+			return false // the category: freight container, detachable equipment, trailer or chassis
 		case i < 4 && c >= 'A' && c <= 'Z':
 			// A=10, skipping multiples of 11.
 			v = int(c-'A') + 10
@@ -388,16 +458,79 @@ func validContainer(n string) bool {
 	return n[10] == byte('0'+d)
 }
 
-// parseTime reads a DTM value in format 203 (CCYYMMDDHHMM), 204
-// (CCYYMMDDHHMMSS) or 102 (CCYYMMDD), as UTC.
-func parseTime(v, format string) (time.Time, error) {
-	layout, ok := map[string]string{"203": "200601021504", "204": "20060102150405", "102": "20060102"}[format]
-	if !ok {
-		return time.Time{}, contentErr("date format %q is not 102, 203 or 204", format)
+// maxMarks is the most nonspacing marks checkText allows in a row.
+const maxMarks = 4
+
+// invisible are letters and symbols that show as blank.
+var invisible = map[rune]bool{0x115F: true, 0x1160: true, 0x3164: true, 0xFFA0: true, 0x2800: true}
+
+// Years a DTM time may fall in.
+const (
+	minYear = 2000
+	maxYear = 2099
+)
+
+// parseTime reads a DTM value that must carry a time: format 203
+// (CCYYMMDDHHMM) or 204 (CCYYMMDDHHMMSS), which have no zone and are read
+// in loc, the zone agreed with the partner (nil is UTC); or 303
+// (CCYYMMDDHHMMZZZ) or 304 (CCYYMMDDHHMMSSZZZ), whose ZZZ is the offset
+// from UTC in hours, sign first, -12 to +14 (+01, -03; the + released as
+// ?+ with the default separators), this package's reading of the zone.
+// Format 102, a date without a time, is refused, and so is a year
+// outside 2000 to 2099, and a local time loc skips or repeats (as a
+// daylight-saving change does, by however much), which only 303 or 304 can
+// say unambiguously. The time is returned in UTC.
+func parseTime(v, format string, loc *time.Location) (time.Time, error) {
+	if format == "102" {
+		return time.Time{}, contentErr("date %q is format 102, a date without a time", v)
 	}
-	t, err := time.ParseInLocation(layout, v, time.UTC)
+	layout, ok := map[string]string{"203": "200601021504", "204": "20060102150405", "303": "200601021504", "304": "20060102150405"}[format]
+	if !ok {
+		return time.Time{}, contentErr("date format %q is not 203, 204, 303 or 304", format)
+	}
+	if format == "303" || format == "304" {
+		if len(v) < 3 {
+			return time.Time{}, contentErr("date %q has no zone (ZZZ, +01 or -03)", v)
+		}
+		zone := v[len(v)-3:]
+		v = v[:len(v)-3]
+		if !zonePattern.MatchString(zone) {
+			return time.Time{}, contentErr("date %q has no zone (ZZZ, +01 or -03)", v+zone)
+		}
+		h, _ := strconv.Atoi(zone[1:]) // two digits
+		if zone[0] == '-' {
+			h = -h
+		}
+		if h < -12 || h > 14 {
+			return time.Time{}, contentErr("zone %q is not -12 to +14", zone)
+		}
+		loc = time.FixedZone(zone, h*3600)
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	t, err := time.ParseInLocation(layout, v, loc)
 	if err != nil {
 		return time.Time{}, contentErr("date %q is not format %s", v, format)
 	}
-	return t, nil
+	if t.Year() < minYear || t.Year() > maxYear {
+		return time.Time{}, contentErr("date %q is not in %d to %d", v, minYear, maxYear)
+	}
+	if t.Format(layout) != v {
+		return time.Time{}, contentErr("time %q doesn't exist in %s", v, loc)
+	}
+	// A change of offset near t, by however much, may repeat t's local
+	// time: look for it on the other side of the change.
+	_, before := t.Add(-3 * time.Hour).Zone()
+	_, after := t.Add(3 * time.Hour).Zone()
+	if shift := time.Duration(before-after) * time.Second; shift != 0 {
+		for _, d := range []time.Duration{shift, -shift} {
+			if t.Add(d).In(loc).Format(layout) == v {
+				return time.Time{}, contentErr("time %q happens twice in %s", v, loc)
+			}
+		}
+	}
+	return t.UTC(), nil
 }
+
+var zonePattern = regexp.MustCompile(`^[+-][0-9]{2}$`)

@@ -14,13 +14,15 @@
 
 package edi
 
+import "slices"
+
 // Ack is a carrier's answer to an instruction: what APERAK says.
 type Ack struct {
 	Reference          string   // the instruction's reference (RFF+ACW)
 	CarrierRef         string   // the carrier's document number (BGM)
 	Accepted           bool     // BGM message function 29 (accepted) or 27 (not accepted)
 	TransportDocuments []string // documents the carrier issued (RFF+AAS), an e-CMR's number
-	Errors             []string // ERC codes, each with its FTX text if any
+	Errors             []string // ERC codes, each with its FTX text if any; partner text, checked but untrusted
 	Sender, ControlRef string   // provenance: the UNB sender, and the control/message references
 }
 
@@ -28,6 +30,7 @@ type Ack struct {
 const (
 	MaxDocuments = 8
 	MaxErrors    = 20
+	MaxErrorText = 256 // characters of an error's FTX text
 )
 
 // ParseAPERAK parses an interchange holding one APERAK. The subset:
@@ -38,7 +41,10 @@ const (
 //	ERC+<code>  FTX+AAO+++<text>           errors (at most 20); only when not accepted
 //
 // Other segments are ignored. A missing or malformed reference, an
-// unknown message function, or errors on an acceptance are refused.
+// unknown message function, errors on an acceptance, a malformed error
+// code (1 to 3 capitals or digits), and error text over MaxErrorText
+// characters or with control or bidirectional-control characters are
+// refused.
 func ParseAPERAK(data []byte) (Ack, error) {
 	ic, err := Parse(data)
 	if err != nil {
@@ -49,7 +55,7 @@ func ParseAPERAK(data []byte) (Ack, error) {
 	}
 	m := ic.Messages[0]
 	ack := Ack{Sender: ic.Sender, ControlRef: controlRef(ic, m)}
-	sawBGM, explained := false, false
+	sawBGM, sawACW, explained := false, false, false
 	for _, s := range m.Segments {
 		switch s.Tag {
 		case "BGM":
@@ -68,13 +74,16 @@ func ParseAPERAK(data []byte) (Ack, error) {
 		case "RFF":
 			switch v := s.Value(0, 1); s.Value(0, 0) {
 			case "ACW":
-				if ack.Reference != "" {
+				if sawACW {
 					return Ack{}, contentErr("APERAK names two instructions")
 				}
-				ack.Reference = v
+				sawACW, ack.Reference = true, v
 			case "AAS":
 				if !docPattern.MatchString(v) {
 					return Ack{}, contentErr("transport document %q is malformed", v)
+				}
+				if slices.Contains(ack.TransportDocuments, v) {
+					return Ack{}, contentErr("transport document %q is named twice", v)
 				}
 				if len(ack.TransportDocuments) == MaxDocuments {
 					return Ack{}, contentErr("more than %d transport documents", MaxDocuments)
@@ -85,13 +94,16 @@ func ParseAPERAK(data []byte) (Ack, error) {
 			if len(ack.Errors) == MaxErrors {
 				return Ack{}, contentErr("more than %d errors", MaxErrors)
 			}
-			if s.Value(0, 0) == "" {
-				return Ack{}, contentErr("ERC without a code")
+			if !codePattern.MatchString(s.Value(0, 0)) {
+				return Ack{}, contentErr("error code %q (ERC) is malformed", s.Value(0, 0))
 			}
 			ack.Errors = append(ack.Errors, s.Value(0, 0))
 			explained = false
 		case "FTX":
 			if n := len(ack.Errors); n > 0 && !explained && s.Value(0, 0) == "AAO" && s.Value(3, 0) != "" {
+				if err := checkText("error text", s.Value(3, 0), false, MaxErrorText); err != nil {
+					return Ack{}, err
+				}
 				ack.Errors[n-1] += ": " + s.Value(3, 0) // the first text only
 				explained = true
 			}
