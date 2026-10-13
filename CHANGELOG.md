@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- The forwarder's EDI gateway: a forwarder books a lane's leg with a carrier without a node over EDIFACT file drops (`forwarder.edi`: the instruction out, the acknowledgement and statuses in), records it as unsigned with the carrier's e-CMR, and re-issues the carrier's statuses on the order, marked `derived_from` the unsigned EDI message. With the mock carrier, the whole door-to-door journey (Tilburg → Rotterdam → Santos → Cajamar) runs end to end.
+
 - A mock EDIFACT road carrier for the demo: `ulpmock edifact` acknowledges each transport instruction (IFTMIN) from its forwarder with an APERAK and an e-CMR number, and reports the trip as IFTSTA statuses on an accelerated clock, through file drops. `internal/edi` gains the carrier's side (`WriteAPERAK`, `WriteIFTSTA`, `ParseIFTMIN`).
 
 - The forwarder's relay and the delay cascade: each event a leg's carrier signs is re-issued to the order's shipper as the forwarder's own event on the order, with `derived_from` naming the leg's signed event. A ship's delay is projected onto the order: if the truck after it would collect too early, the shipper gets the forwarder's delay alert on the order (the delivery moved by as much, in the forwarder's words, citing the re-issued events), and a proposal to re-time the truck waits until a person confirms it (`GET /orders/{ref}/proposals`, `POST /proposals/{id}/confirm`), which amends the truck's leg with its carrier.

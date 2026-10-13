@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/config"
+	"github.com/go-steer/supercargo/internal/edi"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -56,6 +57,9 @@ type Orchestrator struct {
 	Orders *Orders
 	Legs   LegBooker
 	Lanes  []config.Lane
+	// EDI books the legs of carriers without a node (nil: such a lane
+	// can't be booked).
+	EDI *Gateway
 	// Name is the forwarder's company name, the legs' shipper; Endpoint
 	// is where the legs' carriers push their events (the forwarder's own
 	// /ulp).
@@ -71,9 +75,9 @@ const Handover = 30 * time.Hour
 var (
 	// ErrNoLane is an order on a lane the forwarder doesn't run.
 	ErrNoLane = errors.New("forwarder: no lane for this order")
-	// ErrEDILeg is a lane with a leg booked over EDI, which this node
-	// can't book yet.
-	ErrEDILeg = errors.New("forwarder: the lane has an EDI leg, which this node can't book yet")
+	// ErrEDILeg is a lane with a leg booked over EDI with a carrier this
+	// node has no EDI file drop for.
+	ErrEDILeg = errors.New("forwarder: the lane has an EDI leg this node can't book (no EDI partner configured)")
 	// ErrLegRefused is a leg its carrier didn't confirm.
 	ErrLegRefused = errors.New("forwarder: a carrier didn't confirm its leg")
 	// ErrPlanUnfit is a leg whose carrier's plan the journey can't use (a
@@ -163,12 +167,12 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 		return nil, err
 	}
 	for i, s := range steps {
-		if s.EDI && i >= len(b.Order.Legs) {
+		if s.EDI && i >= len(b.Order.Legs) && (o.EDI == nil || o.EDI.Partners[s.Carrier] == nil) {
 			return nil, fmt.Errorf("%w (leg %d, %s)", ErrEDILeg, i+1, s.Name)
 		}
 	}
 	req := b.Order.Request
-	ready := o.Now().UTC()
+	ready := o.Now().UTC().Truncate(time.Second) // times on the wire are whole seconds
 	if t, ok := parseTime(req.PlaceOfReceipt.Earliest); ok && t.After(ready) {
 		ready = t
 	}
@@ -251,6 +255,9 @@ func (o *Orchestrator) bookLeg(ctx context.Context, b store.Booking, i int, s St
 	shipperRef := fmt.Sprintf("%s-L%d", b.Ref, i+1)
 	sub := &intents.Subscription{Endpoint: o.Endpoint, Intents: []string{intents.TnTEvent, intents.TnTAlert}}
 	leg := &store.LegRef{Mode: s.Mode, Carrier: s.Carrier, Name: s.Name, From: s.From, To: s.To}
+	if s.EDI {
+		return o.bookEDI(ctx, b, i, s, ready, shipperRef, leg)
+	}
 	switch s.Mode {
 	case intents.ModeOcean:
 		conf, err := o.Legs.Book(ctx, s.Carrier, &intents.BookingRequestBody{
@@ -307,6 +314,36 @@ func clip(s string, n int) string {
 		return string(r[:n])
 	}
 	return s
+}
+
+// bookEDI instructs a carrier without a node over EDIFACT and waits for
+// its acknowledgement. Its plan is the forwarder's own (an
+// acknowledgement gives no times): collect when the cargo is ready, and
+// arrive the partner's planned transit later. The leg is marked unsigned.
+func (o *Orchestrator) bookEDI(ctx context.Context, b store.Booking, i int, s Step, ready time.Time, ref string, leg *store.LegRef) (*store.LegRef, error) {
+	req := b.Order.Request
+	p := o.EDI.Partners[s.Carrier]
+	pickup := edi.Stop{Name: clip(s.FromFacility, 70), UNLocode: s.From, Country: s.From[:2], Earliest: ready}
+	if a := req.PlaceOfReceipt.Address; i == 0 && a != nil {
+		pickup.Street, pickup.Locality, pickup.PostalCode, pickup.Country = clip(a.Street, 70), clip(a.Locality, 70), a.PostalCode, a.Country
+	}
+	delivery := edi.Stop{Name: clip(s.ToFacility, 70), UNLocode: s.To, Country: s.To[:2]}
+	var containers []edi.Container
+	for _, e := range req.Equipment {
+		containers = append(containers, edi.Container{SizeType: e.ISOType, Count: e.Count, GrossWeightKg: e.GrossWeightKg})
+	}
+	ack, err := o.EDI.Instruct(ctx, s.Carrier, edi.Instruction{Reference: ref, ShipperRef: req.ShipperRef,
+		Pickup: pickup, Delivery: delivery, Containers: containers,
+		CargoDescription: clip(req.Cargo.Description, 70), HSCode: req.Cargo.HSCode})
+	if err != nil {
+		return nil, fmt.Errorf("forwarder: leg %d with %s: %w", i+1, s.Name, err)
+	}
+	if !ack.Accepted {
+		return nil, fmt.Errorf("%w: leg %d, %s didn't accept the instruction", ErrLegRefused, i+1, s.Name)
+	}
+	leg.Ref, leg.CarrierRef, leg.Documents, leg.Unsigned = ref, ack.CarrierRef, ack.TransportDocuments, true
+	leg.Departure, leg.Arrival = stamp(ready), stamp(ready.Add(p.Transit))
+	return leg, nil
 }
 
 func totalContainers(eq []intents.Equipment) int {

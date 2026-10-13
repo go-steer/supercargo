@@ -370,6 +370,8 @@ keys: [{ kid: mf-1, privateKeyFile: /keys/mf-1.pem }]
 tls: { mode: local-ca, certFile: /certs/mf.pem, keyFile: /certs/mf-key.pem, caFile: /certs/ca.pem }
 forwarder:
   refPrefix: MF
+  edi:
+    - { carrier: polder-haulage.example, id: polder-haulage.example, outbox: /var/edi/to-polder, inbox: /var/edi/from-polder, zone: Europe/Amsterdam, transit: 3h }
   lanes:
     - from: NLTLB
       to: BRSAO
@@ -386,19 +388,26 @@ forwarder:
 		t.Errorf("%+v", l)
 	}
 	for name, edit := range map[string][2]string{
-		"a bad from":               {"from: NLTLB", "from: Tilburg"},
-		"from is to":               {"from: NLTLB", "from: BRSAO"},
-		"an air leg":               {"mode: ocean", "mode: air"},
-		"an EDI ship":              {"name: Ocean Blue, to: BRSSZ", "name: Ocean Blue, edi: true, to: BRSSZ"},
-		"a carrier not a domain":   {"carrier: ocean-blue.example", "carrier: Ocean Blue"},
-		"itself as a carrier":      {"carrier: ocean-blue.example", "carrier: meridian-forwarding.example"},
-		"no name":                  {"name: Ocean Blue, ", ""},
-		"a name with a bidi char":  {"name: Ocean Blue", "name: \"Ocean\u202eBlue\""},
-		"a ship going nowhere":     {"to: BRSSZ, facility", "to: NLRTM, facility"},
-		"ending elsewhere":         {"name: Serra Transportes, to: BRSAO", "name: Serra Transportes, to: BRSPO"},
-		"a handover with no place": {", facility: Santos Brasil Tecon terminal", ""},
-		"a facility at the end":    {"name: Serra Transportes, to: BRSAO", "name: Serra Transportes, to: BRSAO, facility: DC"},
-		"a second lane, same ends": {"forwarder:\n  refPrefix: MF\n  lanes:\n", "forwarder:\n  refPrefix: MF\n  lanes:\n    - { from: NLTLB, to: BRSAO, legs: [{ mode: road, carrier: t.example, name: T, to: BRSAO }] }\n"},
+		"a bad from":                  {"from: NLTLB", "from: Tilburg"},
+		"from is to":                  {"from: NLTLB", "from: BRSAO"},
+		"an air leg":                  {"mode: ocean", "mode: air"},
+		"an EDI ship":                 {"name: Ocean Blue, to: BRSSZ", "name: Ocean Blue, edi: true, to: BRSSZ"},
+		"a carrier not a domain":      {"carrier: ocean-blue.example", "carrier: Ocean Blue"},
+		"itself as a carrier":         {"carrier: ocean-blue.example", "carrier: meridian-forwarding.example"},
+		"no name":                     {"name: Ocean Blue, ", ""},
+		"a name with a bidi char":     {"name: Ocean Blue", "name: \"Ocean\u202eBlue\""},
+		"a ship going nowhere":        {"to: BRSSZ, facility", "to: NLRTM, facility"},
+		"ending elsewhere":            {"name: Serra Transportes, to: BRSAO", "name: Serra Transportes, to: BRSPO"},
+		"a handover with no place":    {", facility: Santos Brasil Tecon terminal", ""},
+		"an EDI leg with no partner":  {"carrier: polder-haulage.example, id:", "carrier: other-haulage.example, id:"},
+		"a second EDI entry":          {"  edi:\n", "  edi:\n    - { carrier: polder-haulage.example, id: p, outbox: /a, inbox: /b, transit: 3h }\n"},
+		"an EDI carrier not a domain": {"carrier: polder-haulage.example, id:", "carrier: Polder, id:"},
+		"an EDI id with a space":      {"id: polder-haulage.example", "id: \"polder haulage\""},
+		"one EDI drop":                {"inbox: /var/edi/from-polder", "inbox: /var/edi/to-polder"},
+		"no EDI transit":              {", transit: 3h }", " }"},
+		"an unknown zone":             {"zone: Europe/Amsterdam", "zone: Mars/Olympus"},
+		"a facility at the end":       {"name: Serra Transportes, to: BRSAO", "name: Serra Transportes, to: BRSAO, facility: DC"},
+		"a second lane, same ends":    {"  lanes:\n", "  lanes:\n    - { from: NLTLB, to: BRSAO, legs: [{ mode: road, carrier: t.example, name: T, to: BRSAO }] }\n"},
 	} {
 		in := strings.Replace(base, edit[0], edit[1], 1)
 		if in == base {
