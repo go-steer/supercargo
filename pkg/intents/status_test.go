@@ -140,6 +140,14 @@ func TestBookingRefQueryable(t *testing.T) {
 	if _, err := Decode(env); !errors.Is(err, ErrInvalidBody) {
 		t.Errorf("a booking reference with a dot: %v, want ErrInvalidBody", err)
 	}
+	// A reference starts with a letter or digit.
+	for _, r := range []string{"-OB-1042", "_OB-1042"} {
+		env := confirmation(strings.Replace(confirmationJSON, `"carrier_booking_reference": "OB-BKG-1042"`, `"carrier_booking_reference": "`+r+`"`, 1))
+		env.Header.BookingRef = ptr(r)
+		if _, err := Decode(env); !errors.Is(err, ErrInvalidBody) {
+			t.Errorf("a booking reference starting %q: %v, want ErrInvalidBody", r[:1], err)
+		}
+	}
 }
 
 // TestCurrentLocationFull: the members the ULP payload specification's own
