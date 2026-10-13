@@ -126,6 +126,7 @@ a { color: var(--blue); }
   <span class="title">Door to door through a forwarder</span>
   <span class="dim">a walk-through of the proposal: every message, and who knows what</span>
   <span class="spacer"></span>
+  <select id="region" title="Which journey: the destination region decides the last truck's standards"><option value="sa">Europe → South America</option><option value="na">Europe → North America</option></select>
   <button id="theme" title="Light or dark">◐</button>
 </header>
 <main>
@@ -171,21 +172,66 @@ a { color: var(--blue); }
 <script>
 'use strict';
 
+// ── the regions ─────────────────────────────────────────────────────────
+// One journey, two endings: into South America (the default, for the
+// customers this demo is for) or into North America. Everything that
+// differs between them is here; the scenes below are written once.
+const REGIONS = {
+  sa: {
+    label: 'Europe → South America',
+    dest: { name: 'Serra Transportes', role: 'road · Santos → Cajamar', domain: 'serra-transportes.example', kid: 'st-1' },
+    buyer: { name: 'Cymbal Calçados', role: 'buyer · receiver', domain: 'cymbal-calcados.example', kid: 'cc-1' },
+    buyerParty: { name: 'Cymbal Calçados Ltda', tax_id: { scheme: 'BR:CNPJ', value: '12.345.678/0001-90' } },
+    pod: 'BRSSZ', podName: 'Santos', podTerminal: 'Santos Brasil Tecon terminal',
+    dc: 'Cymbal Calçados DC, Cajamar (SP)', dcLocode: 'BRSAO', dock: 'dock 2', voyage: '07S',
+    arrive: '24', deliver: '26', slot: '27', delayedArrive: '27', newPickup: '27', newDeliver: '29',
+    delayReason: 'berth congestion at Santos', delayWhere: 'waiting for a berth off Santos',
+    roadIntent: 'road.booking.request', roadDialect: { standard: 'ULP_ROAD', version: '0.1' }, roadDialectProposed: true,
+    roadNote: 'Brazil has no ULP road dialect in pf yet, so this is our proposed one: metric, an international address, and a reference to the CT-e, the electronic transport document Brazilian law requires for every road shipment.',
+    fiscal: { type: 'CT-e', access_key: '35261012345678000190570010000012341000012345' },
+    podDoc: 'the CT-e\'s delivery-proof event, referenced by its access key',
+    region: 'Brazil',
+  },
+  na: {
+    label: 'Europe → North America',
+    dest: { name: 'Garden State', role: 'road · Newark port → DC', domain: 'garden-state-drayage.example', kid: 'gs-1' },
+    buyer: { name: 'Cymbal Footwear', role: 'buyer · receiver', domain: 'cymbal-footwear.example', kid: 'cf-1' },
+    buyerParty: { name: 'Cymbal Footwear Inc.', tax_id: { scheme: 'US:EIN', value: '12-3456789' } },
+    pod: 'USEWR', podName: 'Newark', podTerminal: 'Port Newark Container Terminal',
+    dc: 'Cymbal Newark DC', dcLocode: 'USEWR', dock: 'dock 4', voyage: '42W',
+    arrive: '13', deliver: '14', slot: '15', delayedArrive: '16', newPickup: '16', newDeliver: '17',
+    delayReason: 'engine repair, unscheduled call at Halifax', delayWhere: 'at Halifax for an engine repair',
+    roadIntent: 'road.booking.request', roadDialect: { standard: 'DSDC', version: '…' }, roadDialectProposed: false,
+    roadNote: 'In the US the road leg uses pf\'s land dialect: the NMFTA\'s DSDC electronic bill of lading, with the carrier\'s SCAC and USDOT number.',
+    fiscal: null,
+    podDoc: 'the signed proof of delivery',
+    region: 'the US',
+  },
+};
+
 // ── the cast ────────────────────────────────────────────────────────────
+// gs and cf are the destination trucker and the buyer: who they are
+// depends on the region.
 const CO = {
   cs: { name: 'Cymbal Shoes', role: 'seller · shipper', domain: 'cymbal-shoes.example', kid: 'cy-1', x: 60, y: 230 },
   mf: { name: 'Meridian', role: 'forwarder · operator + shipper', domain: 'meridian-forwarding.example', kid: 'mf-1', x: 420, y: 230 },
   ph: { name: 'Polder Haulage', role: 'road · no ULP node: EDI', domain: 'polder-haulage.example', kid: null, legacy: true, x: 820, y: 40 },
-  ob: { name: 'Ocean Blue', role: 'ocean · Rotterdam → Newark', domain: 'ocean-blue.example', kid: 'ob-1', x: 820, y: 230 },
-  gs: { name: 'Garden State', role: 'road · Newark port → DC', domain: 'garden-state-drayage.example', kid: 'gs-1', x: 820, y: 420 },
-  cf: { name: 'Cymbal Footwear', role: 'buyer · receiver', domain: 'cymbal-footwear.example', kid: 'cf-1', x: 420, y: 420 },
+  ob: { name: 'Ocean Blue', role: 'ocean · Rotterdam → …', domain: 'ocean-blue.example', kid: 'ob-1', x: 820, y: 230 },
+  gs: { x: 820, y: 420 },
+  cf: { x: 420, y: 420 },
 };
 const W = 224, H = 74;
 const LANES = [['cs', 'mf'], ['mf', 'ph'], ['mf', 'ob'], ['mf', 'gs'], ['cf', 'mf'], ['gs', 'cf'], ['cs', 'cf', 'delegation']];
 
+function castFor(R) {
+  Object.assign(CO.gs, R.dest);
+  Object.assign(CO.cf, R.buyer);
+  CO.ob.role = `ocean · Rotterdam → ${R.podName}`;
+}
+
 // ── the steps ───────────────────────────────────────────────────────────
 // kind: msg (an envelope from → to), model (a model proposes), human (a
-// person decides), code (deterministic code), unsigned (data with no
+// person decides), code (deterministic code), unsigned (an EDI file, no
 // signature). knows: what each company learns at this step.
 const SCENES = [
   { id: 1, name: 'One order' },
@@ -203,163 +249,169 @@ const env = (from, to, intent, extra, body) => ({
   signedBy: `${CO[from].domain} (kid ${CO[from].kid}, Ed25519)`,
   body,
 });
+const edi = (format, body) => ({ header: { format, transport: 'file drop or VAN', signature: 'none' }, signedBy: 'nobody: an EDI file', body });
 
-const edi = (from, to, format, body) => ({
-  header: { format, transport: 'file drop', signature: 'none' },
-  signedBy: 'nobody: an EDI file',
-  body,
-});
-
-const STEPS = [
+function buildSteps(R) {
+  const G = R.dest.name, B = R.buyer.name, P = R.podName;
+  const cte = R.fiscal ? { fiscal_documents: [R.fiscal] } : {};
+  return [
   // 1. One order
   { scene: 1, kind: 'human', at: 'cs', who: 'Alex at Cymbal Shoes',
-    text: 'Alex asks Cymbal\'s assistant to ship one 40-foot high-cube of sneakers from the Tilburg warehouse to the Newark distribution center, by the 15th, on DAP terms, with Meridian. The assistant drafts the order; Alex reviews it in a dialog and confirms.',
-    why: 'DAP (Delivered At Place) means the seller arranges transport to the buyer\'s door, so Cymbal Shoes is the one hiring a forwarder. Under EXW, Cymbal Footwear would send this order instead; the protocol is the same.',
-    knows: { cs: ['the order it drafted (DAP, deliver by the 15th)', 'private: the launch, and the slot at dock 4 on the 15th'] } },
+    text: `Alex asks Cymbal's assistant to ship one 40-foot high-cube of sneakers from the Tilburg warehouse to ${R.dc}, by the ${R.slot}th, on DAP terms, with Meridian. The assistant drafts the order; Alex reviews it in a dialog and confirms.`,
+    why: `DAP (Delivered At Place) means the seller arranges transport to the buyer's door, so Cymbal Shoes is the one hiring a forwarder. Under EXW, ${B} would send this order instead; the protocol is the same.`,
+    knows: { cs: [`the order it drafted (DAP, deliver by the ${R.slot}th)`, `private: the launch, and the slot at ${R.dock} on the ${R.slot}th`] } },
   { scene: 1, kind: 'msg', from: 'cs', to: 'mf', intent: 'forwarding.request', proposed: true,
     text: 'Cymbal\'s node signs the order and sends it to Meridian. Meridian\'s node fetches Cymbal\'s published keys, verifies the signature, checks it\'s fresh and not a replay, validates the body, and only then records the order.',
-    why: 'The delivery window is part of the contract, so it travels. Why it matters (the launch, the slot) stays with Cymbal.',
+    why: `The delivery window is part of the contract, so it travels; so do the parties' legal identifiers (an EU EORI number for Cymbal Shoes, ${R.buyerParty.tax_id.scheme.split(':')[1]} for ${B}). Why the date matters (the launch, the slot) stays with Cymbal.`,
     env: env('cs', 'mf', 'ulp.forwarding.request', null, {
-      incoterm: 'DAP', place_of_receipt: { type: 'door', address: 'Cymbal EU warehouse, Tilburg', un_location_code: 'NLTLB' },
-      place_of_delivery: { type: 'door', address: 'Cymbal Newark DC, dock 4', un_location_code: 'USEWR' },
+      incoterms: { rule: 'DAP', version: '2020', named_place: R.dc },
+      shipper: { name: 'Cymbal Shoes B.V.', eori: 'NL123456789' }, consignee: R.buyerParty,
+      place_of_receipt: { type: 'door', address: { street: 'Ringbaan Oost 100', postal_code: '5013 CD', locality: 'Tilburg', country: 'NL' }, un_location_code: 'NLTLB' },
+      place_of_delivery: { type: 'door', facility: R.dc, un_location_code: R.dcLocode },
       containers: [{ equipment_size_type: '45G1', count: 1, gross_weight_kg: 12000 }],
-      cargo: { description: 'Footwear (sneakers)', hs_code: '6404' }, delivery_window: { latest: iso(15, '12:00') }, shipper_reference: 'CY-PO-55120' }),
-    knows: { mf: ['order from Cymbal: Tilburg door → Newark DC door, by the 15th'] } },
+      cargo: { description: 'Footwear (sneakers)', hs_code: '6404' }, delivery_window: { latest: iso(R.slot, '12:00') }, shipper_reference: 'CY-PO-55120' }),
+    knows: { mf: [`order from Cymbal: Tilburg door → ${R.dc}, by the ${R.slot}th`] } },
 
   // 2. The forwarder plans
   { scene: 2, kind: 'model', at: 'mf', who: 'Meridian\'s planning assistant',
-    text: 'Meridian\'s planning assistant drafts a plan: Polder Haulage trucks the container from Tilburg to the ECT Delta terminal in Rotterdam, Ocean Blue sails from that terminal to Newark on Aurora 42W, and Garden State Drayage trucks it from Port Newark to the distribution center.',
+    text: `Meridian's planning assistant drafts a plan: Polder Haulage trucks the container from Tilburg to the ECT Delta terminal in Rotterdam, Ocean Blue sails from that terminal to ${P} on Aurora ${R.voyage}, and ${G} trucks it from the ${R.podTerminal} to the distribution center.`,
     why: 'The model sees only what the plan needs (places, cargo, the window), never the order\'s free text, and it can only propose.',
-    knows: { mf: ['draft plan: 3 legs (Polder, Ocean Blue, Garden State)'] } },
+    knows: { mf: [`draft plan: 3 legs (Polder, Ocean Blue, ${G})`] } },
   { scene: 2, kind: 'code', at: 'mf', who: 'Meridian\'s orchestrator',
-    text: 'The orchestrator checks that the plan is continuous: each leg starts at the facility where the previous one ends, and no earlier. Polder delivers to ECT Delta (NLRTM), where Ocean Blue loads; Ocean Blue discharges at Port Newark (USEWR), where Garden State picks up.',
+    text: `The orchestrator checks that the plan is continuous: each leg starts at the facility where the previous one ends, and no earlier. Polder delivers to ECT Delta (NLRTM), where Ocean Blue loads; Ocean Blue discharges at the ${R.podTerminal} (${R.pod}), where ${G} picks up.`,
     why: 'Places are compared by standard identifiers (UN/LOCODE plus the terminal\'s code), the way the industry names them. Coordinates can ride along as metadata; nothing depends on them.' },
   { scene: 2, kind: 'human', at: 'mf', who: 'Mia at Meridian',
     text: 'Mia, an operator at Meridian, reviews the plan: each leg, its carrier, its dates, and exactly what each carrier will be told. She confirms.',
     why: 'Anything with an external effect needs a person. Meridian\'s node builds each leg\'s booking from the confirmed plan with deterministic code.' },
-  { scene: 2, kind: 'unsigned', from: 'mf', to: 'ph', intent: 'EDI 204',
-    text: 'Polder Haulage has no ULP node: it\'s a small trucker that takes load tenders as EDI files. Meridian\'s EDI gateway turns leg 1 into an EDI 204 load tender and drops it in Polder\'s folder.',
-    why: 'Most real journeys include a carrier like this. A forwarder can use ULP with the partners that have it and keep working with the ones that don\'t.',
-    env: edi('mf', 'ph', 'X12 EDI 204 (load tender)', 'ST*204*0001~ B2**POLD**MF00071*PP~ S5*1*LD~ N1*SH*CYMBAL EU WAREHOUSE~ N4*TILBURG**NL~ S5*2*UL~ N1*CN*ECT DELTA TERMINAL~ N4*ROTTERDAM**NL~ SE*9*0001~'),
-    knows: { ph: ['load tender (EDI 204): Tilburg → ECT Delta, Rotterdam'] } },
-  { scene: 2, kind: 'unsigned', from: 'ph', to: 'mf', intent: 'EDI 990',
-    text: 'Polder accepts the tender with an EDI 990.',
-    env: edi('ph', 'mf', 'X12 EDI 990 (response to load tender)', 'ST*990*0001~ B1*POLD*MF00071*20261005*A~ SE*3*0001~'),
-    knows: { mf: ['leg 1 accepted by Polder (EDI 990, unsigned)'] } },
+  { scene: 2, kind: 'unsigned', from: 'mf', to: 'ph', intent: 'EDIFACT IFTMIN',
+    text: 'Polder Haulage has no ULP node: it\'s a small Dutch trucker that takes transport instructions as UN/EDIFACT files, the EDI standard in Europe and South America. Meridian\'s EDI gateway turns leg 1 into an IFTMIN instruction.',
+    why: 'Most real journeys include a carrier like this. A forwarder can use ULP with the partners that have it and keep working with the ones that don\'t. (A US trucker would get an ANSI X12 204 load tender instead; the same gateway speaks both.)',
+    env: edi('UN/EDIFACT IFTMIN (transport instruction)', "UNH+1+IFTMIN:D:04A:UN'BGM+610+MF0007L1+9'TSR+30'RFF+CU:MF-0007-L1'NAD+CZ+++CYMBAL SHOES BV+RINGBAAN OOST 100+TILBURG++5013CD+NL'NAD+CN+++ECT DELTA TERMINAL++ROTTERDAM+++NL'EQD+CN++45G1'UNT+8+1'"),
+    knows: { ph: ['transport instruction (IFTMIN): Tilburg → ECT Delta, Rotterdam'] } },
+  { scene: 2, kind: 'unsigned', from: 'ph', to: 'mf', intent: 'EDIFACT APERAK',
+    text: 'Polder\'s system acknowledges the instruction (APERAK, application acknowledgement) with its own reference, and opens an e-CMR, the electronic road consignment note used across Europe.',
+    env: edi('UN/EDIFACT APERAK (acknowledgement)', "UNH+1+APERAK:D:04A:UN'BGM+305+PH4471+29'RFF+ACW:MF0007L1'RFF+AAS:ECMR-NL-2026-004471'UNT+5+1'"),
+    knows: { mf: ['leg 1 accepted by Polder (APERAK, unsigned); e-CMR ECMR-NL-2026-004471'] } },
   { scene: 2, kind: 'msg', from: 'mf', to: 'ob', intent: 'ocean.booking.request',
     text: 'Leg 2 goes to Ocean Blue: the same ocean booking request the demo sends today, except the shipper is Meridian.',
     why: 'For Ocean Blue nothing changes: it\'s a booking from a shipper it can verify. That Meridian is a forwarder is Meridian\'s business.',
     env: env('mf', 'ob', 'ulp.ocean.booking.request', null, {
-      shipper_name: 'Meridian Forwarding', port_of_loading: 'NLRTM', port_of_discharge: 'USEWR', earliest_departure: '2026-10-07',
+      shipper_name: 'Meridian Forwarding', port_of_loading: 'NLRTM', port_of_discharge: R.pod, earliest_departure: '2026-10-07',
       containers: [{ equipment_size_type: '45G1', count: 1, gross_weight_kg: 12000 }], cargo: { description: 'Footwear (sneakers)', hs_code: '6404' }, shipper_reference: 'MF-0007-L2' }),
-    knows: { ob: ['booking from Meridian: Rotterdam → Newark'] } },
+    knows: { ob: [`booking from Meridian: Rotterdam → ${P}`] } },
   { scene: 2, kind: 'msg', from: 'ob', to: 'mf', intent: 'ocean.booking.confirmation', text: 'Ocean Blue confirms, with the vessel and voyage, and starts the voyage clock.',
-    env: env('ob', 'mf', 'ulp.ocean.booking.confirmation', { bookingRef: 'OB-BKG-1042', dialect: { standard: 'DCSA_OCEAN_CONTAINER', version: '2.0.0' } }, { carrier_booking_reference: 'OB-BKG-1042', vessel: 'Ocean Blue Aurora', voyage: '42W', planned_arrival: iso(13, '08:00') }),
-    knows: { mf: ['leg 2 confirmed: OB-BKG-1042, Aurora 42W, arrives the 13th'] } },
-  { scene: 2, kind: 'msg', from: 'mf', to: 'gs', intent: 'road.booking.request', proposed: true,
-    text: 'Leg 3 goes to Garden State Drayage, which does run a ULP node: pick the container up at Port Newark on the 13th and deliver it to the distribution center.',
-    why: 'Garden State does need the delivery address. It doesn\'t need to know about the ocean leg or the launch.',
-    env: env('mf', 'gs', 'ulp.road.booking.request', { dialect: { standard: 'DSDC', version: '…' } }, {
-      pickup: { facility: 'Port Newark Container Terminal', un_location_code: 'USEWR', earliest: iso(13, '14:00') }, delivery: { address: 'Cymbal Newark DC, dock 4', latest: iso(14, '12:00') }, shipper_reference: 'MF-0007-L3' }),
-    knows: { gs: ['booking from Meridian: Port Newark → Cymbal Newark DC, 13th–14th'] } },
-  { scene: 2, kind: 'msg', from: 'gs', to: 'mf', intent: 'road.booking.confirmation', proposed: true, text: 'Garden State confirms leg 3.',
-    env: env('gs', 'mf', 'ulp.road.booking.confirmation', { bookingRef: 'GS-0913' }, { carrier_booking_reference: 'GS-0913', status: 'confirmed' }),
-    knows: { mf: ['leg 3 confirmed: GS-0913'] } },
+    env: env('ob', 'mf', 'ulp.ocean.booking.confirmation', { bookingRef: 'OB-BKG-1042', dialect: { standard: 'DCSA_OCEAN_CONTAINER', version: '2.0.0' } }, { carrier_booking_reference: 'OB-BKG-1042', vessel: 'Ocean Blue Aurora', voyage: R.voyage, planned_arrival: iso(R.arrive, '08:00') }),
+    knows: { mf: [`leg 2 confirmed: OB-BKG-1042, Aurora ${R.voyage}, arrives ${P} the ${R.arrive}th`] } },
+  { scene: 2, kind: 'msg', from: 'mf', to: 'gs', intent: R.roadIntent, proposed: true,
+    text: `Leg 3 goes to ${G}, which runs a ULP node: pick the container up at the ${R.podTerminal} on the ${R.arrive}th and deliver it to the distribution center.`,
+    why: R.roadNote,
+    env: env('mf', 'gs', 'ulp.' + R.roadIntent, { dialect: R.roadDialect }, Object.assign({
+      pickup: { facility: R.podTerminal, un_location_code: R.pod, earliest: iso(R.arrive, '14:00') }, delivery: { facility: R.dc, latest: iso(R.deliver, '12:00') },
+      containers: [{ equipment_size_type: '45G1', count: 1, gross_weight_kg: 12000 }], shipper_reference: 'MF-0007-L3' })),
+    proposedField: R.roadDialectProposed ? 'dialect' : null,
+    knows: { gs: [`booking from Meridian: ${P} terminal → ${R.dc}`] } },
+  { scene: 2, kind: 'msg', from: 'gs', to: 'mf', intent: 'road.booking.confirmation', proposed: true,
+    text: R.fiscal ? `${G} confirms leg 3 and issues the CT-e, the government-validated electronic transport document; the confirmation carries its 44-digit access key, not the fiscal XML.` : `${G} confirms leg 3.`,
+    why: R.fiscal ? 'The ULP signature proves who sent the confirmation; the CT-e is the document the law requires, and anyone with its access key can check it with the tax authority.' : null,
+    env: env('gs', 'mf', 'ulp.road.booking.confirmation', { bookingRef: 'GS-0913' }, Object.assign({ carrier_booking_reference: 'GS-0913', status: 'confirmed' }, cte)),
+    proposedField: R.fiscal ? 'fiscal_documents' : null,
+    knows: { mf: [R.fiscal ? 'leg 3 confirmed: GS-0913, CT-e issued' : 'leg 3 confirmed: GS-0913'] } },
   { scene: 2, kind: 'msg', from: 'mf', to: 'cs', intent: 'forwarding.confirmation', proposed: true,
-    text: 'Meridian confirms Cymbal\'s order with its own reference and the planned journey: truck, ship, truck, delivery on the 14th.',
+    text: `Meridian confirms Cymbal's order with its own reference and the planned journey: truck, ship, truck, delivery on the ${R.deliver}th.`,
     why: 'Cymbal gets one reference and one journey. Which carriers do the legs is shown, but Cymbal has no relationship with them and doesn\'t need one.',
-    env: env('mf', 'cs', 'ulp.forwarding.confirmation', { bookingRef: 'MF-0007' }, { forwarder_reference: 'MF-0007', legs: [{ mode: 'road', from: 'NLTLB', to: 'NLRTM' }, { mode: 'ocean', from: 'NLRTM', to: 'USEWR', vessel: 'Ocean Blue Aurora 42W' }, { mode: 'road', from: 'USEWR', to: 'Cymbal Newark DC' }], planned_delivery: iso(14, '10:00') }),
-    knows: { cs: ['order confirmed: MF-0007, delivery planned the 14th'] } },
+    env: env('mf', 'cs', 'ulp.forwarding.confirmation', { bookingRef: 'MF-0007' }, { forwarder_reference: 'MF-0007', legs: [{ mode: 'road', from: 'NLTLB', to: 'NLRTM' }, { mode: 'ocean', from: 'NLRTM', to: R.pod, vessel: `Ocean Blue Aurora ${R.voyage}` }, { mode: 'road', from: R.pod, to: R.dcLocode }], planned_delivery: iso(R.deliver, '10:00') }),
+    knows: { cs: [`order confirmed: MF-0007, delivery planned the ${R.deliver}th`] } },
 
   // 3. The journey runs
-  { scene: 3, kind: 'unsigned', from: 'ph', to: 'mf', intent: 'EDI 214',
-    text: 'Polder\'s truck leaves the Tilburg warehouse. Polder\'s dispatch system drops an EDI 214 status file: AF, departed the pickup location.',
-    env: edi('ph', 'mf', 'X12 EDI 214 (shipment status)', 'ST*214*0001~ B10*PH4471*MF00071*POLD~ AT7*AF*NS***20261006*0800~ MS1*TILBURG**NL~ SE*5*0001~'),
-    knows: { mf: ['leg 1: departed Tilburg (EDI 214, unsigned)'] } },
+  { scene: 3, kind: 'unsigned', from: 'ph', to: 'mf', intent: 'EDIFACT IFTSTA',
+    text: 'Polder\'s truck leaves the Tilburg warehouse. Polder\'s dispatch system sends an IFTSTA status message: picked up.',
+    env: edi('UN/EDIFACT IFTSTA (status)', "UNH+1+IFTSTA:D:04A:UN'BGM+77+PH4471-1+9'RFF+CU:MF-0007-L1'STS++21'DTM+334:202610060800:203'LOC+175+NLTLB'EQD+CN+OCBU0000004'UNT+7+1'"),
+    knows: { mf: ['leg 1: picked up, Tilburg (IFTSTA, unsigned)'] } },
   { scene: 3, kind: 'code', at: 'mf', who: 'Meridian\'s EDI gateway and orchestrator',
-    text: 'The gateway turns the EDI status into the same track & trace event every other carrier sends: AF becomes DEPA, and Polder\'s codes become the plan\'s identifiers. The orchestrator maps it to leg 1 of order MF-0007.',
-    why: 'Honest provenance: no carrier signed this. Meridian vouches for it, and says so.' },
+    text: 'The gateway maps the IFTSTA to the same track & trace event every ULP carrier sends: the status becomes DEPA, the location becomes the UN/LOCODE the plan uses, the container its ISO 6346 number. The orchestrator files it under leg 1 of order MF-0007.',
+    why: 'Honest provenance: no carrier signed this. Meridian vouches for it, and says so. (An X12 214 from a US trucker maps to the same event, the same way.)',
+    env: { header: { produced_by: 'Meridian\'s EDI gateway', from: 'IFTSTA PH4471-1', signature: 'none (internal record)' }, signedBy: 'nobody yet: Meridian signs what it sends on', body: { event_id: 'MF-LEG1-01', event_type: 'TRANSPORT', event_type_code: 'DEPA', event_classifier_code: 'ACT', event_date_time: iso('06', '08:00'), un_location_code: 'NLTLB', equipment_reference: 'OCBU0000004', description: 'Departed the pickup location (from IFTSTA)' } } },
   { scene: 3, kind: 'msg', from: 'mf', to: 'cs', intent: 'tnt.event',
     text: 'Meridian tells Cymbal, under its own signature, and says this came from an unsigned EDI message, not a carrier\'s signed event.',
     why: 'Cymbal trusts its counterparty, Meridian, as in forwarding today, and can see which parts of its journey rest on signed evidence and which on Meridian\'s word.',
-    env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007', dialect: { standard: 'DCSA_TNT', version: '2.2.0' } }, { event_id: 'MF-EV-01', event_type_code: 'DEPA', event_classifier_code: 'ACT', un_location_code: 'NLTLB', description: 'Picked up in Tilburg (leg 1, road)', derived_from: [{ source: 'EDI 214 from Polder Haulage', control_number: '0001', signed: false }] }),
+    env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007', dialect: { standard: 'DCSA_TNT', version: '2.2.0' } }, { event_id: 'MF-EV-01', event_type_code: 'DEPA', event_classifier_code: 'ACT', un_location_code: 'NLTLB', description: 'Picked up in Tilburg (leg 1, road)', derived_from: [{ source: 'EDIFACT IFTSTA from Polder Haulage', reference: 'PH4471-1', signed: false }] }),
     proposedField: 'derived_from',
     knows: { cs: ['journey: picked up, Tilburg (unsigned source, vouched by Meridian)'] } },
-  { scene: 3, kind: 'unsigned', from: 'ph', to: 'mf', intent: 'EDI 214',
-    text: 'Polder delivers the container to the ECT Delta terminal: another EDI 214, D1, delivered.',
-    env: edi('ph', 'mf', 'X12 EDI 214 (shipment status)', 'ST*214*0002~ B10*PH4471*MF00071*POLD~ AT7*D1*NS***20261007*0930~ MS1*ROTTERDAM**NL~ N1*CN*ECT DELTA TERMINAL~ SE*6*0002~'),
-    knows: { mf: ['leg 1: delivered to ECT Delta (EDI 214, unsigned)'] } },
+  { scene: 3, kind: 'unsigned', from: 'ph', to: 'mf', intent: 'EDIFACT IFTSTA',
+    text: 'Polder delivers the container to the ECT Delta terminal: another IFTSTA, delivered, with the e-CMR reference.',
+    env: edi('UN/EDIFACT IFTSTA (status)', "UNH+1+IFTSTA:D:04A:UN'BGM+77+PH4471-2+9'RFF+AAS:ECMR-NL-2026-004471'STS++21'DTM+334:202610070930:203'LOC+175+NLRTM'NAD+CN+++ECT DELTA TERMINAL'UNT+8+1'"),
+    knows: { mf: ['leg 1: delivered to ECT Delta (IFTSTA, unsigned)'] } },
   { scene: 3, kind: 'code', at: 'mf', who: 'Meridian\'s orchestrator',
-    text: 'Handoff check: leg 1 ended at ECT Delta, Rotterdam, at 09:30 on the 7th; leg 2 loads at ECT Delta from noon. Same facility, in time: the journey is continuous.',
+    text: 'Handoff check: leg 1 ended at ECT Delta, Rotterdam, at 09:30 on the 7th; leg 2 loads at ECT Delta from noon. Same facility, in time: the journey is continuous. The gate-in becomes an EQUIPMENT GTIN event at the terminal.',
     why: 'Had Polder delivered to another terminal, or too late for the sailing, a person at Meridian would get an alert now, before anyone else is told anything.' },
   { scene: 3, kind: 'msg', from: 'ob', to: 'mf', intent: 'tnt.event', text: 'Ocean Blue loads the container on the Aurora, which departs Rotterdam. This one is a signed ULP event.',
-    env: env('ob', 'mf', 'ulp.tnt.event', { bookingRef: 'OB-BKG-1042' }, { event_id: 'EV-000003', event_type_code: 'DEPA', event_classifier_code: 'ACT', un_location_code: 'NLRTM', description: 'Ocean Blue Aurora 42W departed Port of Rotterdam' }),
+    env: env('ob', 'mf', 'ulp.tnt.event', { bookingRef: 'OB-BKG-1042' }, { event_id: 'EV-000003', event_type_code: 'DEPA', event_classifier_code: 'ACT', un_location_code: 'NLRTM', description: `Ocean Blue Aurora ${R.voyage} departed Port of Rotterdam` }),
     knows: { mf: ['leg 2: departed Rotterdam (EV-000003, signed)'] } },
   { scene: 3, kind: 'msg', from: 'mf', to: 'cs', intent: 'tnt.event',
     text: 'Cymbal\'s journey now shows the container on the water: one journey, three legs, each mark saying where it came from.',
-    env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007' }, { event_id: 'MF-EV-03', event_type_code: 'DEPA', un_location_code: 'NLRTM', description: 'Departed Rotterdam on Ocean Blue Aurora 42W (leg 2, ocean)', derived_from: ['EV-000003'] }),
-    knows: { cs: ['journey: at sea on Aurora 42W, arriving Newark the 13th'] } },
+    env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007' }, { event_id: 'MF-EV-03', event_type_code: 'DEPA', un_location_code: 'NLRTM', description: `Departed Rotterdam on Ocean Blue Aurora ${R.voyage} (leg 2, ocean)`, derived_from: ['EV-000003'] }),
+    knows: { cs: [`journey: at sea on Aurora ${R.voyage}, arriving ${P} the ${R.arrive}th`] } },
 
   // 4. A delay, a cascade
   { scene: 4, kind: 'msg', from: 'ob', to: 'mf', intent: 'tnt.alert', alert: true,
-    text: 'Ocean Blue reports a 72-hour delay: engine repair, an unscheduled call at Halifax. Arrival in Newark moves from the 13th to the 16th.',
-    env: env('ob', 'mf', 'ulp.tnt.alert', { bookingRef: 'OB-BKG-1042' }, { alert_id: 'AL-000006', severity: 'high', kind: 'delay', reason: 'Engine repair, unscheduled call at Halifax', new_eta: iso(16, '08:00'), causes: ['EV-000005'] }),
-    knows: { mf: ['leg 2 DELAYED: arrives the 16th (AL-000006)'] } },
+    text: `Ocean Blue reports a 72-hour delay: ${R.delayReason}. Arrival in ${P} moves from the ${R.arrive}th to the ${R.delayedArrive}th.`,
+    env: env('ob', 'mf', 'ulp.tnt.alert', { bookingRef: 'OB-BKG-1042' }, { alert_id: 'AL-000006', severity: 'high', kind: 'delay', reason: R.delayReason, new_eta: iso(R.delayedArrive, '08:00'), causes: ['EV-000005'] }),
+    knows: { mf: [`leg 2 DELAYED: arrives the ${R.delayedArrive}th (AL-000006)`] } },
   { scene: 4, kind: 'code', at: 'mf', who: 'Meridian\'s orchestrator',
-    text: 'The orchestrator checks the plan: Garden State\'s pickup at Port Newark is on the 13th, before the ship now arrives. Leg 3 can\'t happen as booked.',
+    text: `The orchestrator checks the plan: ${G}'s pickup at ${P} is on the ${R.arrive}th, before the ship now arrives. Leg 3 can't happen as booked.`,
     why: 'A forwarder\'s real value: seeing the knock-on effect across carriers that don\'t know about each other.' },
   { scene: 4, kind: 'model', at: 'mf', who: 'Meridian\'s planning assistant',
-    text: 'The planning assistant drafts a fix: move the pickup to the 16th at 18:00, delivery to the distribution center on the 17th.' },
+    text: `The planning assistant drafts a fix: move the pickup to the ${R.newPickup}th, delivery to the distribution center on the ${R.newDeliver}th.` },
   { scene: 4, kind: 'human', at: 'mf', who: 'Mia at Meridian', text: 'Mia sees the cascade and the proposed amendment, and confirms it.' },
   { scene: 4, kind: 'msg', from: 'mf', to: 'gs', intent: 'road.booking.amendment', proposed: true,
-    text: 'Meridian sends Garden State an amendment to leg 3. Garden State never learns why: only that the pickup moved.',
-    env: env('mf', 'gs', 'ulp.road.booking.amendment', { bookingRef: 'GS-0913' }, { pickup: { earliest: iso(16, '18:00') }, delivery: { latest: iso(17, '12:00') } }),
-    knows: { gs: ['amendment: pickup moved to the 16th, 18:00'] } },
-  { scene: 4, kind: 'msg', from: 'gs', to: 'mf', intent: 'road.booking.confirmation', proposed: true, text: 'Garden State confirms the new times.',
+    text: `Meridian sends ${G} an amendment to leg 3. ${G} never learns why: only that the pickup moved.`,
+    env: env('mf', 'gs', 'ulp.road.booking.amendment', { bookingRef: 'GS-0913' }, { pickup: { earliest: iso(R.newPickup, '18:00') }, delivery: { latest: iso(R.newDeliver, '12:00') } }),
+    knows: { gs: [`amendment: pickup moved to the ${R.newPickup}th, 18:00`] } },
+  { scene: 4, kind: 'msg', from: 'gs', to: 'mf', intent: 'road.booking.confirmation', proposed: true, text: `${G} confirms the new times.`,
     env: env('gs', 'mf', 'ulp.road.booking.confirmation', { bookingRef: 'GS-0913' }, { carrier_booking_reference: 'GS-0913', status: 'amended' }),
-    knows: { mf: ['leg 3 re-timed: pickup the 16th, delivery the 17th'] } },
+    knows: { mf: [`leg 3 re-timed: pickup the ${R.newPickup}th, delivery the ${R.newDeliver}th`] } },
   { scene: 4, kind: 'msg', from: 'mf', to: 'cs', intent: 'tnt.alert', alert: true,
-    text: 'Cymbal gets one alert from Meridian, about its order: delivery moves from the 14th to the 17th, because of a delay at sea.',
+    text: `Cymbal gets one alert from Meridian, about its order: delivery moves from the ${R.deliver}th to the ${R.newDeliver}th, because of a delay at sea.`,
     why: 'One alert about the order, not three carriers\' worth of noise, and it says which carrier alert it came from.',
-    env: env('mf', 'cs', 'ulp.tnt.alert', { bookingRef: 'MF-0007' }, { alert_id: 'MF-AL-01', severity: 'high', kind: 'delay', reason: 'Vessel delayed 72 h (engine repair, Halifax); last truck re-timed', new_delivery: iso(17, '12:00'), derived_from: ['AL-000006'] }),
-    knows: { cs: ['ALERT: delivery moves to the 17th (MF-AL-01)'] } },
+    env: env('mf', 'cs', 'ulp.tnt.alert', { bookingRef: 'MF-0007' }, { alert_id: 'MF-AL-01', severity: 'high', kind: 'delay', reason: `Vessel delayed 72 h (${R.delayReason}); last truck re-timed`, new_delivery: iso(R.newDeliver, '12:00'), derived_from: ['AL-000006'] }),
+    knows: { cs: [`ALERT: delivery moves to the ${R.newDeliver}th (MF-AL-01)`] } },
   { scene: 4, kind: 'model', at: 'cs', who: 'Cymbal\'s alert summarizer',
-    text: 'Cymbal\'s own model explains what it means for Cymbal: the slot at dock 4 on the 15th is missed, and the launch stock is at risk. It suggests rebooking the slot or air-freighting part of the order.',
+    text: `Cymbal's own model explains what it means for Cymbal: the slot at ${R.dock} on the ${R.slot}th is missed, and the launch stock is at risk. It suggests rebooking the slot or air-freighting part of the order.`,
     why: 'The private context (the launch, the slot) is used by Cymbal\'s model, inside Cymbal. Meridian never saw it.' },
 
   // 5. The receiver joins
-  { scene: 5, kind: 'human', at: 'cs', who: 'Alex at Cymbal Shoes', text: 'Alex lets Cymbal Footwear track the order, and confirms.' },
+  { scene: 5, kind: 'human', at: 'cs', who: 'Alex at Cymbal Shoes', text: `Alex lets ${B} track the order, and confirms.` },
   { scene: 5, kind: 'msg', from: 'cs', to: 'cf', intent: 'delegation', lane: 'delegation',
-    text: 'Cymbal Shoes signs a delegation: Cymbal Footwear may read tracking for MF-0007 from Meridian, for 30 days.',
+    text: `Cymbal Shoes signs a delegation: ${B} may read tracking for MF-0007 from Meridian, for 30 days.`,
     why: 'This is milestone 7, already designed: a receiver joins without a contract with the forwarder.',
-    env: { header: { typ: 'ulp-delegation+jws', issuer: 'cymbal-shoes.example', audience: 'meridian-forwarding.example', grantee: 'cymbal-footwear.example', scope: ['tnt:read'], bookingRef: 'MF-0007', expires: '2026-11-11' }, signedBy: 'cymbal-shoes.example (kid cy-1, Ed25519)', body: null },
+    env: { header: { typ: 'ulp-delegation+jws', issuer: 'cymbal-shoes.example', audience: 'meridian-forwarding.example', grantee: R.buyer.domain, scope: ['tnt:read'], bookingRef: 'MF-0007', expires: '2026-11-11' }, signedBy: 'cymbal-shoes.example (kid cy-1, Ed25519)', body: null },
     knows: { cf: ['delegation: may track MF-0007 at Meridian'] } },
   { scene: 5, kind: 'msg', from: 'cf', to: 'mf', intent: 'tnt.inquiry',
-    text: 'Cymbal Footwear\'s node asks Meridian where the container is, with the delegation attached. Meridian checks both signatures, the scope, the order and the expiry, and answers.',
-    env: env('cf', 'mf', 'ulp.tnt.inquiry', { bookingRef: 'MF-0007', attachments: { delegation: '…' } }, { question: 'When will the container reach our Newark DC?' }),
-    knows: { mf: ['question from Cymbal Footwear, delegated by Cymbal Shoes'] } },
+    text: `${B}'s node asks Meridian where the container is, with the delegation attached. Meridian checks both signatures, the scope, the order and the expiry, and answers.`,
+    env: env('cf', 'mf', 'ulp.tnt.inquiry', { bookingRef: 'MF-0007', attachments: { delegation: '…' } }, { question: 'When will the container reach our distribution center?' }),
+    knows: { mf: [`question from ${B}, delegated by Cymbal Shoes`] } },
   { scene: 5, kind: 'msg', from: 'mf', to: 'cf', intent: 'tnt.inquiry.response',
-    text: 'Meridian answers from the order\'s journey: on the 17th, citing the events it derived that from.',
-    env: env('mf', 'cf', 'ulp.tnt.inquiry.response', { bookingRef: 'MF-0007', inReplyTo: '…' }, { answer: 'Delivery to Cymbal Newark DC is planned for the 17th by 12:00, after a 72-hour vessel delay.', sources: ['MF-AL-01', 'MF-EV-03'] }),
-    knows: { cf: ['answer: delivery on the 17th by 12:00'] } },
+    text: `Meridian answers from the order's journey: on the ${R.newDeliver}th, citing the events it derived that from.`,
+    env: env('mf', 'cf', 'ulp.tnt.inquiry.response', { bookingRef: 'MF-0007', inReplyTo: '…' }, { answer: `Delivery to ${R.dc} is planned for the ${R.newDeliver}th by 12:00, after a 72-hour vessel delay.`, sources: ['MF-AL-01', 'MF-EV-03'] }),
+    knows: { cf: [`answer: delivery on the ${R.newDeliver}th by 12:00`] } },
 
   // 6. Delivery
   { scene: 6, kind: 'msg', from: 'gs', to: 'cf', intent: 'pod.request', proposed: true,
-    text: 'Garden State\'s truck is at dock 4. Garden State signs a proof of delivery and sends it to Cymbal Footwear, the consignee.',
-    env: env('gs', 'cf', 'ulp.pod.request', { bookingRef: 'GS-0913' }, { container: 'OCBU0000004', delivered_at: iso(17, '09:40'), place: 'Cymbal Newark DC, dock 4', seal_intact: true }),
-    knows: { cf: ['proof of delivery from Garden State (signed)'] } },
-  { scene: 6, kind: 'human', at: 'cf', who: 'The dock team at Cymbal Footwear', text: 'A person at the dock checks the container and the seal, and confirms receipt.' },
+    text: `${G}'s truck is at ${R.dock}. ${G} signs a proof of delivery and sends it to ${B}, the consignee.`,
+    env: env('gs', 'cf', 'ulp.pod.request', { bookingRef: 'GS-0913' }, Object.assign({ container: 'OCBU0000004', delivered_at: iso(R.newDeliver, '09:40'), place: `${R.dc}, ${R.dock}`, seal_intact: true }, cte)),
+    knows: { cf: [`proof of delivery from ${G} (signed)`] } },
+  { scene: 6, kind: 'human', at: 'cf', who: `The dock team at ${B}`, text: 'A person at the dock checks the container and the seal, and confirms receipt.' },
   { scene: 6, kind: 'msg', from: 'cf', to: 'gs', intent: 'pod.countersign', proposed: true,
-    text: 'Cymbal Footwear countersigns. Each side checks the other\'s signature and keeps the proof.',
+    text: `${B} countersigns. Each side checks the other's signature and keeps the proof.` + (R.fiscal ? ' In Brazil, the carrier also registers the delivery against the CT-e with the tax authority; the ULP proof references it.' : ''),
     why: 'Custody changes hands with both signatures: no dispute about whether, when, or in what state it arrived.',
     env: env('cf', 'gs', 'ulp.pod.countersign', { bookingRef: 'GS-0913', inReplyTo: '…' }, { accepted: true, remarks: '' }),
     knows: { gs: ['co-signed proof of delivery'] } },
-  { scene: 6, kind: 'msg', from: 'gs', to: 'mf', intent: 'tnt.event', text: 'Garden State reports the delivery to Meridian, citing the co-signed proof.',
+  { scene: 6, kind: 'msg', from: 'gs', to: 'mf', intent: 'tnt.event', text: `${G} reports the delivery to Meridian, citing ${R.podDoc}.`,
     env: env('gs', 'mf', 'ulp.tnt.event', { bookingRef: 'GS-0913' }, { event_id: 'GS-EV-04', event_type_code: 'DLV', description: 'Delivered, proof co-signed by the consignee' }),
     knows: { mf: ['leg 3: delivered (GS-EV-04)'] } },
   { scene: 6, kind: 'msg', from: 'mf', to: 'cs', intent: 'tnt.event', text: 'Meridian tells Cymbal Shoes the order is delivered. The journey is complete.',
-    env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007' }, { event_id: 'MF-EV-09', event_type_code: 'DLV', description: 'Delivered to Cymbal Newark DC, dock 4', derived_from: ['GS-EV-04'] }),
-    knows: { cs: ['journey: DELIVERED on the 17th'] } },
+    env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007' }, { event_id: 'MF-EV-09', event_type_code: 'DLV', description: `Delivered to ${R.dc}, ${R.dock}`, derived_from: ['GS-EV-04'] }),
+    knows: { cs: [`journey: DELIVERED on the ${R.newDeliver}th`] } },
 
   // 7. Cold-chain variant (optional)
   { scene: 7, kind: 'msg', from: 'ob', to: 'mf', intent: 'tnt.event',
@@ -380,7 +432,12 @@ const STEPS = [
   { scene: 7, kind: 'model', at: 'cs', who: 'Cymbal\'s alert summarizer',
     text: 'Cymbal\'s own model explains what that means for the product, from Cymbal\'s handling rules: out of range long enough to need a quality check on arrival. It suggests telling the receiving QA team.',
     why: 'What an excursion means for the goods is the cargo owner\'s knowledge, in its private context, like the delivery slot. The carrier and the forwarder report facts; the owner decides.' },
-];
+  ];
+}
+
+let region = new URLSearchParams(location.search).get('region') === 'na' ? 'na' : 'sa';
+castFor(REGIONS[region]);
+let STEPS = buildSteps(REGIONS[region]);
 
 // ── state and rendering ─────────────────────────────────────────────────
 const $ = (id) => document.getElementById(id);
@@ -516,6 +573,15 @@ function renderMessage(step) {
   box.replaceChildren();
   const h = document.createElement('h2');
   box.appendChild(h);
+  if (step.env && step.kind === 'code') {
+    h.textContent = 'What the gateway produced';
+    const note = document.createElement('div');
+    note.append(tag('code', 'INTERNAL RECORD'), document.createTextNode(step.env.signedBy));
+    const pre = document.createElement('pre'); pre.className = 'json';
+    pre.innerHTML = jsonHTML({ header: step.env.header, body: step.env.body }); // constants, escaped by jsonHTML
+    box.append(note, pre);
+    return;
+  }
   if (!step.env) {
     h.textContent = 'No message';
     const p = document.createElement('div'); p.className = 'none'; p.style.color = 'var(--text-dim)';
@@ -605,6 +671,18 @@ $('first').onclick = () => { stop(); go(0, true); };
 $('play').onclick = play;
 $('speed').onchange = () => { if (timer) { stop(); play(); } };
 $('theme').onclick = () => document.body.classList.toggle('light');
+$('region').value = region;
+$('region').onchange = () => {
+  stop();
+  region = $('region').value;
+  castFor(REGIONS[region]);
+  STEPS = buildSteps(REGIONS[region]);
+  const q = new URLSearchParams(location.search);
+  if (region === 'sa') q.delete('region'); else q.set('region', region);
+  history.replaceState(null, '', (q.toString() ? '?' + q : location.pathname) + location.hash);
+  drawStatic();
+  go(Math.min(cur, STEPS.length - 1), false);
+};
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'SELECT') return;
   if (e.key === 'ArrowRight') { stop(); go(cur + 1, true); }
