@@ -67,7 +67,9 @@ type Slot struct {
 }
 
 var (
-	refPattern    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	// refPattern is a shipper reference as a booking request may carry it
+	// (intents' shipper_reference): no dots.
+	refPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 	windowPattern = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$`)
 )
 

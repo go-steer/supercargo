@@ -60,6 +60,10 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Fixed
 
+- References a body carries (booking, event, alert, voyage and shipper references) may no longer contain `.`: a carrier booking reference with a dot was valid in a confirmation but couldn't be asked about in a status request, whose references follow the DCSA query's pattern. The business file's shipper references follow the same rule. An operator's config now refuses a `voyage` or `refPrefix` that would make references the bodies refuse (a dot, a space, a leading `-`): before, the node started and then issued messages its partners rejected.
+
+- A status response's `current_location` now accepts the optional `facility_code`, `lat` and `lng` that the ULP payload specification's own responses carry (validated: a short code, coordinates in range, both or neither); before, such a response was refused as having unknown members. DESIGN §A.5 says the booking request is ULP's own body, reusing pf's member names where pf has them.
+
 - Tool calls whose integers arrive as `1.0` are no longer refused. Gemini Enterprise's MCP client holds every number as a float, so `draft_booking` failed with "containerCount is not an integer". An integer is now any number with no fractional part or an all-zero one, as JSON Schema counts it; nothing that merely rounds to one (`1.0000000000000001`) passes.
 
 - Gemini 3 replies with a short limit (the alert summary's) stopped at the token limit before answering, so the template answered instead: Gemini counts its thinking against the output limit. The adapter now gives thinking its own budget (1024 tokens by default) on top of the reply's limit, and counts thought tokens as output in usage.

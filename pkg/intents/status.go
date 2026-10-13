@@ -100,12 +100,21 @@ type TnTStatus struct {
 	Events                     []TnTEventBody   `json:"events"`
 }
 
-// CurrentLocation is where the shipment last was. pf leaves its shape
-// open; ULP fixes it to the event's location members.
+// CurrentLocation is where the shipment last was: the UN/LOCODE, and
+// optionally the facility (its code and name) and coordinates, the members
+// the ULP payload specification's own status responses fill. Coordinates
+// are informative: nothing in ULP decides on them.
 type CurrentLocation struct {
-	UNLocationCode string `json:"un_location_code"`
-	FacilityName   string `json:"facility_name,omitempty"`
+	UNLocationCode string   `json:"un_location_code"`
+	FacilityCode   string   `json:"facility_code,omitempty"`
+	FacilityName   string   `json:"facility_name,omitempty"`
+	Lat            *float64 `json:"lat,omitempty"`
+	Lng            *float64 `json:"lng,omitempty"`
 }
+
+// facilityCodePattern: a terminal or depot code (an SMDG code, a BIC
+// facility code), short and inert.
+var facilityCodePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`)
 
 var imoPattern = regexp.MustCompile(`^[0-9]{7}$`)
 
@@ -139,6 +148,17 @@ func (b *TnTStatusResponseBody) Validate() error {
 		errs = append(errs, match("tnt_response.current_location.un_location_code", c.UNLocationCode, unLocodePattern))
 		if c.FacilityName != "" {
 			errs = append(errs, text("tnt_response.current_location.facility_name", c.FacilityName, 128, false))
+		}
+		if c.FacilityCode != "" {
+			errs = append(errs, match("tnt_response.current_location.facility_code", c.FacilityCode, facilityCodePattern))
+		}
+		// Both or neither: half a position is no position. NaN fails
+		// every comparison, so it is caught too.
+		switch {
+		case (c.Lat == nil) != (c.Lng == nil):
+			errs = append(errs, errors.New("tnt_response.current_location: lat and lng go together"))
+		case c.Lat != nil && (!(*c.Lat >= -90 && *c.Lat <= 90) || !(*c.Lng >= -180 && *c.Lng <= 180)):
+			errs = append(errs, fmt.Errorf("tnt_response.current_location: %v, %v is not a latitude and longitude", *c.Lat, *c.Lng))
 		}
 	}
 	if r.EstimatedTimeOfArrival != "" {

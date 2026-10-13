@@ -24,10 +24,13 @@ import (
 )
 
 // BookingRequestBody is the body of ulp.ocean.booking.request: what a
-// shipper knows when it asks for a booking, in the ULP payload
-// specification's types and member names. (pf's ulp.ocean.booking body is
-// a DCSA eBL, which names the vessel and the transport document: the
-// carrier's to issue, so it comes back in the confirmation.) The
+// shipper knows when it asks for a booking. It is ULP's own body, in the
+// ULP payload specification's snake_case style, reusing its member names
+// where it has them (port_of_loading, port_of_discharge, shipper_name,
+// equipment_size_type, gross_weight_kg, service_contract_number). (pf's
+// ulp.ocean.booking body is a DCSA eBL, which names the vessel and the
+// transport document: the carrier's to issue, so it comes back in the
+// confirmation.) The
 // shipper's required delivery date is deliberately not part of it: that
 // is private context, used only by the shipper's own model.
 type BookingRequestBody struct {

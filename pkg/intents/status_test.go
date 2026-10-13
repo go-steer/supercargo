@@ -95,7 +95,15 @@ func TestStatusRejects(t *testing.T) {
 		"response: bad port":                {OceanTnTResponse, strings.Replace(statusResponseJSON, `"port_of_loading":"NLRTM"`, `"port_of_loading":"Rotterdam"`, 1)},
 		"response: bad eta":                 {OceanTnTResponse, strings.Replace(statusResponseJSON, `"2026-10-16T08:00:00Z"`, `"soon"`, 1)},
 		"response: bad location":            {OceanTnTResponse, strings.Replace(statusResponseJSON, `{"un_location_code":"NLRTM"`, `{"un_location_code":"x"`, 1)},
-		"response: open location":           {OceanTnTResponse, strings.Replace(statusResponseJSON, `"facility_name":"Port of Rotterdam"}`, `"lat":51.9}`, 1)},
+		"response: open location":           {OceanTnTResponse, strings.Replace(statusResponseJSON, `"facility_name":"Port of Rotterdam"}`, `"altitude":12}`, 1)},
+		"response: bad facility code":       {OceanTnTResponse, strings.Replace(statusResponseJSON, `"facility_name":"Port of Rotterdam"}`, `"facility_code":"DELTA TERM"}`, 1)},
+		"response: long facility code":      {OceanTnTResponse, strings.Replace(statusResponseJSON, `"facility_name":"Port of Rotterdam"}`, `"facility_code":"`+strings.Repeat("A", 33)+`"}`, 1)},
+		"response: lat without lng":         {OceanTnTResponse, strings.Replace(statusResponseJSON, `"facility_name":"Port of Rotterdam"}`, `"lat":51.9}`, 1)},
+		"response: lng without lat":         {OceanTnTResponse, strings.Replace(statusResponseJSON, `"facility_name":"Port of Rotterdam"}`, `"lng":4.1}`, 1)},
+		"response: lat out of range":        {OceanTnTResponse, strings.Replace(statusResponseJSON, `"facility_name":"Port of Rotterdam"}`, `"lat":91,"lng":4.1}`, 1)},
+		"response: lng out of range":        {OceanTnTResponse, strings.Replace(statusResponseJSON, `"facility_name":"Port of Rotterdam"}`, `"lat":51.9,"lng":-180.5}`, 1)},
+		"response: lat as a string":         {OceanTnTResponse, strings.Replace(statusResponseJSON, `"facility_name":"Port of Rotterdam"}`, `"lat":"51.9","lng":4.1}`, 1)},
+		"response: huge lat":                {OceanTnTResponse, strings.Replace(statusResponseJSON, `"facility_name":"Port of Rotterdam"}`, `"lat":1e400,"lng":4.1}`, 1)},
 		"response: no events":               {OceanTnTResponse, `{"tnt_response":{"transport_document_reference":"X","dcsa_status":"BOOKED"}}`},
 		"response: bad event":               {OceanTnTResponse, strings.Replace(statusResponseJSON, `"LOAD"`, `"LOST"`, 1)},
 		"response: repeated event":          {OceanTnTResponse, strings.Replace(statusResponseJSON, eventJSON, eventJSON+","+eventJSON, 1)},
@@ -107,6 +115,50 @@ func TestStatusRejects(t *testing.T) {
 	} {
 		if b, err := Decode(statusEnvelope(c.intent, c.body)); !errors.Is(err, ErrInvalidBody) {
 			t.Errorf("%s: Decode = %+v, %v; want ErrInvalidBody", name, b, err)
+		}
+	}
+}
+
+// TestBookingRefQueryable: every carrier booking reference a confirmation
+// may carry can be asked about in a status request; references we can't
+// query are refused when confirmed, not discovered later.
+func TestBookingRefQueryable(t *testing.T) {
+	for _, r := range []string{"OB-BKG-1042", "OB.BKG.1042", "a", "A_1-b", strings.Repeat("A", 64), "OB/1", "-x", "_x", "x y", "é"} {
+		conf := strings.Replace(confirmationJSON, `"carrier_booking_reference": "OB-BKG-1042"`, `"carrier_booking_reference": "`+r+`"`, 1)
+		env := confirmation(conf)
+		env.Header.BookingRef = ptr(r)
+		_, confErr := Decode(env)
+		req := `{"tnt_request":{"transport_document_reference":"OB-TD-1","carrier_booking_reference":"` + r + `"}}`
+		_, reqErr := Decode(statusEnvelope(OceanTnTRequest, req))
+		if confErr == nil && reqErr != nil {
+			t.Errorf("%q is a valid booking reference in a confirmation but can't be asked about: %v", r, reqErr)
+		}
+	}
+	// The case that differed: a dot.
+	env := confirmation(strings.Replace(confirmationJSON, `"carrier_booking_reference": "OB-BKG-1042"`, `"carrier_booking_reference": "OB.BKG.1042"`, 1))
+	env.Header.BookingRef = ptr("OB.BKG.1042")
+	if _, err := Decode(env); !errors.Is(err, ErrInvalidBody) {
+		t.Errorf("a booking reference with a dot: %v, want ErrInvalidBody", err)
+	}
+}
+
+// TestCurrentLocationFull: the members the ULP payload specification's own
+// status responses fill (facility code, coordinates) are accepted.
+func TestCurrentLocationFull(t *testing.T) {
+	full := strings.Replace(statusResponseJSON, `{"un_location_code":"NLRTM","facility_name":"Port of Rotterdam"}`,
+		`{"un_location_code":"NLRTM","facility_code":"DELTA1","facility_name":"Delta Terminal","lat":51.9563,"lng":4.0461}`, 1)
+	b, err := Decode(statusEnvelope(OceanTnTResponse, full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := b.(*TnTStatusResponseBody).TnTResponse.CurrentLocation
+	if c.FacilityCode != "DELTA1" || c.Lat == nil || *c.Lat != 51.9563 || c.Lng == nil || *c.Lng != 4.0461 {
+		t.Errorf("current_location %+v", c)
+	}
+	for _, edge := range []string{`"lat":90,"lng":180`, `"lat":-90,"lng":-180`, `"lat":0,"lng":0`} {
+		in := strings.Replace(statusResponseJSON, `"facility_name":"Port of Rotterdam"}`, edge+`}`, 1)
+		if _, err := Decode(statusEnvelope(OceanTnTResponse, in)); err != nil {
+			t.Errorf("%s: %v", edge, err)
 		}
 	}
 }
