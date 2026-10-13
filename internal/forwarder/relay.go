@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -61,8 +62,13 @@ type Relay struct {
 	mu        sync.Mutex
 	seq       int
 	relayed   map[legEvent]string // a leg's event or alert → the order's
+	order     []legEvent          // relayed's keys, oldest first
 	proposals map[string]*Proposal
 }
+
+// MaxDelay is the largest delay projected onto an order; a leg's alert
+// claiming more is passed on as an exception, without a projection.
+const MaxDelay = 60 * 24 * time.Hour
 
 type legEvent struct{ carrier, ref, id string }
 
@@ -88,6 +94,8 @@ const (
 	ProposalConfirmed = "confirmed"
 	ProposalRefused   = "refused"
 	ProposalFailed    = "failed"
+	// ProposalSuperseded: a later delay of the same leg made a newer one.
+	ProposalSuperseded = "superseded"
 )
 
 // MaxProposals bounds the proposals kept.
@@ -132,7 +140,9 @@ func (r *Relay) Event(leg store.Booking, e *intents.TnTEventBody) error {
 	l := order.Order.Legs[i]
 	out := *e
 	out.DerivedFrom = []intents.Provenance{{ID: e.EventID, Signed: true}}
-	out.Description = clip(fmt.Sprintf("%s (leg %d, %s)", e.Description, i+1, l.Name), 280)
+	// The leg's part always shows, however long the carrier's text.
+	suffix := fmt.Sprintf(" (leg %d, %s)", i+1, clip(l.Name, 128))
+	out.Description = clip(e.Description, 280-len([]rune(suffix))) + suffix
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out.EventID = r.nextID("EV")
@@ -143,14 +153,22 @@ func (r *Relay) Event(leg store.Booking, e *intents.TnTEventBody) error {
 	return nil
 }
 
+// MaxRelayed bounds the leg events remembered for alerts to cite; the
+// oldest are forgotten first.
+const MaxRelayed = 100_000
+
 func (r *Relay) remember(k legEvent, id string) {
 	if r.relayed == nil {
 		r.relayed = map[legEvent]string{}
 	}
-	if len(r.relayed) >= 100_000 {
-		clear(r.relayed) // bounded: an alert citing a forgotten event isn't relayed
+	if _, ok := r.relayed[k]; !ok {
+		r.order = append(r.order, k)
 	}
 	r.relayed[k] = id
+	for len(r.order) > MaxRelayed {
+		delete(r.relayed, r.order[0])
+		r.order = r.order[1:]
+	}
 }
 
 // Alert projects a leg's delay onto its order. A delay of a leg with
@@ -188,10 +206,20 @@ func (r *Relay) Alert(leg store.Booking, a *intents.TnTAlertBody) error {
 	// confirmed re-timing updates), not the first answer's.
 	delivery, hasDelivery := parseTime(legs[len(legs)-1].Arrival)
 	var proposal *Proposal
+	prevETA, _ := parseTime(a.PreviousETA)
 	switch {
+	case a.Kind == intents.AlertDelay && ok && newETA.Sub(prevETA) > MaxDelay:
+		out.Summary = clip(fmt.Sprintf("Leg %d (%s) reports a delay of over %s; the forwarder is checking it.", i+1, l.Name, hours(MaxDelay)), 280)
+		out.Kind, out.PreviousETA, out.NewETA = intents.AlertException, "", ""
 	case a.Kind != intents.AlertDelay || !ok || !hasDelivery:
 		out.Summary = clip(fmt.Sprintf("Leg %d (%s) reports %s.", i+1, l.Name, kindWords[a.Kind]), 280)
-		out.PreviousETA, out.NewETA = a.PreviousETA, a.NewETA
+		out.PreviousETA, out.NewETA = "", ""
+		if i == len(legs)-1 && a.Kind != intents.AlertException {
+			// The last leg's times are the delivery's.
+			out.PreviousETA, out.NewETA = a.PreviousETA, a.NewETA
+		} else if a.Kind != intents.AlertException {
+			out.Kind = intents.AlertException // a middle leg's times aren't the order's
+		}
 	case i == len(legs)-1 && newETA.After(delivery):
 		// The last leg: its arrival is the delivery.
 		out.Summary = clip(fmt.Sprintf("Leg %d (%s) is delayed; the delivery moves with it.", i+1, l.Name), 280)
@@ -212,14 +240,26 @@ func (r *Relay) Alert(leg store.Booking, a *intents.TnTAlertBody) error {
 			break
 		}
 		shift := ready.Sub(pickup)
-		out.Summary = clip(fmt.Sprintf("Leg %d (%s) is delayed by %s; the delivery is expected later, and leg %d is to be re-timed.",
+		out.Summary = clip(fmt.Sprintf("Leg %d (%s) is delayed; the delivery moves by %s, and leg %d is to be re-timed.",
 			i+1, l.Name, hours(shift), i+2), 280)
 		out.PreviousETA, out.NewETA = stamp(delivery), stamp(delivery.Add(shift))
+		why := fmt.Sprintf("Leg %d (%s) arrives %s later than leg %d planned: collect from %s.", i+1, l.Name, hours(shift), i+2, stamp(ready))
+		amendment := intents.RoadBookingAmendmentBody{BookingRef: next.Ref, Pickup: &intents.Window{Earliest: stamp(ready)}}
+		newArrival := arrive.Add(shift)
+		deadline, hasDeadline := parseTime(order.Order.Request.PlaceOfDelivery.Latest)
+		switch {
+		case i+1 < len(legs)-1 || !hasDeadline:
+			// A middle truck, or no deadline: its delivery window follows.
+			amendment.Delivery = &intents.Window{Latest: stamp(newArrival)}
+		case newArrival.After(deadline):
+			// The last truck can't make the consignee's date any more: the
+			// person decides, knowing it.
+			amendment.Delivery = &intents.Window{Latest: stamp(newArrival)}
+			why += " This misses the order's delivery date (" + order.Order.Request.PlaceOfDelivery.Latest + ")."
+		}
+		// Otherwise the last truck keeps the order's deadline as it is.
 		proposal = &Proposal{OrderRef: order.Ref, Leg: i + 2, Carrier: next.Carrier, LegRef: next.Ref, Status: ProposalOpen,
-			Amendment: intents.RoadBookingAmendmentBody{BookingRef: next.Ref,
-				Pickup:   &intents.Window{Earliest: stamp(ready)},
-				Delivery: &intents.Window{Latest: stamp(arrive.Add(shift))}},
-			Why: clip(fmt.Sprintf("Leg %d (%s) arrives %s later than leg %d planned: collect from %s.", i+1, l.Name, hours(shift), i+2, stamp(ready)), 280)}
+			Amendment: amendment, Why: clip(why, 280)}
 	}
 	out.AlertID = r.nextID("AL")
 	if err := r.Publish.Publish(order, out); err != nil {
@@ -227,16 +267,38 @@ func (r *Relay) Alert(leg store.Booking, a *intents.TnTAlertBody) error {
 	}
 	r.remember(legEvent{leg.Operator, leg.Ref, a.AlertID}, out.AlertID)
 	if proposal != nil {
-		if r.proposals == nil {
-			r.proposals = map[string]*Proposal{}
+		return r.propose(proposal)
+	}
+	return nil
+}
+
+// propose keeps a new proposal: it supersedes the leg's open ones (only
+// the latest projection may be confirmed), closed ones make room, and at
+// most MaxProposals are open. r.mu is held.
+func (r *Relay) propose(p *Proposal) error {
+	if r.proposals == nil {
+		r.proposals = map[string]*Proposal{}
+	}
+	open := 0
+	for id, q := range r.proposals {
+		switch {
+		case q.OrderRef == p.OrderRef && q.Leg == p.Leg && q.Status == ProposalOpen:
+			q.Status, q.Outcome = ProposalSuperseded, "a later delay replaced it"
+		case q.Status == ProposalOpen || q.Status == ProposalSending:
+			open++
+			continue
 		}
-		if len(r.proposals) < MaxProposals {
-			proposal.ID = r.nextID("PR")
-			r.proposals[proposal.ID] = proposal
-			if r.OnProposal != nil {
-				r.OnProposal(*proposal)
-			}
+		if len(r.proposals) >= MaxProposals {
+			delete(r.proposals, id) // closed: make room
 		}
+	}
+	if open >= MaxProposals {
+		return fmt.Errorf("forwarder: %d proposals open; none made for %s leg %d", open, p.OrderRef, p.Leg)
+	}
+	p.ID = r.nextID("PR")
+	r.proposals[p.ID] = p
+	if r.OnProposal != nil {
+		r.OnProposal(*p)
 	}
 	return nil
 }
@@ -257,8 +319,8 @@ func (r *Relay) Proposals(orderRef string) []Proposal {
 
 // Confirm sends a proposal's amendment to the leg's carrier: the step a
 // person at the forwarder confirms; no model calls it. A confirmed new
-// plan replaces the leg's in the order's record; a refusal leaves it, and
-// either way the proposal closes with the outcome.
+// plan replaces the leg's in the order's record; a refusal leaves it and
+// closes the proposal. One that couldn't be sent stays open, to retry.
 func (r *Relay) Confirm(ctx context.Context, id string) (Proposal, error) {
 	r.mu.Lock()
 	p, ok := r.proposals[id]
@@ -278,8 +340,13 @@ func (r *Relay) Confirm(ctx context.Context, id string) (Proposal, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch {
+	case errors.Is(err, shipper.ErrPlanMismatch), errors.Is(err, shipper.ErrLegChanged):
+		// The carrier answered, but its plan wasn't recorded: it may hold
+		// the new one. Closed; the person checks with the carrier.
+		p.Status, p.Outcome = ProposalFailed, err.Error()+" (the carrier may hold the new plan: check with them)"
 	case err != nil:
-		p.Status, p.Outcome = ProposalFailed, err.Error()
+		// Not sent, or refused before any plan: open again, to retry.
+		p.Status, p.Outcome = ProposalOpen, "not sent: "+err.Error()
 	case conf.Status != intents.StatusConfirmed:
 		p.Status, p.Outcome = ProposalRefused, "the carrier kept its plan"
 	default:

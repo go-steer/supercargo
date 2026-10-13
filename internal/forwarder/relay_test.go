@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
@@ -139,7 +140,8 @@ func TestRelayDelay(t *testing.T) {
 		t.Fatalf("proposals %+v; sent %+v", ps, am.got)
 	}
 	p := ps[0]
-	if p.Leg != 2 || p.LegRef != "SR-BKG-0913" || p.Amendment.Pickup.Earliest != "2026-10-27T20:00:00Z" || p.Amendment.Delivery.Latest != "2026-10-29T02:00:00Z" {
+	if p.Leg != 2 || p.LegRef != "SR-BKG-0913" || p.Amendment.Pickup.Earliest != "2026-10-27T20:00:00Z" || p.Amendment.Delivery != nil {
+		// The last truck keeps the order's deadline (the 27th of November), which the new plan meets.
 		t.Errorf("proposal %+v", p)
 	}
 	if len(r.Proposals("MF-9999")) != 0 {
@@ -162,7 +164,7 @@ func TestRelayAlertKinds(t *testing.T) {
 	}{
 		"absorbed by the slack": {shipLeg, delay("AL-1", "EV-1", "2026-10-23T14:00:00Z", "2026-10-23T16:00:00Z"), intents.AlertException, ""},
 		"an early ship": {shipLeg, &intents.TnTAlertBody{AlertID: "AL-2", Kind: intents.AlertEarly, Severity: intents.SeverityLow, Summary: "Fast.",
-			PreviousETA: "2026-10-23T14:00:00Z", NewETA: "2026-10-22T14:00:00Z", CauseEventIDs: []string{"EV-1"}}, intents.AlertEarly, "2026-10-22T14:00:00Z"},
+			PreviousETA: "2026-10-23T14:00:00Z", NewETA: "2026-10-22T14:00:00Z", CauseEventIDs: []string{"EV-1"}}, intents.AlertException, ""}, // a middle leg's times aren't the order's
 		"the truck late":       {truckLeg, delay("AL-3", "EV-2", "2026-10-27T02:00:00Z", "2026-10-27T08:00:00Z"), intents.AlertDelay, "2026-10-27T08:00:00Z"},
 		"the truck still fine": {truckLeg, delay("AL-4", "EV-2", "2026-10-25T02:00:00Z", "2026-10-25T08:00:00Z"), intents.AlertException, ""},
 	} {
@@ -224,8 +226,9 @@ func TestConfirmProposalOutcomes(t *testing.T) {
 		err    error
 		status string
 	}{
-		"refused":     {&intents.RoadBookingConfirmationBody{BookingRef: "SR-BKG-0913", Status: intents.StatusRejected}, nil, ProposalRefused},
-		"unreachable": {nil, errors.New("connection refused"), ProposalFailed},
+		"refused":      {&intents.RoadBookingConfirmationBody{BookingRef: "SR-BKG-0913", Status: intents.StatusRejected}, nil, ProposalRefused},
+		"unreachable":  {nil, errors.New("connection refused"), ProposalOpen},
+		"not recorded": {nil, shipper.ErrLegChanged, ProposalFailed},
 	} {
 		r, _, am := relayed(t)
 		_ = r.Event(shipLeg, event("EV-1", "est"))
@@ -270,11 +273,20 @@ func TestControlProposals(t *testing.T) {
 	}{
 		{http.MethodGet, "/orders/MF-0007/proposals", http.StatusOK},
 		{http.MethodPost, "/proposals/MF-PR-999999/confirm", http.StatusNotFound},
+		{http.MethodPost, "/proposals/" + id + "/confirm", http.StatusBadGateway}, // not sent: open, to retry
 		{http.MethodPost, "/proposals/" + id + "/confirm", http.StatusBadGateway},
-		{http.MethodPost, "/proposals/" + id + "/confirm", http.StatusConflict},
 	} {
 		if code := do(tc.method, tc.path); code != tc.want {
 			t.Errorf("%s %s: HTTP %d, want %d", tc.method, tc.path, code, tc.want)
 		}
+	}
+	am.err = nil
+	am.answer = &intents.RoadBookingConfirmationBody{BookingRef: "SR-BKG-0913", Status: intents.StatusConfirmed,
+		PlannedPickup: "2026-10-27T20:00:00Z", PlannedDelivery: "2026-10-29T02:00:00Z"}
+	if code := do(http.MethodPost, "/proposals/"+id+"/confirm"); code != http.StatusOK {
+		t.Errorf("the retry: HTTP %d", code)
+	}
+	if code := do(http.MethodPost, "/proposals/"+id+"/confirm"); code != http.StatusConflict {
+		t.Errorf("again: HTTP %d", code)
 	}
 }
