@@ -89,9 +89,7 @@ func RegisterBackend(mux *http.ServeMux, pub Publishing, bookings *store.Booking
 		// backend mixing up bookings mustn't tell this customer about
 		// another's container.
 		if e, ok := body.(*intents.TnTEventBody); ok && e.EquipmentReference != "" {
-			if b.Confirmation.EBL == nil || !slices.ContainsFunc(b.Confirmation.EBL.Containers, func(c intents.ShippingContainer) bool {
-				return c.ContainerNumber == e.EquipmentReference
-			}) {
+			if !slices.Contains(b.EquipmentRefs(), e.EquipmentReference) {
 				control.Answer(w, http.StatusBadRequest, EventResponse{Error: "equipment " + e.EquipmentReference + " isn't a container of " + b.Ref})
 				return
 			}
@@ -128,7 +126,7 @@ func RegisterBackend(mux *http.ServeMux, pub Publishing, bookings *store.Booking
 		if onPublish != nil {
 			onPublish(b.Ref, body)
 		}
-		sub := b.Request.Subscription
+		sub := b.Subscription()
 		subscribed := sub != nil && slices.Contains(sub.Intents, req.Intent)
 		control.Answer(w, http.StatusOK, EventResponse{ID: id, Queued: err == nil && subscribed})
 	})

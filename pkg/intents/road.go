@@ -98,14 +98,18 @@ type DocumentRef struct {
 // RoadBookingRequestBody is the body of ulp.road.booking.request: a truck
 // leg, from one stop to another, with the containers it carries.
 type RoadBookingRequestBody struct {
-	ShipperRef   string        `json:"shipper_reference"`
-	Shipper      Party         `json:"shipper"`
-	Consignee    *Party        `json:"consignee,omitempty"`
-	Pickup       Stop          `json:"pickup"`
-	Delivery     Stop          `json:"delivery"`
-	Equipment    []Equipment   `json:"containers"`
-	Cargo        Cargo         `json:"cargo"`
-	Subscription *Subscription `json:"subscription,omitempty"`
+	ShipperRef string      `json:"shipper_reference"`
+	Shipper    Party       `json:"shipper"`
+	Consignee  *Party      `json:"consignee,omitempty"`
+	Pickup     Stop        `json:"pickup"`
+	Delivery   Stop        `json:"delivery"`
+	Equipment  []Equipment `json:"containers"`
+	// EquipmentReferences are the containers to collect (ISO 6346), when
+	// they're known: a truck from a port picks up the container the ship
+	// discharged, by its number.
+	EquipmentReferences []string      `json:"equipment_references,omitempty"`
+	Cargo               Cargo         `json:"cargo"`
+	Subscription        *Subscription `json:"subscription,omitempty"`
 }
 
 // RoadBookingConfirmationBody is the body of ulp.road.booking.confirmation:
@@ -327,8 +331,23 @@ func (b *RoadBookingRequestBody) Validate() error {
 	if len(b.Equipment) == 0 || len(b.Equipment) > MaxEquipmentLines {
 		errs = append(errs, fmt.Errorf("containers has %d lines, want 1-%d", len(b.Equipment), MaxEquipmentLines))
 	}
+	count := 0
 	for i, e := range b.Equipment {
 		errs = append(errs, e.validate(fmt.Sprintf("containers[%d]", i)))
+		count += e.Count
+	}
+	if len(b.EquipmentReferences) > count {
+		errs = append(errs, fmt.Errorf("equipment_references has %d, more than the %d containers", len(b.EquipmentReferences), count))
+	} else {
+		seen := map[string]bool{}
+		for i, ref := range b.EquipmentReferences {
+			at := fmt.Sprintf("equipment_references[%d]", i)
+			errs = append(errs, match(at, ref, containerPattern))
+			if seen[ref] {
+				errs = append(errs, fmt.Errorf("%s: %s twice", at, ref))
+			}
+			seen[ref] = true
+		}
 	}
 	if b.Subscription != nil {
 		errs = append(errs, b.Subscription.validate())

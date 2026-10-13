@@ -156,7 +156,7 @@ func (p *Publisher) Publish(b store.Booking, body intents.Body) error {
 		p.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrDuplicate, id)
 	}
-	sub := b.Request.Subscription
+	sub := b.Subscription()
 	if sub == nil || !slices.Contains(sub.Intents, body.Intent()) {
 		p.mu.Unlock()
 		return nil // recorded; nobody asked for it
@@ -243,7 +243,7 @@ func (p *Publisher) deliver(item push) {
 		h := envelope.NewHeader(item.body.Intent(), p.Domain, b.Shipper, p.Now())
 		ref := b.Ref
 		h.BookingRef = &ref
-		err = p.Pusher.Push(p.ctx, h, item.body, b.Request.Subscription.Endpoint)
+		err = p.Pusher.Push(p.ctx, h, item.body, b.Subscription().Endpoint)
 		if err == nil || !retryable(err) || attempt >= len(p.Backoff) {
 			break
 		}

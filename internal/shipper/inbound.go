@@ -58,7 +58,7 @@ func (in *Inbound) Authorize(_ context.Context, req *node.Request) error {
 	if err != nil {
 		return &node.Rejection{Code: forbidden.Code, Detail: forbidden.Detail, Reason: "no booking " + *h.BookingRef + " with operator " + h.Sender}
 	}
-	sub := b.Request.Subscription
+	sub := b.Subscription()
 	if sub == nil || !slices.Contains(sub.Intents, h.Intent) {
 		return &node.Rejection{Code: forbidden.Code, Detail: forbidden.Detail, Reason: "booking " + b.Ref + " has no subscription to " + h.Intent}
 	}

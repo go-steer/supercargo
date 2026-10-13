@@ -242,6 +242,35 @@ type Operator struct {
 	DepartureHour   int           `yaml:"departureHour"`
 	Transit         time.Duration `yaml:"transit"`
 	Deny            []string      `yaml:"deny"`
+	// Road makes this operator a road carrier too (or only one, without
+	// the ocean fields above): it takes road bookings and amendments.
+	Road *Road `yaml:"road"`
+}
+
+// Ocean reports whether the operator takes ocean bookings: it has the
+// ocean fields, or no road section (and the ocean fields are required).
+func (o *Operator) Ocean() bool {
+	return o.Road == nil || o.Vessel != "" || o.Voyage != "" || o.ContainerPrefix != "" || o.Transit != 0
+}
+
+// Road configures a road carrier's in-memory booking system
+// (operator.TruckBookings).
+type Road struct {
+	// Transit is how long a leg takes from pickup to delivery.
+	Transit time.Duration `yaml:"transit"`
+	// Lead is the least notice before a pickup (default 2h).
+	Lead time.Duration `yaml:"lead"`
+	// CTe issues a mock Brazilian CT-e for each leg.
+	CTe *CTe `yaml:"cte"`
+	// ECMRPrefix numbers an e-CMR for each leg, e.g. "ECMR-NL-2026".
+	ECMRPrefix string `yaml:"ecmrPrefix"`
+}
+
+// CTe is the mock CT-e's issuer: its CNPJ (14 characters, bare; the first
+// 12 may be letters) and its state's IBGE code (11-53; 35 is São Paulo).
+type CTe struct {
+	CNPJ  string `yaml:"cnpj"`
+	State int    `yaml:"state"`
 }
 
 var (
@@ -254,6 +283,7 @@ var (
 	// digit (intents' references).
 	voyageNumber = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 	modelName    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$`)
+	cnpj         = regexp.MustCompile(`^[0-9A-Z]{12}[0-9]{2}$`)
 )
 
 // LLM providers.
@@ -493,19 +523,34 @@ func (c *Config) validate() error {
 		return errors.New("operator: an operator section needs the operator role")
 	case c.Operator != nil:
 		o := c.Operator
-		if o.RefPrefix == "" || len(o.ContainerPrefix) != 4 || o.Vessel == "" || o.Voyage == "" || o.Transit <= 0 ||
-			o.DepartureHour < 0 || o.DepartureHour > 23 {
-			return errors.New("operator: refPrefix, a 4-letter containerPrefix, vessel, voyage, departureHour (0-23) and a positive transit are required")
-		}
 		if !refPrefix.MatchString(o.RefPrefix) {
 			return fmt.Errorf("operator: refPrefix %q must be 1-40 of [A-Za-z0-9-], starting with a letter or digit", o.RefPrefix)
 		}
-		if !voyageNumber.MatchString(o.Voyage) {
-			return fmt.Errorf("operator: voyage %q must be 1-64 of [A-Za-z0-9_-], starting with a letter or digit", o.Voyage)
+		if o.Ocean() {
+			if len(o.ContainerPrefix) != 4 || o.Vessel == "" || o.Voyage == "" || o.Transit <= 0 || o.DepartureHour < 0 || o.DepartureHour > 23 {
+				return errors.New("operator: a 4-letter containerPrefix, vessel, voyage, departureHour (0-23) and a positive transit are required (or, for a road carrier only, none of them and a road section)")
+			}
+			if !voyageNumber.MatchString(o.Voyage) {
+				return fmt.Errorf("operator: voyage %q must be 1-64 of [A-Za-z0-9_-], starting with a letter or digit", o.Voyage)
+			}
+			for _, r := range o.ContainerPrefix {
+				if r < 'A' || r > 'Z' {
+					return fmt.Errorf("operator: containerPrefix %q must be 4 uppercase letters", o.ContainerPrefix)
+				}
+			}
 		}
-		for _, r := range o.ContainerPrefix {
-			if r < 'A' || r > 'Z' {
-				return fmt.Errorf("operator: containerPrefix %q must be 4 uppercase letters", o.ContainerPrefix)
+		if r := o.Road; r != nil {
+			if r.Transit <= 0 || r.Lead < 0 {
+				return errors.New("operator: road needs a positive transit, and a lead that isn't negative")
+			}
+			if r.Lead == 0 {
+				r.Lead = 2 * time.Hour
+			}
+			if r.CTe != nil && (!cnpj.MatchString(r.CTe.CNPJ) || r.CTe.State < 11 || r.CTe.State > 53) {
+				return fmt.Errorf("operator: road.cte needs a bare 14-character CNPJ and a state code 11-53 (got %q, %d)", r.CTe.CNPJ, r.CTe.State)
+			}
+			if r.ECMRPrefix != "" && !refPrefix.MatchString(r.ECMRPrefix) {
+				return fmt.Errorf("operator: road.ecmrPrefix %q must be 1-40 of [A-Za-z0-9-], starting with a letter or digit", r.ECMRPrefix)
 			}
 		}
 		for _, d := range o.Deny {

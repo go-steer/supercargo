@@ -86,12 +86,18 @@ var statuses = map[string]string{
 // Summarize sums up b from its records.
 func Summarize(b Booking, recs []Record) Summary {
 	c := b.Confirmation
+	from, to := b.Places()
 	s := Summary{Operator: b.Operator, Shipper: b.Shipper, Ref: b.Ref, Status: c.Status,
 		TransportDocumentReference: c.TransportDocumentReference(),
-		Origin:                     ports.Location(b.Request.PortOfLoading), Destination: ports.Location(b.Request.PortOfDischarge),
+		Origin:                     ports.Location(from), Destination: ports.Location(to),
 		PlannedDeparture: c.PlannedDeparture, PlannedArrival: c.PlannedArrival, ETA: c.PlannedArrival,
-		Containers: c.EquipmentRefs(), CreatedAt: b.CreatedAt.UTC().Format(time.RFC3339)}
+		Containers: b.EquipmentRefs(), CreatedAt: b.CreatedAt.UTC().Format(time.RFC3339)}
 	s.Vessel, s.Voyage = c.Vessel()
+	if r := b.Road; r != nil {
+		// A truck leg: its pickup and delivery are the departure and arrival.
+		s.Status, s.PlannedDeparture = r.Confirmation.Status, r.Confirmation.PlannedPickup
+		s.PlannedArrival, s.ETA = r.Confirmation.PlannedDelivery, r.Confirmation.PlannedDelivery
+	}
 	if s.Containers == nil {
 		s.Containers = []string{}
 	}

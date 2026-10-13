@@ -15,6 +15,7 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -33,14 +34,66 @@ var (
 	ErrExists = errors.New("store: booking already exists")
 )
 
-// Booking is what a party records about one booking.
+// Booking is what a party records about one booking: an ocean booking
+// (Request and Confirmation), or a truck leg (Road, with Request and
+// Confirmation left empty).
 type Booking struct {
 	Ref          string
 	Shipper      string // domain of the party that requested it
 	Operator     string // domain of the party that confirmed it
 	Request      intents.BookingRequestBody
 	Confirmation intents.BookingConfirmationBody
+	Road         *RoadBooking
 	CreatedAt    time.Time
+}
+
+// RoadBooking is a truck leg's request, as amended, and the carrier's
+// latest confirmation.
+type RoadBooking struct {
+	Request      intents.RoadBookingRequestBody
+	Confirmation intents.RoadBookingConfirmationBody
+}
+
+// Subscription is the booking's subscription, or nil.
+func (b *Booking) Subscription() *intents.Subscription {
+	if b.Road != nil {
+		return b.Road.Request.Subscription
+	}
+	return b.Request.Subscription
+}
+
+// SubscriptionID is the subscription's ID from the confirmation.
+func (b *Booking) SubscriptionID() string {
+	if b.Road != nil {
+		return b.Road.Confirmation.SubscriptionID
+	}
+	return b.Confirmation.SubscriptionID
+}
+
+// EquipmentRefs are the booking's containers: the eBL's, or those a truck
+// leg collects.
+func (b *Booking) EquipmentRefs() []string {
+	if b.Road != nil {
+		return slices.Clone(b.Road.Request.EquipmentReferences)
+	}
+	return b.Confirmation.EquipmentRefs()
+}
+
+// Places are where the booking starts and ends (UN/LOCODEs): the ports of
+// loading and discharge, or a truck leg's pickup and delivery.
+func (b *Booking) Places() (from, to string) {
+	if b.Road != nil {
+		return b.Road.Request.Pickup.UNLocationCode, b.Road.Request.Delivery.UNLocationCode
+	}
+	return b.Request.PortOfLoading, b.Request.PortOfDischarge
+}
+
+// ShipperRef is the shipper's own reference for the booking.
+func (b *Booking) ShipperRef() string {
+	if b.Road != nil {
+		return b.Road.Request.ShipperRef
+	}
+	return b.Request.ShipperRef
 }
 
 // Bookings holds bookings by (operator, reference). A reference is only
@@ -81,6 +134,26 @@ func (s *Bookings) Add(b Booking) error {
 	}
 	s.m[k] = clone(b)
 	return nil
+}
+
+// Update replaces the booking operator holds under ref with what change
+// makes of a copy of it, atomically. If change fails, nothing changes.
+// The operator and reference can't change.
+func (s *Bookings) Update(operator, ref string, change func(*Booking) error) (Booking, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := bookingKey{operator, ref}
+	b, ok := s.m[k]
+	if !ok {
+		return Booking{}, ErrNotFound
+	}
+	b = clone(b)
+	if err := change(&b); err != nil {
+		return Booking{}, err
+	}
+	b.Operator, b.Ref = operator, ref
+	s.m[k] = clone(b)
+	return clone(b), nil
 }
 
 // Get returns the booking operator holds under ref.
@@ -161,5 +234,15 @@ func clone(b Booking) Booking {
 		c.EBL = &e
 	}
 	c.Messages = slices.Clone(c.Messages)
+	if b.Road != nil {
+		// The road bodies nest deeply (parties, addresses, stops); a JSON
+		// round trip copies all of it, and they're JSON by nature.
+		// (Plain structs of strings, numbers and slices: they always
+		// marshal and unmarshal.)
+		raw, _ := json.Marshal(b.Road)
+		r := &RoadBooking{}
+		_ = json.Unmarshal(raw, r)
+		b.Road = r
+	}
 	return b
 }

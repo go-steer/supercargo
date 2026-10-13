@@ -142,7 +142,11 @@ var (
 // events and alerts held.
 func BuildJourney(b Booking, recs []Record) Journey {
 	c := b.Confirmation
-	pol, pod := b.Request.PortOfLoading, b.Request.PortOfDischarge
+	if r := b.Road; r != nil {
+		// A truck leg's plan: from pickup to delivery.
+		c.PlannedDeparture, c.PlannedArrival = r.Confirmation.PlannedPickup, r.Confirmation.PlannedDelivery
+	}
+	pol, pod := b.Places()
 	j := Journey{Booking: b.Ref, Operator: b.Operator, Shipper: b.Shipper, Legs: []Leg{}, Calls: []Call{}, Alerts: []AlertRef{}}
 
 	var events []intents.TnTEventBody
