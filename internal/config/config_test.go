@@ -272,6 +272,51 @@ func TestParseRejects(t *testing.T) {
 	}
 }
 
+// TestRoadCarrier: a road carrier needs only a reference prefix and a road
+// section; an ocean carrier may take road bookings too; the road section's
+// fields are checked.
+func TestRoadCarrier(t *testing.T) {
+	ocean := "  containerPrefix: OCBU\n  vessel: Ocean Blue Aurora\n  voyage: 42W\n  departureHour: 18\n  transit: 134h\n"
+	road := "  road: { transit: 30h, cte: { cnpj: \"12345678000190\", state: 35 } }\n"
+	if !strings.Contains(operatorYAML, ocean) {
+		t.Fatal("fixture changed")
+	}
+	only := strings.Replace(operatorYAML, ocean, road, 1)
+	c, err := Parse([]byte(only))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Operator.Ocean() || c.Operator.Road.Lead != 2*time.Hour || c.Operator.Road.CTe.State != 35 {
+		t.Errorf("road only: ocean %v, %+v", c.Operator.Ocean(), c.Operator.Road)
+	}
+	both, err := Parse([]byte(strings.Replace(operatorYAML, ocean, ocean+"  road: { transit: 30h, lead: 4h, ecmrPrefix: ECMR-NL-2026 }\n", 1)))
+	if err != nil || !both.Operator.Ocean() || both.Operator.Road.Lead != 4*time.Hour {
+		t.Errorf("both: %v", err)
+	}
+	if _, err := Parse([]byte(strings.Replace(operatorYAML, ocean, "", 1))); err == nil {
+		t.Error("an operator with neither ocean fields nor a road section")
+	}
+	for name, edit := range map[string][2]string{
+		"no transit":          {"transit: 30h, ", ""},
+		"a negative lead":     {"transit: 30h", "transit: 30h, lead: -1h"},
+		"a punctuated CNPJ":   {`cnpj: "12345678000190"`, `cnpj: "12.345.678/0001-90"`},
+		"a lowercase CNPJ":    {`cnpj: "12345678000190"`, `cnpj: "12abc34501de35"`},
+		"an unknown state":    {"state: 35", "state: 99"},
+		"a dotted e-CMR":      {"transit: 30h", "transit: 30h, ecmrPrefix: ECMR.NL"},
+		"half an ocean":       {"  road:", "  vessel: Ocean Blue Aurora\n  road:"},
+		"an unknown road key": {"transit: 30h", "transit: 30h, trucks: 4"},
+		"only a departure":    {"  road:", "  departureHour: 18\n  road:"},
+	} {
+		in := strings.Replace(only, edit[0], edit[1], 1)
+		if in == only {
+			t.Fatalf("%s: edit didn't apply", name)
+		}
+		if _, err := Parse([]byte(in)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
 // TestRoles: a node may have several roles; the one-role form still
 // works; each role's section follows its role.
 func TestRoles(t *testing.T) {

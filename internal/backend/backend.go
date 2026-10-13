@@ -48,6 +48,34 @@ type BookingRequest struct {
 	Body     *intents.BookingRequestBody
 }
 
+// RoadBookings is a road carrier's booking decision: its TMS plans a
+// truck leg (assigning the reference, the pickup and delivery times and
+// the documents the law requires) or declines it, and decides whether an
+// amended leg can still be run.
+type RoadBookings interface {
+	Decide(ctx context.Context, r RoadBookingRequest) (*intents.RoadBookingConfirmationBody, error)
+	Amend(ctx context.Context, r RoadAmendment) (*intents.RoadBookingConfirmationBody, error)
+}
+
+// RoadBookingRequest is a verified, authorized road booking request.
+type RoadBookingRequest struct {
+	Shipper  string // the requesting company's domain
+	Operator string // this carrier's domain
+	Body     *intents.RoadBookingRequestBody
+}
+
+// RoadAmendment is a verified, authorized amendment of a booked leg:
+// Request is the leg as amended (the new windows in place), Current the
+// confirmation it replaces. The answer keeps the booking's reference; a
+// rejection leaves the booking as it was.
+type RoadAmendment struct {
+	Shipper   string
+	Operator  string
+	Request   *intents.RoadBookingRequestBody
+	Current   *intents.RoadBookingConfirmationBody
+	Amendment *intents.RoadBookingAmendmentBody
+}
+
 // PrivateContext is a shipper's private context for its own shipments:
 // what its ERP and warehouse systems own (delivery deadlines, receiving
 // slots, notes). It is read by the shipper's own models and guards, and

@@ -640,6 +640,25 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 				LatencyMS: c.Latency.Round(time.Millisecond).Milliseconds(), Outcome: c.Outcome, Reason: c.Reason}})
 		},
 	}
+	if r := o.Road; r != nil {
+		// A road carrier: its booking system plans each leg (in memory
+		// until a backend adapter is configured).
+		prefix := o.RefPrefix
+		if o.Ocean() {
+			// The ocean bookings number from the same prefix in the same
+			// store: the truck legs get their own, so no two collide.
+			prefix += "-R"
+		}
+		trucks := &operator.TruckBookings{RefPrefix: prefix, Transit: r.Transit, Lead: r.Lead, ECMRPrefix: r.ECMRPrefix, Now: time.Now}
+		if r.CTe != nil {
+			trucks.CTe = &operator.CTeIssuer{CNPJ: r.CTe.CNPJ, State: r.CTe.State}
+		}
+		handlers[intents.RoadBookingRequest] = &operator.RoadBookingService{Bookings: a.Carrier.Bookings, Deny: deny, Backend: trucks, Now: time.Now}
+		handlers[intents.RoadBookingAmendment] = &operator.RoadAmendmentService{Bookings: a.Carrier.Bookings, Backend: trucks}
+	}
+	if !o.Ocean() {
+		return nil
+	}
 	handlers[intents.BookingRequest] = &operator.BookingService{
 		Bookings: a.Carrier.Bookings, Deny: deny, RefPrefix: o.RefPrefix, ContainerPrefix: o.ContainerPrefix, Now: time.Now,
 		Voyage: operator.Voyage{Vessel: o.Vessel, Number: o.Voyage, DepartureHour: o.DepartureHour, Transit: o.Transit},

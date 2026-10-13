@@ -370,9 +370,14 @@ type bookingView struct {
 
 func viewBooking(b store.Booking) bookingView {
 	c := b.Confirmation
-	v := bookingView{BookingRef: b.Ref, Status: c.Status, Origin: ports.Location(b.Request.PortOfLoading), Destination: ports.Location(b.Request.PortOfDischarge),
-		PlannedDeparture: c.PlannedDeparture, PlannedArrival: c.PlannedArrival, EquipmentRefs: c.EquipmentRefs(),
+	from, to := b.Places()
+	v := bookingView{BookingRef: b.Ref, Status: c.Status, Origin: ports.Location(from), Destination: ports.Location(to),
+		PlannedDeparture: c.PlannedDeparture, PlannedArrival: c.PlannedArrival, EquipmentRefs: b.EquipmentRefs(),
 		Cargo: b.Request.Cargo.Description}
+	if r := b.Road; r != nil {
+		v.Status, v.PlannedDeparture, v.PlannedArrival = r.Confirmation.Status, r.Confirmation.PlannedPickup, r.Confirmation.PlannedDelivery
+		v.Cargo = r.Request.Cargo.Description
+	}
 	if c.EBL != nil {
 		v.Vessel, v.Voyage = c.EBL.VesselName, c.EBL.VoyageNumber
 	}

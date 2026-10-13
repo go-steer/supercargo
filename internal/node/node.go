@@ -200,6 +200,9 @@ var capabilityTable = []struct {
 	tags    []string
 }{
 	{"dev.ulp.logistics.shipment", []string{intents.BookingRequest}, []string{"ulp:service", "ulp:dcsa:container-booking"}},
+	// Road bookings in ULP_ROAD: the tag names the dialect, as the ocean
+	// ones name DCSA's.
+	{"dev.ulp.logistics.road", []string{intents.RoadBookingRequest, intents.RoadBookingAmendment}, []string{"ulp:service", "ulp:road:booking"}},
 	{"dev.ulp.logistics.tracking", []string{intents.OceanTnTRequest, intents.TnTInquiry}, []string{"ulp:service", "ulp:dcsa:track-and-trace"}},
 	{"dev.ulp.logistics.tracking.subscriber", []string{intents.TnTEvent, intents.TnTAlert}, []string{"ulp:subscriber", "ulp:dcsa:track-and-trace"}},
 }
