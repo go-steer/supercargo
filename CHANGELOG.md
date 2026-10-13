@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- The road simulator: a road carrier's legs play out on the shipment simulator like voyages (per container pick-up, the truck's departure, an estimated delivery, the arrival, per container drop-off), `ulpctl disrupt` delays a truck as it does a ship, and an amendment re-plans the leg (from scratch before the pick-up, the delivery only after it).
+
 - Road carriers (phase 1 of the door-to-door proposal): an operator with a `road` section takes `ulp.road.booking.request` and `.amendment`, planning each truck leg inside its windows with the in-memory `TruckBookings` (or declining it), and issuing a mock CT-e (the real access key layout and check digit, never sent to any authority) or an e-CMR number. Without the ocean fields it is a road carrier only. Only a leg's shipper may amend it; a rejected amendment leaves the plan as it was. Bookings are kept with their kind, so pushes, summaries and journeys work for truck legs too. A road request may name the containers to collect (`equipment_references`), and profiles list the road capability.
 
 - Forwarding orders (a protocol change, phase 1 of `docs/proposals/door-to-door-forwarder.md`): `ulp.forwarding.request` asks a freight forwarder to move containers door to door, with the Incoterms 2020 rule and named place, the parties with their identifiers, and a door (by address) or port terminal at each end with when the cargo is ready and must have arrived. `ulp.forwarding.confirmation` answers with the forwarder's reference and the planned journey: continuous legs by road, ocean or rail, and the planned delivery. The golden vectors gain an order (regenerated), and a test now checks that the vectors showing a protocol body carry one the code accepts.
