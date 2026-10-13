@@ -345,7 +345,7 @@ Fetching and validating a profile:
   - **Keys.** 1–16 of them.
   - **Services.** 1–16, each with at most 64 intents named `ulp.` and dot-separated lowercase words.
   - **Capabilities** (optional, at most 32): a reverse-DNS `name` (unique, at most 128 characters), a `version` (1–32 of `[A-Za-z0-9._-]`), an optional informative `spec_url` (https, at most 256 characters, no query, fragment or spaces; never fetched) and up to 32 unique `tags` of colon-separated lowercase words (at most 64 characters each). They describe; `services[].intents` remain what a party accepts, and nothing is routed or authorized by a capability. Our nodes list `dev.ulp.logistics.shipment` (booking), `dev.ulp.logistics.tracking` (the status pull and the inquiry) and `dev.ulp.logistics.tracking.subscriber` (receiving events and alerts) for the intents they accept, tagged with their transports.
-  - **`supported_dialects`** (optional, at most 16): header dialect standards (`DCSA_TNT`, `DCSA_OCEAN_CONTAINER`), unique. Our nodes list every dialect they decode. Bodies without a dialect are ULP's own.
+  - **`supported_dialects`** (optional, at most 16): header dialect standards (`DCSA_TNT`, `DCSA_OCEAN_CONTAINER`, `ULP_ROAD`), unique. Our nodes list the ocean dialects they decode, and `ULP_ROAD` only when they take a road intent, so no node claims a road capability it lacks. Bodies without a dialect are ULP's own.
   - **`transports.mcp`** (optional): the MCP endpoint, under the same endpoint rules. Our nodes don't publish one until the MCP binding exists.
   - **What reaches a model.** A partner writes its profile, so the shipper's profile summary (what the assistant's `get_operator_profile` returns) carries at most 32 intents, 8 capabilities and 8 tags per capability.
   - A registry (such as an API hub) may help a deployment find partners, but it is not protocol discovery: the profile at the domain is.
@@ -474,6 +474,8 @@ Where pf's names differ from DCSA's published schemas (DCSA is camelCase, and sp
 | `ulp.tnt.inquiry` | shipper/receiver → operator | **A2A** (`shipment-inquiry` skill) | sync | `ulp.tnt.inquiry.response` |
 | `ulp.ocean.tnt.request` | shipper/receiver → operator | REST | sync | `ulp.ocean.tnt.response` |
 | `ulp.delegation.grant` | shipper → operator (optional pre-notify) | REST | sync | ack |
+| `ulp.road.booking.request` | shipper of a truck leg → road carrier | REST | sync | `ulp.road.booking.confirmation` |
+| `ulp.road.booking.amendment` | shipper of a truck leg → road carrier | REST | sync | `ulp.road.booking.confirmation` |
 | `ulp.error` | any | same as the request | as a response | n/a |
 
 The binding column is the **default**. Every intent is a signed envelope, so any binding can carry any intent ([A.7](#a7-transport-bindings)); a node must accept structured intents over REST and may also accept them over A2A.
@@ -490,6 +492,9 @@ The binding column is the **default**. Every intent is a signed envelope, so any
 | `tnt.inquiry.response` | required | required | absent | absent |
 | `ocean.tnt.request` | required | absent | optional (a receiver's delegation) | required: `DCSA_TNT` `2.2.0` |
 | `ocean.tnt.response` | required | required | absent | required: `DCSA_TNT` `2.2.0` |
+| `road.booking.request` | absent (no booking yet) | absent | absent | required: `ULP_ROAD` `0.1` |
+| `road.booking.confirmation` | required, equal to the body's `carrier_booking_reference` | required | absent | required: `ULP_ROAD` `0.1` |
+| `road.booking.amendment` | required, equal to the body's `carrier_booking_reference` | absent | absent | required: `ULP_ROAD` `0.1` |
 | `ulp.error` | optional | required | absent | absent |
 
 **Body rules.** Bodies are decoded with exact member names: a member the intent doesn't define, a duplicate, or one that differs from a defined member only in case is `invalid_body`. Otherwise one implementation could read `"Question"` where another reads `"question"`.
@@ -625,6 +630,43 @@ The question is one line of free text, at most 1,000 characters. The answer is f
 }
 ```
 The `kid` resolves against the issuer's profile. The distinct `typ` means a delegation can never be accepted as an envelope, or the reverse.
+
+<a id="road-bookings"></a>**Road bookings** (`ulp.road.booking.request`, `.confirmation`, `.amendment`; dialect `ULP_ROAD` `0.1`, ULP's own). A truck leg with a carrier that has a node ([the door-to-door proposal](proposals/door-to-door-forwarder.md)). The ULP payload specification has a road dialect for North America only (NMFTA DSDC, in pounds, with US addresses), so this one is ours: metric, with international addresses and parties, and references to the documents a country's law requires. Its schema URL is this document.
+```json
+{
+  "shipper_reference": "MF-0007-L3",
+  "shipper": { "name": "Meridian Forwarding", "domain": "meridian-forwarding.example",
+               "identifiers": [{ "scheme": "EORI", "value": "NL987654321" }] },
+  "consignee": { "name": "Cymbal Calçados Ltda", "domain": "cymbal-calcados.example",
+                 "identifiers": [{ "scheme": "BR:CNPJ", "value": "12.345.678/0001-90" }],
+                 "address": { "street": "Rodovia Anhanguera, km 33", "postal_code": "07750-000",
+                              "locality": "Cajamar", "region": "SP", "country": "BR" } },
+  "pickup":   { "facility": "Santos Brasil Tecon terminal", "facility_code": "BRSSZTCN",
+                "un_location_code": "BRSSZ", "earliest": "2026-10-24T14:00:00Z" },
+  "delivery": { "facility": "Cymbal Calçados DC, dock 2", "un_location_code": "BRSAO",
+                "latest": "2026-10-26T12:00:00Z" },
+  "containers": [{ "equipment_size_type": "45G1", "count": 1, "gross_weight_kg": 12000 }],
+  "cargo": { "description": "Footwear (sneakers)", "hs_code": "6404" },
+  "subscription": { "endpoint": "https://meridian-forwarding.example/ulp", "intents": ["ulp.tnt.event", "ulp.tnt.alert"] }
+}
+```
+- **Addresses** are international: an ISO 3166-1 alpha-2 `country`, an optional `region` (a state, a Brazilian UF), a `locality`, an optional `postal_code` and the `street`.
+- **Parties** carry identifiers by `scheme`, each at most once: `EORI`, `VAT`, `BR:CNPJ`, `BR:CPF`, `US:EIN`, `GLN`, each checked for its form (at most 8).
+- **Stops** are a facility with its UN/LOCODE (and optionally a terminal or depot code and an address), and a window: `earliest` and `latest`, UTC in whole seconds, not inverted. Pickup and delivery are different places.
+- **The confirmation** carries `carrier_booking_reference`, `status` (`confirmed` with `planned_pickup` and `planned_delivery`, in order; or `rejected` with neither, nor documents or a subscription), `subscription_id`, `messages`, and the references of documents the carrier issued:
+  - `fiscal_documents`: a Brazilian `CT-e` or `MDF-e`, by its 44-digit `access_key` and nothing else;
+  - `transport_documents`: an `e-CMR`, `CMR`, `CRT` or `MIC/DTA`, by its `number` and nothing else;
+  - at most 8 each. **The documents themselves never travel in a ULP body**: they stay where the law or their platform keeps them, and anyone with the reference can look them up there.
+- **The amendment** names the booking and new windows for its `pickup`, its `delivery`, or both, and never a reason: why it moved is the shipper's business. The carrier answers with a confirmation (`inReplyTo` the amendment).
+
+**`derived_from`** (a ULP extension on `ulp.tnt.event` and `ulp.tnt.alert`, optional, at most 20). A party that re-issues events from legs it booked (a forwarder) says where each came from, so its customer can tell evidence from hearsay and ask for it:
+```json
+"derived_from": [
+  { "id": "EV-000003", "signed": true },
+  { "source": "EDIFACT IFTSTA from polder-haulage.example", "reference": "PH4471-1", "signed": false }
+]
+```
+A `signed` source is a ULP event or alert the re-issuer holds and names by `id`; an unsigned one (an EDI message, a phone call) says what it was in `source`, with its own `reference` if it had one. The member sits inside the DCSA event body (as a ULP extension, which pf's models tolerate) rather than in the header, because it describes the event, not the envelope.
 
 **`ulp.error`**
 ```json

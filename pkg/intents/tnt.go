@@ -70,6 +70,48 @@ type TnTEventBody struct {
 	VesselName          string `json:"vessel_name,omitempty"`
 	VoyageNumber        string `json:"voyage_number,omitempty"`
 	EquipmentReference  string `json:"equipment_reference,omitempty"`
+	// DerivedFrom, a ULP extension, says where a forwarder's event came
+	// from: the leg carriers' events it re-issues (DESIGN §A.5).
+	DerivedFrom []Provenance `json:"derived_from,omitempty"`
+}
+
+// Provenance is one source of a re-issued event or alert: a carrier's
+// signed ULP event or alert (by its ID), or an unsigned source the
+// re-issuer vouches for (an EDI message, by its reference), so the
+// receiver can tell evidence from hearsay and ask for it.
+type Provenance struct {
+	ID        string `json:"id,omitempty"`        // the source event's or alert's ID
+	Source    string `json:"source,omitempty"`    // what it was, e.g. "EDIFACT IFTSTA from polder-haulage.example"
+	Reference string `json:"reference,omitempty"` // the source message's own reference
+	Signed    bool   `json:"signed"`              // a signed ULP message the re-issuer holds
+}
+
+// validateProvenance checks a derived_from list: at most MaxCitations; a
+// signed source names its ID; an unsigned one says what it was.
+func validateProvenance(ps []Provenance) error {
+	if len(ps) > MaxCitations {
+		return fmt.Errorf("derived_from has %d sources, over %d", len(ps), MaxCitations)
+	}
+	var errs []error
+	for i, p := range ps {
+		at := fmt.Sprintf("derived_from[%d]", i)
+		if p.ID != "" {
+			errs = append(errs, ref(at+".id", p.ID))
+		}
+		if p.Source != "" {
+			errs = append(errs, text(at+".source", p.Source, 128, false))
+		}
+		if p.Reference != "" {
+			errs = append(errs, match(at+".reference", p.Reference, docNumberPattern))
+		}
+		switch {
+		case p.Signed && p.ID == "":
+			errs = append(errs, fmt.Errorf("%s: a signed source names the event or alert it was (id)", at))
+		case !p.Signed && p.Source == "":
+			errs = append(errs, fmt.Errorf("%s: an unsigned source says what it was (source)", at))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Intent implements Body.
@@ -78,7 +120,7 @@ func (*TnTEventBody) Intent() string { return TnTEvent }
 // Validate implements Body. An equipment event names its container.
 func (b *TnTEventBody) Validate() error {
 	errs := []error{ref("event_id", b.EventID), text("description", b.Description, 280, false),
-		match("un_location_code", b.UNLocationCode, unLocodePattern)}
+		match("un_location_code", b.UNLocationCode, unLocodePattern), validateProvenance(b.DerivedFrom)}
 	codes, ok := eventCodes[b.EventType]
 	switch {
 	case !ok:
@@ -139,6 +181,9 @@ type TnTAlertBody struct {
 	PreviousETA   string   `json:"previous_eta,omitempty"`
 	NewETA        string   `json:"new_eta,omitempty"`
 	CauseEventIDs []string `json:"cause_event_ids"`
+	// DerivedFrom says where a forwarder's alert came from (a leg
+	// carrier's alert), as on events.
+	DerivedFrom []Provenance `json:"derived_from,omitempty"`
 }
 
 // Intent implements Body.
@@ -147,7 +192,7 @@ func (*TnTAlertBody) Intent() string { return TnTAlert }
 // Validate implements Body. A delay or early alert carries both ETAs, in
 // the order its kind says.
 func (b *TnTAlertBody) Validate() error {
-	errs := []error{ref("alert_id", b.AlertID), text("summary", b.Summary, 280, false)}
+	errs := []error{ref("alert_id", b.AlertID), text("summary", b.Summary, 280, false), validateProvenance(b.DerivedFrom)}
 	if !alertKinds[b.Kind] {
 		errs = append(errs, fmt.Errorf("kind: %s is not delay, early or exception", logsafe.Quote(b.Kind)))
 	}

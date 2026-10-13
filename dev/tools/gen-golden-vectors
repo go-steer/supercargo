@@ -136,11 +136,28 @@ def payloads():
                  "vessel_name": None, "voyage_number": None, "equipment_reference": "OCBU1234565"},
         "attachments": {"delegation": None},
     }
-    return request, confirmation, inquiry, event
+    # A truck leg (ULP_ROAD, our own dialect), with Brazilian identifiers,
+    # written as a Brazilian system would (raw UTF-8).
+    road_header = header("ulp.road.booking.request", "meridian-forwarding.example", "serra-transportes.example")
+    road_header["dialect"] = {"standard": "ULP_ROAD", "version": "0.1",
+                             "schema_url": "https://github.com/go-steer/supercargo/blob/main/docs/DESIGN.md"}
+    road = {
+        "header": road_header,
+        "body": {"shipper_reference": "MF-0007-L3",
+                 "shipper": {"name": "Meridian Forwarding", "domain": "meridian-forwarding.example"},
+                 "consignee": {"name": "Cymbal Calçados Ltda",
+                               "identifiers": [{"scheme": "BR:CNPJ", "value": "12.345.678/0001-90"}]},
+                 "pickup": {"facility": "Santos Brasil Tecon terminal", "un_location_code": "BRSSZ"},
+                 "delivery": {"facility": "Cymbal Calçados DC, dock 2", "un_location_code": "BRSAO"},
+                 "containers": [{"equipment_size_type": "45G1", "count": 1, "gross_weight_kg": 12000}],
+                 "cargo": {"description": "Calçados (tênis)", "hs_code": "6404"}},
+        "attachments": {"delegation": None},
+    }
+    return request, confirmation, inquiry, event, road
 
 
 def vectors(key, other):
-    request, confirmation, inquiry, event = payloads()
+    request, confirmation, inquiry, event, road = payloads()
     out = []
 
     def add(name, wire_obj, payload_text, error):
@@ -154,6 +171,7 @@ def vectors(key, other):
         ("inquiry_unicode_raw_utf8_indented", inquiry, lambda o: json.dumps(o, ensure_ascii=False, indent=2)),
         ("inquiry_escaped_ascii", inquiry, lambda o: json.dumps(o, ensure_ascii=True)),
         ("tnt_event_with_dialect", event, lambda o: json.dumps(o)),
+        ("road_booking_request_utf8", road, lambda o: json.dumps(o, ensure_ascii=False)),
     ]:
         text = dump(obj)
         add(name, seal(text.encode("utf-8"), key), text, None)

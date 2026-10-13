@@ -234,6 +234,24 @@ func capabilities(accepted []string, a2a bool) []discovery.Capability {
 	return out
 }
 
+// supportedDialects are the dialects a profile lists: the ocean ones, as
+// every node has listed them, and the road dialect only when the node
+// takes a road intent, so a node never claims a road capability it lacks.
+func supportedDialects(accepted []string) []string {
+	road := slices.ContainsFunc(accepted, func(i string) bool {
+		d, ok := intents.DialectFor(i)
+		return ok && d.Standard == intents.DialectULPRoad.Standard
+	})
+	out := []string{}
+	for _, d := range intents.Dialects() {
+		if d == intents.DialectULPRoad.Standard && !road {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
 // buildProfile renders the published profile and checks it with the same
 // parser partners will use, so a misconfigured node fails at startup rather
 // than in a partner's logs.
@@ -247,7 +265,7 @@ func (n *Node) buildProfile() ([]byte, error) {
 		Party:             discovery.Party{Domain: n.cfg.Domain, Name: n.cfg.Name, Roles: n.cfg.Roles},
 		Services:          []discovery.Service{{Name: "ulp.freight", Intents: accepted, Extensions: []string{}}},
 		Capabilities:      capabilities(accepted, n.cfg.A2AURL != ""),
-		SupportedDialects: intents.Dialects(),
+		SupportedDialects: supportedDialects(accepted),
 		Transports:        discovery.Transports{REST: n.cfg.RESTURL, A2A: n.cfg.A2AURL},
 		Keys:              []json.RawMessage{n.cfg.PublicJWK},
 	}
