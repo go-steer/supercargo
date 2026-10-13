@@ -137,8 +137,16 @@ func TestBookingRefQueryable(t *testing.T) {
 	// The case that differed: a dot.
 	env := confirmation(strings.Replace(confirmationJSON, `"carrier_booking_reference": "OB-BKG-1042"`, `"carrier_booking_reference": "OB.BKG.1042"`, 1))
 	env.Header.BookingRef = ptr("OB.BKG.1042")
-	if _, err := Decode(env); !errors.Is(err, ErrInvalidBody) {
-		t.Errorf("a booking reference with a dot: %v, want ErrInvalidBody", err)
+	if _, err := Decode(env); !errors.Is(err, ErrInvalidBody) || !strings.Contains(err.Error(), "carrier_booking_reference") {
+		t.Errorf("a booking reference with a dot: %v, want ErrInvalidBody on carrier_booking_reference", err)
+	}
+	// A reference starts with a letter or digit.
+	for _, r := range []string{"-OB-1042", "_OB-1042"} {
+		env := confirmation(strings.Replace(confirmationJSON, `"carrier_booking_reference": "OB-BKG-1042"`, `"carrier_booking_reference": "`+r+`"`, 1))
+		env.Header.BookingRef = ptr(r)
+		if _, err := Decode(env); !errors.Is(err, ErrInvalidBody) || !strings.Contains(err.Error(), "carrier_booking_reference") {
+			t.Errorf("a booking reference starting %q: %v, want ErrInvalidBody on carrier_booking_reference", r[:1], err)
+		}
 	}
 }
 

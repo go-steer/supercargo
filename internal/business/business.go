@@ -119,7 +119,7 @@ func (c *Context) validate() error {
 	for i, s := range c.Shipments {
 		at := fmt.Sprintf("shipments[%d]", i)
 		if !refPattern.MatchString(s.ShipperRef) {
-			return fmt.Errorf("%s.shipperRef %q is not 1-64 of [A-Za-z0-9._-]", at, s.ShipperRef)
+			return fmt.Errorf("%s.shipperRef %q is not 1-64 of [A-Za-z0-9_-], starting with a letter or digit", at, s.ShipperRef)
 		}
 		if seen[s.ShipperRef] {
 			return fmt.Errorf("%s.shipperRef %s appears twice", at, s.ShipperRef)
