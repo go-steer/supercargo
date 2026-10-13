@@ -653,8 +653,20 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 		if r.CTe != nil {
 			trucks.CTe = &operator.CTeIssuer{CNPJ: r.CTe.CNPJ, State: r.CTe.State}
 		}
-		handlers[intents.RoadBookingRequest] = &operator.RoadBookingService{Bookings: a.Carrier.Bookings, Deny: deny, Backend: trucks, Now: time.Now}
-		handlers[intents.RoadBookingAmendment] = &operator.RoadAmendmentService{Bookings: a.Carrier.Bookings, Backend: trucks}
+		// Each leg plays out on the simulator, as a voyage does; an
+		// amendment re-plans it.
+		leg := func(b store.Booking, err error) {
+			c := b.Road.Confirmation
+			v := &activity.Voyage{Booking: b.Ref, Started: true, Departure: c.PlannedPickup, Arrival: c.PlannedDelivery, HoursPerSecond: cfg.Simulator.HoursPerSecond}
+			if err != nil {
+				v = &activity.Voyage{Booking: b.Ref, Error: err.Error()}
+			}
+			a.Activity.Publish(activity.Entry{Side: activity.SideOperator, Kind: activity.KindVoyage, Voyage: v})
+		}
+		handlers[intents.RoadBookingRequest] = &operator.RoadBookingService{Bookings: a.Carrier.Bookings, Deny: deny, Backend: trucks, Now: time.Now,
+			OnBooked: func(b store.Booking) { leg(b, a.Simulator.Start(b)) }}
+		handlers[intents.RoadBookingAmendment] = &operator.RoadAmendmentService{Bookings: a.Carrier.Bookings, Backend: trucks,
+			OnAmended: func(b store.Booking) { leg(b, a.Simulator.Replan(b)) }}
 	}
 	if !o.Ocean() {
 		return nil
