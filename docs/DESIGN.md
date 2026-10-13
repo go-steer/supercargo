@@ -726,13 +726,13 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 
 | Component | Responsibility |
 |---|---|
-| Booking service | Validate request → assign the carrier booking reference, the eBL (transport document reference, vessel/voyage, container and seal numbers) → store → confirmation |
+| Booking service | Validate and authorize the request → ask the **booking backend** (`backend.Bookings`) to decide → check its answer as strictly as a partner's → store a confirmed booking → confirmation. The decision (the carrier booking reference, the eBL with its transport document reference, vessel and voyage, container and seal numbers, or a rejection) is the backend's: the carrier's TMS in production, `operator.VoyageBookings` in memory for the demo |
 | Subscription registry | `bookingRef → [endpoint, intents]`; validated per [A.6](#a6-authorization-rules) |
 | Shipment simulator | Starts a voyage for each confirmed booking: per container gate-in (26 h before departure) and load (4 h before), the departure, an arrival estimate an hour later, the arrival, then per container discharge (6 h after) and gate-out (30 h after). Simulated time runs `simulator.hoursPerSecond` hours per real second from 27 h before departure, starting 2 s after the booking so the confirmation reaches the shipper first; voyages in progress are capped. `disrupt` (from `ulpctl`, through the control socket) publishes a new arrival estimate and then a delay alert citing it, graded by the delay (12 h medium, 48 h high), and moves every later step. The reason given becomes the alert's summary, so it must pass the free-text rules |
 | Event store | Append-only events per booking (the operator's "knowledge graph" for the demo) |
 | Publisher | Records each event and alert in the operator's event log, then pushes it to the booking's subscriber if its subscription lists that intent. One queue and worker per subscription keep a booking's events in order and isolate slow subscribers. Only failures another attempt can fix are retried, backing off from 1 s doubling to 30 s (eight attempts at most), and **each attempt is a newly signed message**: a re-sent copy would be a replay, or go stale. A worker exits once its queue is empty, and the number of subscriptions with pushes in flight is capped. Each ID is published once per booking. Pushes it gives up on, that overflow a queue or the worker cap, or that are still pending at shutdown, are reported; they stay in the log, and the subscriber catches up with `tnt.inquiry` rather than a republish |
 | Inquiry responder | Serves the A2A `shipment-inquiry` skill: authorized data (fetched through the same core operations as the REST binding) → LLM → output validation → response ([A.10](#a10-llm-integration)) |
-| Backend connectors (later) | MCP clients to the operator's existing systems (TMS, booking), called by core operations after authorization ([A.7](#a7-transport-bindings)). The demo uses the in-memory stores instead |
+| Backend ports | The node's integration surface toward the carrier's own systems ([the proposal](proposals/backend-integration.md)): ports the core calls after authorization (`internal/backend`: today the booking decision), each with an in-memory adapter for the demo and later REST, MCP or EDI adapters; and the **backend API**, through which the carrier's systems reach the node: `POST /backend/events` on the control API takes an event or alert for one of its bookings, validates it as strictly as a partner's body (an alert may cite only that booking's events), records it and pushes it, signed, as the simulator does |
 
 ### A.9 Shipper internals
 
@@ -744,7 +744,7 @@ ULP's semantics (intents, envelope, trust rules) are separate from how messages 
 | Business context | Private data the LLM may use: required delivery dates, warehouse slots, launch dates. **Never sent to partners.** A strict YAML file (`business.file`, shipper only), keyed by the shipper's own reference: `requiredBy`, `receivingSlot` (date, window, warehouse) and notes. Nothing builds an envelope from it, and that is what keeps it home. As defence in depth, the node's outbound guard refuses any request or reply body carrying its free text or receiving windows (8 characters or more, as written or as JSON escapes it), so a model echoing a note into a question can't send it. The guard catches verbatim echoes only, not a paraphrase or a change of case, and not dates, which legitimately appear in bookings. A refused send tells the user it was refused locally (HTTP 422 from the control API) |
 | Inbound handlers | `tnt.event` → store; `tnt.alert` → store + trigger the alert summarizer. Each is recorded once per event or alert ID, as the verified header and body it arrived with, so the publisher's re-signed retries never duplicate an event |
 | Internal API | The node's control socket ([A.12](#a12-configuration-per-company)): `ulpnode book` sends a booking through it, so the running node records the booking and accepts its pushes. Later `ulpchat` and the local MCP server ([A.7](#a7-transport-bindings)) use it too |
-| Backend connectors (later) | MCP clients to the shipper's own systems (ERP, warehouse), called by deterministic code; also the source of business context |
+| Backend ports | The shipper's own systems behind ports called by deterministic code: the private context (`backend.PrivateContext`: one shipment's deadline and slot, company-wide notes, what must never be sent) is the business file in memory today, an ERP and WMS adapter later |
 
 ### A.10 LLM integration
 
@@ -994,6 +994,7 @@ Both CLIs reach their node through its **control socket**: HTTP over a Unix sock
 | shipper | `POST /book`, `POST /ask` | Send a booking a person confirmed; send an inquiry. |
 | operator | `GET /bookings`, `GET /bookings/{ref}/events`, `GET /bookings/{ref}/journey` | Its bookings, what it published for each, and each one's journey as it published it. |
 | operator | `POST /disrupt` | Delay a voyage (`ulpctl`). |
+| operator | `POST /backend/events` | The backend API: the carrier's own systems report an event or alert on one of its bookings; the node validates, records and pushes it, signed. |
 
 **The activity stream** has one entry for everything a watcher should see. Each entry has a sequence number, a time and a kind:
 - **`envelope`:** a message in or out and the decision: intent, peers, `via`, message ID, kid, verified, outcome, code, and the node's reason. The reason goes to this node's operator, never to a partner.

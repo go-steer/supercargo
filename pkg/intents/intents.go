@@ -147,6 +147,26 @@ func Decode(e *envelope.Envelope) (Body, error) {
 	return b, nil
 }
 
+// DecodeBody decodes raw as intent's body with exact member names, and
+// validates it: Decode's checks on the body alone, for a body that doesn't
+// arrive in an envelope (a company's own system handing its node an event
+// to sign and publish). The header's rules don't apply; the caller builds
+// the header.
+func DecodeBody(intent string, raw []byte) (Body, error) {
+	s, ok := specs[intent]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedIntent, logsafe.Quote(intent))
+	}
+	b := s.newBody()
+	if err := strictjson.Unmarshal(raw, b); err != nil {
+		return nil, fmt.Errorf("%w: %s: %w", ErrInvalidBody, intent, err)
+	}
+	if err := b.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %s: %w", ErrInvalidBody, intent, err)
+	}
+	return b, nil
+}
+
 // checkDialect requires the header to name exactly want (standard and
 // version; the schema URL is informative), or no dialect when want is nil.
 func checkDialect(want, got *envelope.Dialect) error {

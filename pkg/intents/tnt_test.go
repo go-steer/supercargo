@@ -262,3 +262,28 @@ func TestGoldenEvent(t *testing.T) {
 	}
 	t.Fatal("no tnt_event_with_dialect vector")
 }
+
+// TestDecodeBody: a body alone, decoded as strictly as in an envelope.
+func TestDecodeBody(t *testing.T) {
+	b, err := DecodeBody(TnTEvent, []byte(eventJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.(*TnTEventBody); !ok {
+		t.Fatalf("decoded a %T", b)
+	}
+	for name, body := range map[string]string{
+		"an unknown member": strings.Replace(eventJSON, `{`, `{"x":1,`, 1),
+		"an invalid body":   strings.Replace(eventJSON, `"description"`, `"descr"`, 1),
+		"an invalid value":  strings.Replace(eventJSON, `"event_type_code": "LOAD"`, `"event_type_code": "WARP"`, 1),
+		"not JSON":          `{`,
+		"trailing data":     eventJSON + `{}`,
+	} {
+		if _, err := DecodeBody(TnTEvent, []byte(body)); !errors.Is(err, ErrInvalidBody) {
+			t.Errorf("%s: %v, want ErrInvalidBody", name, err)
+		}
+	}
+	if _, err := DecodeBody("ulp.nope", []byte(eventJSON)); !errors.Is(err, ErrUnsupportedIntent) {
+		t.Errorf("an unsupported intent: %v", err)
+	}
+}

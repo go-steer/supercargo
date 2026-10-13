@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/backend"
 	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/envelope"
@@ -45,17 +46,21 @@ type Voyage struct {
 // container numbers than fit in an envelope the shipper accepts.
 const MaxContainers = 50
 
-// BookingService handles ulp.ocean.booking.request: it books the request on the
-// configured voyage and confirms it.
+// BookingService handles ulp.ocean.booking.request: it authorizes the
+// request, asks the carrier's booking system to decide (Backend), stores
+// the booking and confirms it. The protocol's part is here; the business
+// decision is the backend's (docs/proposals/backend-integration.md).
 type BookingService struct {
 	Bookings *store.Bookings
 	// Deny lists domains whose requests are refused (docs/DESIGN.md, A.6:
 	// "anyone may request; the operator may reject").
 	Deny map[string]bool
-	// RefPrefix starts each booking reference, e.g. "OB-BKG".
-	RefPrefix string
-	// ContainerPrefix is the operator's ISO 6346 owner code plus category,
-	// e.g. "OCBU".
+	// Backend decides each booking: the carrier's booking system. Nil uses
+	// VoyageBookings, built in memory from the fields below.
+	Backend backend.Bookings
+	// RefPrefix, ContainerPrefix and Voyage configure the in-memory
+	// backend when Backend is nil (see VoyageBookings).
+	RefPrefix       string
 	ContainerPrefix string
 	Voyage          Voyage
 	Now             func() time.Time
@@ -64,9 +69,17 @@ type BookingService struct {
 	// not block.
 	OnBooked func(store.Booking)
 
-	mu     sync.Mutex
-	next   int
-	serial int
+	once sync.Once
+}
+
+// backend is the booking system to ask: Backend, or the in-memory one.
+func (s *BookingService) backend() backend.Bookings {
+	s.once.Do(func() {
+		if s.Backend == nil {
+			s.Backend = &VoyageBookings{RefPrefix: s.RefPrefix, ContainerPrefix: s.ContainerPrefix, Voyage: s.Voyage}
+		}
+	})
+	return s.Backend
 }
 
 // Authorize implements node.Handler. It runs before anything is booked:
@@ -86,10 +99,83 @@ func (s *BookingService) Authorize(_ context.Context, req *node.Request) error {
 	return nil
 }
 
-// Handle implements node.Handler: assign a reference and containers,
-// schedule the booking on the voyage, store it and confirm it.
-func (s *BookingService) Handle(_ context.Context, req *node.Request) (*node.Reply, error) {
+// Handle implements node.Handler: the backend decides; a confirmed
+// booking is stored, and either answer goes back to the shipper.
+func (s *BookingService) Handle(ctx context.Context, req *node.Request) (*node.Reply, error) {
 	b := req.Body.(*intents.BookingRequestBody)
+	conf, err := s.backend().Decide(ctx, backend.BookingRequest{Shipper: req.Envelope.Header.Sender, Operator: req.Envelope.Header.Receiver, Body: b})
+	if err != nil {
+		return nil, err
+	}
+	// What the backend says is checked before it is signed: a bug there
+	// must not become a malformed message to a partner.
+	if err := conf.Validate(); err != nil {
+		return nil, fmt.Errorf("operator: the booking system's answer: %w", err)
+	}
+	if conf.Status != intents.StatusConfirmed {
+		// The protocol's answer to "no", rather than an error: the request
+		// was valid, the operator just won't take it.
+		return &node.Reply{BookingRef: conf.BookingRef, Body: conf}, nil
+	}
+	if b.Subscription != nil && conf.SubscriptionID == "" {
+		// Recorded with the booking; the Publisher pushes to it.
+		conf.SubscriptionID = "SUB-" + strings.TrimPrefix(conf.BookingRef, s.backendPrefix())
+	}
+	if err := s.Bookings.Add(store.Booking{
+		Ref:          conf.BookingRef,
+		Shipper:      req.Envelope.Header.Sender,
+		Operator:     req.Envelope.Header.Receiver,
+		Request:      *b,
+		Confirmation: *conf,
+		CreatedAt:    s.Now(),
+	}); errors.Is(err, store.ErrFull) {
+		return &node.Reply{BookingRef: conf.BookingRef, Body: &intents.BookingConfirmationBody{
+			BookingRef: conf.BookingRef, Status: intents.StatusRejected,
+			Messages: []intents.Message{{Code: "at_capacity", Detail: "This operator is not taking new bookings right now."}},
+		}}, nil
+	} else if err != nil {
+		return nil, err
+	}
+	if s.OnBooked != nil {
+		// The store's copy, which shares nothing with the reply.
+		if stored, err := s.Bookings.Get(req.Envelope.Header.Receiver, conf.BookingRef); err == nil {
+			s.OnBooked(stored)
+		}
+	}
+	return &node.Reply{Body: conf, BookingRef: conf.BookingRef}, nil
+}
+
+// backendPrefix is the in-memory backend's reference prefix and dash
+// ("OB-BKG-"), or "" for another backend.
+func (s *BookingService) backendPrefix() string {
+	if v, ok := s.backend().(*VoyageBookings); ok {
+		return v.RefPrefix + "-"
+	}
+	return ""
+}
+
+// VoyageBookings is the in-memory booking system: it books every request
+// on the configured voyage, assigning references, containers and seals
+// from counters. It is what a carrier's TMS would decide; the demo's
+// default.
+type VoyageBookings struct {
+	// RefPrefix starts each booking reference, e.g. "OB-BKG".
+	RefPrefix string
+	// ContainerPrefix is the operator's ISO 6346 owner code plus category,
+	// e.g. "OCBU".
+	ContainerPrefix string
+	Voyage          Voyage
+
+	mu     sync.Mutex
+	next   int
+	serial int
+}
+
+// Decide implements backend.Bookings: a reference, numbered and sealed
+// containers, and the voyage's schedule; or a rejection for too many
+// containers.
+func (s *VoyageBookings) Decide(_ context.Context, r backend.BookingRequest) (*intents.BookingConfirmationBody, error) {
+	b := r.Body
 	earliest, err := time.Parse(intents.DateLayout, b.EarliestDeparture)
 	if err != nil {
 		return nil, err // Decode validated it; unreachable
@@ -114,13 +200,11 @@ func (s *BookingService) Handle(_ context.Context, req *node.Request) (*node.Rep
 	ref := fmt.Sprintf("%s-%d", s.RefPrefix, n)
 
 	if containers > MaxContainers {
-		// The protocol's answer to "no", rather than an error: the request
-		// was valid, the operator just won't take it.
-		return &node.Reply{BookingRef: ref, Body: &intents.BookingConfirmationBody{
+		return &intents.BookingConfirmationBody{
 			BookingRef: ref, Status: intents.StatusRejected,
 			Messages: []intents.Message{{Code: "too_many_containers",
 				Detail: fmt.Sprintf("This operator books at most %d containers per request.", MaxContainers)}},
-		}}, nil
+		}, nil
 	}
 
 	departure := earliest.AddDate(0, 0, 1).Add(time.Duration(s.Voyage.DepartureHour) * time.Hour)
@@ -156,36 +240,14 @@ func (s *BookingService) Handle(_ context.Context, req *node.Request) (*node.Rep
 		EBL:              ebl,
 	}
 	if b.Subscription != nil {
-		// Recorded with the booking; the Publisher pushes to it.
 		conf.SubscriptionID = fmt.Sprintf("SUB-%d", n)
 	}
-	if err := s.Bookings.Add(store.Booking{
-		Ref:          conf.BookingRef,
-		Shipper:      req.Envelope.Header.Sender,
-		Operator:     req.Envelope.Header.Receiver,
-		Request:      *b,
-		Confirmation: *conf,
-		CreatedAt:    s.Now(),
-	}); errors.Is(err, store.ErrFull) {
-		return &node.Reply{BookingRef: ref, Body: &intents.BookingConfirmationBody{
-			BookingRef: ref, Status: intents.StatusRejected,
-			Messages: []intents.Message{{Code: "at_capacity", Detail: "This operator is not taking new bookings right now."}},
-		}}, nil
-	} else if err != nil {
-		return nil, err
-	}
-	if s.OnBooked != nil {
-		// The store's copy, which shares nothing with the reply.
-		if stored, err := s.Bookings.Get(req.Envelope.Header.Receiver, conf.BookingRef); err == nil {
-			s.OnBooked(stored)
-		}
-	}
-	return &node.Reply{Body: conf, BookingRef: conf.BookingRef}, nil
+	return conf, nil
 }
 
 // documentPrefix prefixes transport document references: the booking
 // prefix's first segment and "TD" ("OB-TD-1042" for "OB-BKG").
-func (s *BookingService) documentPrefix() string {
+func (s *VoyageBookings) documentPrefix() string {
 	head, _, _ := strings.Cut(s.RefPrefix, "-")
 	return head + "-TD"
 }

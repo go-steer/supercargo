@@ -161,3 +161,14 @@ func TestLoad(t *testing.T) {
 		t.Error("an oversized file loaded")
 	}
 }
+
+func TestCompanyNotes(t *testing.T) {
+	var none *Context
+	if none.CompanyNotes() != nil {
+		t.Error("a nil context has notes")
+	}
+	c := &Context{Notes: []string{"Tell the launch team"}}
+	if got := c.CompanyNotes(); len(got) != 1 || got[0] != "Tell the launch team" {
+		t.Errorf("notes %v", got)
+	}
+}

@@ -186,6 +186,27 @@ llm: { provider: fake }
 		t.Errorf("shipper's alert %+v (%v), operator's %+v", got, err, dr.Alert)
 	}
 
+	// The carrier's own systems report an event through the backend API:
+	// the node signs and pushes it like its simulator's.
+	evBody, _ := json.Marshal(intents.TnTEventBody{EventID: "TMS-EV-1", EventType: intents.EventTypeEquipment,
+		EventClassifierCode: intents.ClassifierActual, EventTypeCode: "GTIN", EventDateTime: "2026-10-07T11:20:00Z",
+		UNLocationCode: "NLRTM", FacilityName: "Rotterdam", Description: "Gated in (reported by the terminal system)",
+		EquipmentReference: "OCBU0000004"})
+	var er operator.EventResponse
+	code, err = control.Call(control.Client(opSock, 10*time.Second), "/backend/events",
+		operator.EventRequest{BookingRef: ref, Intent: intents.TnTEvent, Body: evBody}, &er)
+	if err != nil || code != http.StatusOK || er.ID != "TMS-EV-1" {
+		t.Fatalf("backend event: HTTP %d %+v, %v", code, er, err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		for _, r := range sh.Customer.Events.List("ocean-blue.example", ref) {
+			if r.ID == "TMS-EV-1" && r.Header.Sender == "ocean-blue.example" {
+				return true
+			}
+		}
+		return false
+	})
+
 	// Scene 5: the shipper asks why, through its node; the operator's
 	// (fake) model answers from this booking's records, citing them.
 	var ar shipper.AskResponse

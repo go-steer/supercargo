@@ -353,7 +353,7 @@ func TestSummarizeRecordWindow(t *testing.T) {
 	m := FakeSummaryModel()
 	alert := delayAlert("2026-10-16T08:00:00Z", "EV-1")
 	s, b := summarizerWith(t, m, alert)
-	s.Business.Notes = nil
+	s.Business.(*business.Context).Notes = nil
 	add := func(r store.Record) {
 		if _, err := s.Log.Add(b.Operator, b.Ref, r); err != nil {
 			t.Fatal(err)
