@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- The forwarder's orchestrator: a forwarder plans each order on its lane (`forwarder.lanes`, the routing guide) and, once a person confirms (`POST /orders/{ref}/book`), books the legs in journey order with their carriers (the ship from the day the cargo is ready; the truck collecting the ship's containers 30 hours after its arrival, to the order's door by its date), then answers the order with the journey. A refused leg stops the booking, and booking again resumes after the legs already booked. `GET /orders/{ref}/plan` shows the plan.
+
 - Forwarding orders end to end (a protocol change to `ulp.forwarding.confirmation`, which gains the status `pending`): a shipper sends a door-to-door order (`Shipper.Order`, `POST /orders`); a forwarder (the new `forwarder` config section, with the operator and shipper roles) takes it at once as `pending` with its reference and subscription (`internal/forwarder`), and a person there answers it later (`POST /orders/answer`) with the planned journey or a rejection, pushed signed in reply to the order. The shipper takes that answer only from the order's forwarder, for an order still pending, in reply to it, and only a plan that fits the order (`intents.FitsOrder`). Profiles list the forwarding capabilities.
 
 - The customer side of a truck leg: a shipper (a forwarder, in the door-to-door story) books and amends truck legs through its node (`Shipper.BookRoad`, `AmendRoad`), holds each carrier's plan to the windows asked for before recording it, and takes the leg's signed events. Road requests, amendments and forwarding orders pass the business context's guard, so private context can't leave in them.

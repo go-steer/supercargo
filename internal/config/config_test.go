@@ -343,7 +343,7 @@ forwarder: { refPrefix: MF, deny: [mallory.example] }
 		"denying itself":         {"deny: [mallory.example]", "deny: [meridian-forwarding.example]"},
 		"the operator's prefix":  {"forwarder:", "operator: { refPrefix: MF, road: { transit: 30h } }\nforwarder:"},
 		"the truck legs' prefix": {"forwarder: { refPrefix: MF,", "operator: { refPrefix: OB, road: { transit: 30h } }\nforwarder: { refPrefix: OB-R,"},
-		"an unknown key":         {"refPrefix: MF", "refPrefix: MF, lanes: []"},
+		"an unknown key":         {"refPrefix: MF", "refPrefix: MF, trucks: 4"},
 	} {
 		in := strings.Replace(base, edit[0], edit[1], 1)
 		if in == base {
@@ -356,6 +356,65 @@ forwarder: { refPrefix: MF, deny: [mallory.example] }
 	// A forwarder that also trucks: both sections, different prefixes.
 	if _, err := Parse([]byte(strings.Replace(base, "forwarder:", "operator: { refPrefix: MF-T, road: { transit: 30h } }\nforwarder:", 1))); err != nil {
 		t.Errorf("forwarder and road carrier: %v", err)
+	}
+}
+
+// TestLanes: a forwarder's lanes are checked leg by leg: modes, carriers,
+// names, handover facilities, and that the legs end where the lane does.
+func TestLanes(t *testing.T) {
+	base := `domain: meridian-forwarding.example
+name: Meridian Forwarding
+roles: [operator, shipper]
+listen: ":8443"
+keys: [{ kid: mf-1, privateKeyFile: /keys/mf-1.pem }]
+tls: { mode: local-ca, certFile: /certs/mf.pem, keyFile: /certs/mf-key.pem, caFile: /certs/ca.pem }
+forwarder:
+  refPrefix: MF
+  lanes:
+    - from: NLTLB
+      to: BRSAO
+      legs:
+        - { mode: road, carrier: polder-haulage.example, name: Polder Haulage, to: NLRTM, facility: ECT Delta terminal, edi: true }
+        - { mode: ocean, carrier: ocean-blue.example, name: Ocean Blue, to: BRSSZ, facility: Santos Brasil Tecon terminal }
+        - { mode: road, carrier: serra-transportes.example, name: Serra Transportes, to: BRSAO }
+`
+	c, err := Parse([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := c.Forwarder.Lanes; len(l) != 1 || len(l[0].Legs) != 3 || !l[0].Legs[0].EDI {
+		t.Errorf("%+v", l)
+	}
+	for name, edit := range map[string][2]string{
+		"a bad from":               {"from: NLTLB", "from: Tilburg"},
+		"from is to":               {"from: NLTLB", "from: BRSAO"},
+		"an air leg":               {"mode: ocean", "mode: air"},
+		"an EDI ship":              {"name: Ocean Blue, to: BRSSZ", "name: Ocean Blue, edi: true, to: BRSSZ"},
+		"a carrier not a domain":   {"carrier: ocean-blue.example", "carrier: Ocean Blue"},
+		"itself as a carrier":      {"carrier: ocean-blue.example", "carrier: meridian-forwarding.example"},
+		"no name":                  {"name: Ocean Blue, ", ""},
+		"a name with a bidi char":  {"name: Ocean Blue", "name: \"Ocean\u202eBlue\""},
+		"a ship going nowhere":     {"to: BRSSZ, facility", "to: NLRTM, facility"},
+		"ending elsewhere":         {"name: Serra Transportes, to: BRSAO", "name: Serra Transportes, to: BRSPO"},
+		"a handover with no place": {", facility: Santos Brasil Tecon terminal", ""},
+		"a facility at the end":    {"name: Serra Transportes, to: BRSAO", "name: Serra Transportes, to: BRSAO, facility: DC"},
+		"a second lane, same ends": {"forwarder:\n  refPrefix: MF\n  lanes:\n", "forwarder:\n  refPrefix: MF\n  lanes:\n    - { from: NLTLB, to: BRSAO, legs: [{ mode: road, carrier: t.example, name: T, to: BRSAO }] }\n"},
+	} {
+		in := strings.Replace(base, edit[0], edit[1], 1)
+		if in == base {
+			t.Fatalf("%s: edit didn't apply", name)
+		}
+		if _, err := Parse([]byte(in)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	noLegs := strings.SplitN(base, "      legs:\n", 2)[0] + "      legs: []\n"
+	if _, err := Parse([]byte(noLegs)); err == nil || !strings.Contains(err.Error(), "0 legs") {
+		t.Errorf("no legs: %v", err)
+	}
+	nine := strings.Repeat("        - { mode: road, carrier: t.example, name: T, to: NLRTM, facility: F }\n", LaneMaxLegs)
+	if _, err := Parse([]byte(strings.Replace(base, "      legs:\n", "      legs:\n"+nine, 1))); err == nil {
+		t.Error("too many legs: accepted")
 	}
 }
 

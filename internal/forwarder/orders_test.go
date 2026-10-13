@@ -281,7 +281,7 @@ func TestControlAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	RegisterControl(mux, o)
+	RegisterControl(mux, o, nil)
 	post := func(body string) int {
 		req := httptest.NewRequest(http.MethodPost, "/orders/answer", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
