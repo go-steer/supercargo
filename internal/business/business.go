@@ -188,6 +188,14 @@ func (c *Context) For(shipperRef string) (Shipment, bool) {
 	return Shipment{}, false
 }
 
+// CompanyNotes are the context's company-wide notes.
+func (c *Context) CompanyNotes() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Notes
+}
+
 // GuardMinLen is the shortest text Guard looks for: shorter strings (and
 // dates, which legitimately appear in bookings) would match by accident.
 const GuardMinLen = 8

@@ -270,7 +270,13 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		mux.Handle("GET /messages/{seq}", a.messageHandler())
 		var roles []func(*http.ServeMux)
 		if a.Carrier != nil {
-			roles = append(roles, func(m *http.ServeMux) { operator.RegisterControl(m, a.Simulator, a.Carrier.Bookings, a.Carrier.Events) })
+			roles = append(roles, func(m *http.ServeMux) {
+				operator.RegisterControl(m, a.Simulator, a.Carrier.Bookings, a.Carrier.Events)
+				// The backend API: the carrier's own systems report events
+				// here, as the simulator does for the demo.
+				operator.RegisterBackend(m, a.Publisher, a.Carrier.Bookings, a.Carrier.Events,
+					func(ref string, body intents.Body) { a.record(activity.ActionPublished, ref, body) })
+			})
 		}
 		if a.Shipper != nil {
 			roles = append(roles, func(m *http.ServeMux) { shipper.RegisterControl(m, a.Shipper, cache) })

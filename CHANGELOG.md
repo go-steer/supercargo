@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- Backend ports, phase 1 of `docs/proposals/backend-integration.md`: the node's core reaches the company's own systems through `internal/backend`. The carrier's booking decision (references, schedule, the eBL, or a rejection) is a port, `operator.VoyageBookings` its in-memory adapter, and the booking service checks the answer before signing it; the shipper's private context is a port the summarizer reads. The control API gains the backend API's first call, `POST /backend/events`: a carrier's own systems report an event or alert for one of its bookings, validated as strictly as a partner's body, and the node records and pushes it, signed. `intents.DecodeBody` decodes and validates a body outside an envelope. No change for partners.
+
 - The docs' HTML pages (proposal walk-throughs, the UI mockup) are published to GitHub Pages at https://go-steer.github.io/supercargo/ by `.github/workflows/pages.yml`, built by `dev/tools/build-pages` with an index.
 
 - A proposal for connecting each company's own systems, `docs/proposals/backend-integration.md`: ports and adapters (memory, REST, MCP, EDI) between the node's core and its ERP, TMS, telematics, WMS and fiscal-document systems; a backend API for events; mock backends with their own views for the demo; and integration guides with a conformance kit. With diagrams; no protocol change.

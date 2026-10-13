@@ -27,6 +27,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/go-steer/supercargo/internal/backend"
 	"github.com/go-steer/supercargo/internal/ports"
 
 	"go.opentelemetry.io/otel"
@@ -59,8 +60,9 @@ import (
 // on this node: the activity stream and the log, never an envelope.
 type Summarizer struct {
 	Log *store.EventLog
-	// Business is the private context (nil: impact unknown).
-	Business *business.Context
+	// Business is the private context, from the shipper's own systems
+	// (nil: impact unknown).
+	Business backend.PrivateContext
 	// Model writes notifications; nil writes every one from the template.
 	Model  llm.Model
 	Skills []skills.Skill
@@ -193,8 +195,10 @@ func (s *Summarizer) summarize(ctx context.Context, b store.Booking, alert *inte
 		}
 	}
 	var ship *business.Shipment
-	if sh, ok := s.Business.For(b.Request.ShipperRef); ok {
-		ship = &sh
+	if s.Business != nil {
+		if sh, ok := s.Business.For(b.Request.ShipperRef); ok {
+			ship = &sh
+		}
 	}
 	facts := assess(alert, ship)
 	facts.UnheldCauses = len(unheld)
@@ -393,8 +397,10 @@ func (s *Summarizer) prompt(b bookingFacts, records []summaryRecord, alert *inte
 	if ship != nil {
 		ctxBlock["shipment"] = businessView(*ship)
 	}
-	if s.Business != nil && len(s.Business.Notes) > 0 {
-		ctxBlock["notes"] = s.Business.Notes
+	if s.Business != nil {
+		if notes := s.Business.CompanyNotes(); len(notes) > 0 {
+			ctxBlock["notes"] = notes
+		}
 	}
 	biz, _ := json.Marshal(ctxBlock)
 	impact, _ := json.Marshal(facts)
