@@ -194,6 +194,9 @@ func (c *EDIFACT) report() error {
 		}
 	}
 	c.trips = left
+	if len(left) == 0 {
+		c.anchor = time.Time{} // nothing playing: the next trip anchors the shared clock afresh
+	}
 	return nil
 }
 

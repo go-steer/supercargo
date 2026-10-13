@@ -68,7 +68,7 @@ type Simulator struct {
 	OnPublish func(ref string, body intents.Body)
 	// Shared puts every voyage on one clock: simulated time is the real
 	// time of the first voyage's start (the anchor) plus HoursPerSecond
-	// hours per real second since. Bookings planned on real dates then
+	// hours per real second since, until no voyage is left to play. Bookings planned on real dates then
 	// play in their real order, across nodes whose first bookings come
 	// together (a forwarder's legs, one after another). Without it, each
 	// voyage's clock starts just before its own first step.
@@ -476,6 +476,11 @@ func (s *Simulator) Advance() {
 		if len(tl.steps) == 0 {
 			delete(s.lines, ref)
 		}
+	}
+	if len(s.lines) == 0 {
+		// Nothing playing: the next journey's first booking anchors the
+		// shared clock afresh, so it plays from its own time.
+		s.anchor = time.Time{}
 	}
 }
 

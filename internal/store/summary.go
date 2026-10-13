@@ -109,6 +109,11 @@ func Summarize(b Booking, recs []Record) Summary {
 		s.Containers = []string{}
 	}
 	arrived := false
+	// Only an arrival at the destination is the booking's: an order's leg
+	// arriving at a handover port is in transit, and its estimate isn't
+	// the delivery's.
+	_, dest := b.Places()
+	atDest := func(e intents.TnTEventBody) bool { return dest == "" || e.UNLocationCode == dest }
 	for _, r := range recs {
 		switch r.Intent {
 		case intents.TnTAlert:
@@ -125,8 +130,11 @@ func Summarize(b Booking, recs []Record) Summary {
 				if st, ok := statuses[e.EventTypeCode]; ok {
 					s.Status = st
 				}
+				if e.EventTypeCode == "ARRI" && !atDest(e) {
+					s.Status = statuses["DEPA"]
+				}
 			}
-			if e.EventTypeCode == "ARRI" && !arrived {
+			if e.EventTypeCode == "ARRI" && atDest(e) && !arrived {
 				s.ETA, s.ETASource = e.EventDateTime, e.EventID
 				arrived = e.EventClassifierCode == intents.ClassifierActual
 			}

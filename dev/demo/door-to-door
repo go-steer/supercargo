@@ -29,7 +29,7 @@
 #
 # DIR defaults to $TMPDIR/supercargo-d2d; keys are kept between runs, the
 # companies' state isn't (it's in memory). dev/smoke/door-to-door runs the
-# same journey, scripted.
+# same journey, scripted. Needs curl, python3 and GNU date (Linux).
 #
 # Environment: D2D_PORT (8451: Cymbal; Meridian, Ocean Blue and Serra take
 # the next three), HOURS_PER_SECOND (8: the journey takes about a minute; the companies share one simulated clock, from their first bookings),
@@ -38,10 +38,14 @@ set -euo pipefail
 . "$(dirname "$0")/../smoke/lib.sh"
 
 cmd="${1:-}"
+case "$cmd" in
+  up | down | order | book | disrupt | confirm | status) ;;
+  *) sed -n '/^# The door-to-door demo/,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 2 ;;
+esac
 dir="${2:-${TMPDIR:-/tmp}/supercargo-d2d}"
 mkdir -p "$dir"
 dir="$(cd "$dir" && pwd)"
-chmod 700 "$dir"
+chmod 700 "$dir" # the signing keys and the control sockets live here
 
 base="${D2D_PORT:-8451}"
 CY=$base MF=$((base + 1)) OB=$((base + 2)) SR=$((base + 3))
@@ -62,6 +66,7 @@ setup() {
     vertex-gemini) llm="{ provider: gemini, backend: vertex, model: ${ULP_LLM_MODEL:-gemini-3.8-flash} }" ;;
     *) echo "door-to-door: ULP_LLM must be fake, anthropic, gemini, vertex-claude or vertex-gemini" >&2; exit 1 ;;
   esac
+  rm -rf "$dir/edi" # a past run's files mustn't match this run's references
   mkdir -p "$dir/edi/to-polder" "$dir/edi/from-polder"
   chmod 700 "$dir/edi" "$dir/edi/to-polder" "$dir/edi/from-polder"
   for k in cy mf ob sr; do
@@ -95,7 +100,22 @@ web:
 $7
 EOF
   }
-  node cymbal cymbal-shoes.example "Cymbal Shoes" "$CY" cy '{ id: alex, name: Alex, title: "Logistics", roles: [shipper] }' "role: shipper"
+  # Cymbal's private context: the Brazil launch, three weeks out. The
+  # journey makes it; 72 hours late, it doesn't. Never in an envelope (and
+  # nothing here may appear in the order, or the guard refuses to send it).
+  local launch
+  launch="$(date -u -d '+21 days' +%F)"
+  cat >"$dir/business.yaml" <<EOF
+shipments:
+  - shipperRef: CY-PO-55120
+    requiredBy: $launch
+    receivingSlot: { date: $launch, window: "08:00-12:00", warehouse: "Brazil launch stock" }
+    notes: "Brazil launch: the São Paulo stores open with this stock"
+notes:
+  - "Tell the launch team about any delay that puts the launch at risk"
+EOF
+  node cymbal cymbal-shoes.example "Cymbal Shoes" "$CY" cy '{ id: alex, name: Alex, title: "Logistics", roles: [shipper] }' "role: shipper
+business: { file: $dir/business.yaml }   # private: never in an envelope"
   node meridian meridian-forwarding.example "Meridian Forwarding" "$MF" mf '{ id: mia, name: Mia, title: "Forwarding desk", roles: [operator, shipper] }' "  presenter:
     panels:
       - { name: \"Cymbal Shoes · shipper\", url: \"$(ui "$CY")\" }
@@ -133,8 +153,11 @@ up() {
     nohup "$dir/bin/ulpnode" serve --config "$dir/$n.yaml" --log-format json >/dev/null 2>"$dir/$n.log" &
     echo $! >>"$dir/pids"
   done
+  local up
   for p in "$CY" "$MF" "$OB" "$SR"; do
-    for _ in $(seq 1 100); do curl -fsS "http://127.0.0.1:$p/.well-known/ulp" >/dev/null 2>&1 && break; sleep 0.1; done
+    up=false
+    for _ in $(seq 1 100); do curl -fsS "http://127.0.0.1:$p/.well-known/ulp" >/dev/null 2>&1 && { up=true; break; }; sleep 0.1; done
+    $up || { echo "door-to-door: the node on port $p didn't come up (port taken? see $dir/*.log)" >&2; down quiet; exit 1; }
   done
   nohup "$dir/bin/ulpmock" edifact --id polder-haulage.example --partner meridian-forwarding.example \
     --in "$dir/edi/to-polder" --out "$dir/edi/from-polder" --ecmr-prefix ECMR-NL-2026 --zone Europe/Amsterdam \
@@ -163,8 +186,12 @@ EOF
 
 down() {
   [[ -f "$dir/pids" ]] || return 0
-  local p
-  while read -r p; do kill "$p" 2>/dev/null || true; done <"$dir/pids"
+  local p pids
+  pids="$(cat "$dir/pids")"
+  for p in $pids; do kill "$p" 2>/dev/null || true; done
+  for p in $pids; do # wait for them, so a new 'up' gets the ports
+    for _ in $(seq 1 50); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
+  done
   rm -f "$dir/pids"
   [[ "${1:-}" == quiet ]] || echo "Stopped."
 }
@@ -230,7 +257,4 @@ status() {
   echo "Cymbal's records:"; ctl cy "/shipments/meridian-forwarding.example/$ref/events" | grep -o '"description":"[^"]*"' || true
 }
 
-case "$cmd" in
-  up | down | order | book | disrupt | confirm | status) "$cmd" ;;
-  *) sed -n '/^# The door-to-door demo/,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 2 ;;
-esac
+"$cmd"
