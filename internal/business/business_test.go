@@ -114,6 +114,7 @@ func TestParseRejects(t *testing.T) {
 	for name, text := range map[string]string{
 		"unknown key":       "shipments: []\nsecret: x\n",
 		"bad ref":           "shipments: [{shipperRef: 'a/b'}]\n",
+		"dotted ref":        "shipments: [{shipperRef: 'CY.PO.1'}]\n",
 		"duplicate ref":     "shipments: [{shipperRef: A}, {shipperRef: A}]\n",
 		"bad requiredBy":    "shipments: [{shipperRef: A, requiredBy: 'next week'}]\n",
 		"bad slot date":     "shipments: [{shipperRef: A, receivingSlot: {date: 15-10-2026}}]\n",

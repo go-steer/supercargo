@@ -28,7 +28,9 @@ import (
 // short and inert, and free text has a length cap and no control
 // characters.
 var (
-	refPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	// refPattern: no dots, so every reference a body carries can also be
+	// asked about in a status request (statusRefPattern, the DCSA query's).
+	refPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 	unLocodePattern  = regexp.MustCompile(`^[A-Z]{2}[A-Z2-9]{3}$`)
 	isoTypePattern   = regexp.MustCompile(`^[0-9A-Z]{4}$`)
 	hsCodePattern    = regexp.MustCompile(`^[0-9]{4,10}$`)
@@ -41,7 +43,7 @@ const DateLayout = "2006-01-02"
 
 func ref(field, s string) error {
 	if !refPattern.MatchString(s) {
-		return fmt.Errorf("%s: %s is not 1-64 characters of [A-Za-z0-9._-]", field, logsafe.Quote(s))
+		return fmt.Errorf("%s: %s is not 1-64 characters of [A-Za-z0-9_-], starting with a letter or digit", field, logsafe.Quote(s))
 	}
 	return nil
 }

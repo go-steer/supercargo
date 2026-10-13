@@ -279,6 +279,7 @@ func TestBookingRequestRejects(t *testing.T) {
 		{"unknown member", edit(func(m map[string]any) { m["requiredDeliveryDate"] = "2026-10-20" })},
 		{"duplicate member", strings.Replace(bookingRequestJSON, `"shipper_reference": "CY-PO-55120",`, `"shipper_reference": "A", "shipper_reference": "B",`, 1)},
 		{"missing shipper_reference", edit(func(m map[string]any) { delete(m, "shipper_reference") })},
+		{"shipper_reference with a dot", edit(func(m map[string]any) { m["shipper_reference"] = "CY.PO.55120" })},
 		{"shipper_reference with space", edit(func(m map[string]any) { m["shipper_reference"] = "PO 1" })},
 		{"shipper_reference too long", edit(func(m map[string]any) { m["shipper_reference"] = strings.Repeat("A", 65) })},
 		{"shipper_reference number", edit(func(m map[string]any) { m["shipper_reference"] = 55120 })},
