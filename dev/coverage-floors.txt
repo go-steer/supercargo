@@ -65,6 +65,7 @@ github.com/go-steer/supercargo/internal/llm/fake       100.0
 github.com/go-steer/supercargo/internal/mcpserver       94.0  # 95.1: the MCP endpoint for the company's own agents
 github.com/go-steer/supercargo/internal/googleauth      90.0  # 91.0: Google sign-in for the UI and MCP
 github.com/go-steer/supercargo/internal/directory       97.5  # 98.8: address books and directories
+github.com/go-steer/supercargo/internal/edi             96.5  # 97.6: EDIFACT for carriers without a node; I/O failures untested
 github.com/go-steer/supercargo/internal/llm/anthropic   98.5  # 100.0
 github.com/go-steer/supercargo/internal/llm/gemini      97.5  # 99.1
 github.com/go-steer/supercargo/internal/skills          96.0  # 97.0
