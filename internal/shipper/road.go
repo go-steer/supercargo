@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/go-steer/supercargo/internal/store"
@@ -26,8 +27,10 @@ import (
 )
 
 // ErrPlanMismatch: a road carrier's plan doesn't fit what was asked for
-// (a pickup outside its window, a reference that changed). It isn't
-// recorded; the person sees why.
+// (a pickup outside its window, an amendment answered for another leg).
+// It isn't recorded, and the person sees why. The carrier may hold it
+// all the same: until ULP can cancel a leg, the person takes it up with
+// the carrier.
 var ErrPlanMismatch = errors.New("shipper: the carrier's plan contradicts the request")
 
 // BookRoad sends a road booking request to carrier and returns its answer.
@@ -87,6 +90,11 @@ func (s *Shipper) AmendRoad(ctx context.Context, carrier, ref string, a *intents
 	if !ok {
 		return nil, errors.New("shipper: response is not a road booking confirmation")
 	}
+	if conf.BookingRef != ref {
+		// The node checks the reply answers our message, not which leg it
+		// names: a confirmation of another leg isn't this one's.
+		return nil, fmt.Errorf("%w: %s answered an amendment of %s for %s", ErrPlanMismatch, carrier, ref, conf.BookingRef)
+	}
 	if conf.Status != intents.StatusConfirmed {
 		return conf, nil
 	}
@@ -99,18 +107,30 @@ func (s *Shipper) AmendRoad(ctx context.Context, carrier, ref string, a *intents
 	if conf.SubscriptionID != b.Road.Confirmation.SubscriptionID {
 		return nil, fmt.Errorf("%w: %s changed %s's subscription", ErrPlanMismatch, carrier, ref)
 	}
+	snapshot := b.Road
 	if _, err := s.Bookings.Update(carrier, ref, func(b *store.Booking) error {
+		// Only over the leg this amendment was made from: if another
+		// amendment was recorded meanwhile, which plan the carrier holds
+		// now depends on the order it took them in, which we don't know.
+		if !reflect.DeepEqual(b.Road, snapshot) {
+			return ErrLegChanged
+		}
 		b.Road.Request, b.Road.Confirmation = amended, *conf
 		return nil
 	}); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("shipper: recording %s's new plan for %s: %w", carrier, ref, err)
 	}
 	return conf, nil
 }
 
+// ErrLegChanged: another amendment of the leg was recorded while this one
+// was out. The carrier confirmed this one, but the leg's record is the
+// other's; the person checks with the carrier (an inquiry, or the leg's
+// events) before acting on either plan.
+var ErrLegChanged = errors.New("shipper: the leg changed while the amendment was out")
+
 // checkPlan holds a carrier's confirmed plan to the leg asked for: the
-// reference it answers under, and a pickup and delivery inside their
-// windows.
+// subscription asked for, and a pickup and delivery inside their windows.
 func checkPlan(req *intents.RoadBookingRequestBody, conf *intents.RoadBookingConfirmationBody) error {
 	var errs []error
 	if req.Subscription != nil && conf.SubscriptionID == "" {

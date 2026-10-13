@@ -93,6 +93,7 @@ func TestAmendRoad(t *testing.T) {
 		"rejected":             {intents.RoadBookingConfirmationBody{BookingRef: "OB-BKG-R-0913", Status: intents.StatusRejected}, false, nil},
 		"outside the window":   {planned, false, ErrPlanMismatch}, // the old pickup, before the new window
 		"another subscription": {resub, false, ErrPlanMismatch},
+		"another leg":          {func() intents.RoadBookingConfirmationBody { m := moved; m.BookingRef = "OB-BKG-R-0914"; return m }(), false, ErrPlanMismatch},
 	} {
 		s := shipperWith(t, roadAnswer(tc.answer))
 		_ = s.Bookings.Add(store.Booking{Ref: "OB-BKG-R-0913", Shipper: "cymbal-shoes.example", Operator: "ocean-blue.example",
@@ -197,5 +198,31 @@ func TestShipperViewRoad(t *testing.T) {
 	v := shipperView(store.Booking{Ref: "OB-BKG-R-0913", Operator: "ocean-blue.example", Road: &store.RoadBooking{Request: *leg(), Confirmation: planned}})
 	if v.Origin.UNLocode != "BRSSZ" || v.Destination.UNLocode != "BRSAO" || v.PlannedArrival != "2026-10-25T20:00:00Z" || v.Cargo != "Shoes" || v.Vessel != "" {
 		t.Errorf("%+v", v)
+	}
+}
+
+// TestAmendRoadRace: an amendment recorded while another was out keeps
+// the record; the later answer isn't recorded over it.
+func TestAmendRoadRace(t *testing.T) {
+	moved := planned
+	moved.PlannedPickup, moved.PlannedDelivery = "2026-10-27T14:00:00Z", "2026-10-28T20:00:00Z"
+	var s *Shipper
+	s = shipperWith(t, func(envelope.Header) (string, any) {
+		// Another amendment is recorded while this one is out.
+		_, _ = s.Bookings.Update("ocean-blue.example", "OB-BKG-R-0913", func(b *store.Booking) error {
+			b.Road.Request.Delivery.Latest = "2026-10-30T12:00:00Z"
+			return nil
+		})
+		return intents.RoadBookingConfirmation, &moved
+	})
+	_ = s.Bookings.Add(store.Booking{Ref: "OB-BKG-R-0913", Shipper: "cymbal-shoes.example", Operator: "ocean-blue.example",
+		Road: &store.RoadBooking{Request: *leg(), Confirmation: planned}})
+	_, err := s.AmendRoad(context.Background(), "ocean-blue.example", "OB-BKG-R-0913", &intents.RoadBookingAmendmentBody{
+		Pickup: &intents.Window{Earliest: "2026-10-27T14:00:00Z"}, Delivery: &intents.Window{Latest: "2026-10-29T12:00:00Z"}})
+	if !errors.Is(err, ErrLegChanged) {
+		t.Errorf("%v, want ErrLegChanged", err)
+	}
+	if b, _ := s.Bookings.Get("ocean-blue.example", "OB-BKG-R-0913"); b.Road.Request.Delivery.Latest != "2026-10-30T12:00:00Z" || b.Road.Confirmation.PlannedPickup != planned.PlannedPickup {
+		t.Errorf("record %+v", b.Road)
 	}
 }
