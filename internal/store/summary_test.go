@@ -29,7 +29,11 @@ func eventRecord(t *testing.T, id, code, class, at string) Record {
 	if code == "DEPA" || code == "ARRI" {
 		typ = "TRANSPORT"
 	}
-	b, _ := json.Marshal(intents.TnTEventBody{EventID: id, EventType: typ, EventTypeCode: code, EventClassifierCode: class, EventDateTime: at})
+	loc := "NLRTM" // the voyage's port of loading; arrivals are at its port of discharge
+	if code == "ARRI" {
+		loc = "USEWR"
+	}
+	b, _ := json.Marshal(intents.TnTEventBody{EventID: id, EventType: typ, EventTypeCode: code, EventClassifierCode: class, EventDateTime: at, UNLocationCode: loc})
 	return Record{ID: id, Intent: intents.TnTEvent, Body: b, At: time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC),
 		Header: envelope.Header{Sender: "ocean-blue.example", MessageID: "m-" + id, SentAt: "2026-10-07T12:00:00.000Z"}}
 }
@@ -85,5 +89,34 @@ func TestViewRecordsAndList(t *testing.T) {
 	got := s.List()
 	if len(got) != 3 || got[0].Ref != "B" || got[1].Ref != "A" || got[2].Ref != "C" {
 		t.Errorf("List order %v %v %v", got[0].Ref, got[1].Ref, got[2].Ref)
+	}
+}
+
+// TestSummarizeOrderLegs: an order's leg arriving at a handover port is in
+// transit, and its estimate isn't the order's ETA; only an arrival at the
+// order's destination is.
+func TestSummarizeOrderLegs(t *testing.T) {
+	b := orderBooking() // NLTLB → BRSAO, planned delivery 2026-10-26T10:00:00Z
+	ev := func(id, code, class, at, loc string) Record {
+		typ := "TRANSPORT"
+		raw, _ := json.Marshal(intents.TnTEventBody{EventID: id, EventType: typ, EventTypeCode: code, EventClassifierCode: class, EventDateTime: at, UNLocationCode: loc})
+		return Record{ID: id, Intent: intents.TnTEvent, Body: raw}
+	}
+	recs := []Record{
+		ev("MF-EV-1", "DEPA", "ACT", "2026-10-06T08:00:00Z", "NLTLB"),
+		ev("MF-EV-2", "ARRI", "EST", "2026-10-06T11:00:00Z", "NLRTM"), // the first truck, at Rotterdam
+		ev("MF-EV-3", "ARRI", "ACT", "2026-10-06T11:00:00Z", "NLRTM"),
+	}
+	s := Summarize(b, recs)
+	if s.Status != "in transit" || s.ETA != "2026-10-26T10:00:00Z" || s.ETASource != "" {
+		t.Errorf("at a handover: %+v", s)
+	}
+	recs = append(recs, ev("MF-EV-4", "ARRI", "EST", "2026-10-29T10:00:00Z", "BRSAO"))
+	if s := Summarize(b, recs); s.ETA != "2026-10-29T10:00:00Z" || s.ETASource != "MF-EV-4" {
+		t.Errorf("an estimate at the door: %+v", s)
+	}
+	recs = append(recs, ev("MF-EV-5", "ARRI", "ACT", "2026-10-29T09:00:00Z", "BRSAO"))
+	if s := Summarize(b, recs); s.Status != "arrived" || s.ETA != "2026-10-29T09:00:00Z" {
+		t.Errorf("delivered: %+v", s)
 	}
 }

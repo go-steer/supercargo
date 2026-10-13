@@ -50,8 +50,13 @@ type EDIFACT struct {
 	// Transit is how long a trip takes when the instruction gives no
 	// delivery window (default 3h).
 	Transit time.Duration
-	Now     func() time.Time
-	Log     *slog.Logger
+	// Shared puts every trip on one clock, from the real time of the first
+	// instruction (as the nodes' simulator.clock: shared). Without it,
+	// each trip's clock starts an hour before its pickup.
+	Shared bool
+	Now    func() time.Time
+	anchor time.Time
+	Log    *slog.Logger
 
 	seq   int
 	acked map[string]taken // by instruction reference
@@ -150,7 +155,14 @@ func (c *EDIFACT) plan(i edi.Instruction, ack edi.Ack) *trip {
 		}
 		return edi.Status{Reference: i.Reference, CarrierRef: ack.CarrierRef, Code: code, Time: at, UNLocode: s.UNLocode, Facility: s.Name, TransportDocument: doc}
 	}
-	return &trip{realStart: c.Now(), simStart: pickup.Add(-time.Hour), statuses: []edi.Status{
+	start, simStart := c.Now(), pickup.Add(-time.Hour)
+	if c.Shared {
+		if c.anchor.IsZero() {
+			c.anchor = start
+		}
+		start, simStart = c.anchor, c.anchor
+	}
+	return &trip{realStart: start, simStart: simStart, statuses: []edi.Status{
 		st("12", pickup, i.Pickup),                        // picked up
 		st("13", pickup.Add(15*time.Minute), i.Pickup),    // departed
 		st("54", arrival, i.Delivery),                     // gated in
@@ -182,6 +194,9 @@ func (c *EDIFACT) report() error {
 		}
 	}
 	c.trips = left
+	if len(left) == 0 {
+		c.anchor = time.Time{} // nothing playing: the next trip anchors the shared clock afresh
+	}
 	return nil
 }
 

@@ -66,7 +66,15 @@ type Simulator struct {
 	// OnPublish learns about each event and alert published (the node's
 	// log shows it). Optional; the same rules as OnError.
 	OnPublish func(ref string, body intents.Body)
-	Now       func() time.Time
+	// Shared puts every voyage on one clock: simulated time is the real
+	// time of the first voyage's start (the anchor) plus HoursPerSecond
+	// hours per real second since, until no voyage is left to play. Bookings planned on real dates then
+	// play in their real order, across nodes whose first bookings come
+	// together (a forwarder's legs, one after another). Without it, each
+	// voyage's clock starts just before its own first step.
+	Shared bool
+	Now    func() time.Time
+	anchor time.Time
 
 	once    sync.Once
 	stop    chan struct{}
@@ -87,7 +95,8 @@ type timeline struct {
 	arrival   time.Time // the current estimate
 	delayed   time.Duration
 	arrived   bool
-	begun     bool // a step has fired
+	begun     bool      // a step has fired
+	holdUntil time.Time // no step fires before this real time
 	steps     []step
 }
 
@@ -245,7 +254,7 @@ func (s *Simulator) Start(b store.Booking) error {
 				Description: describe("%s %s departed %s", vessel, voyage, facility(origin)), VesselName: vessel, VoyageNumber: voyage}
 		}},
 	)
-	tl := &timeline{booking: b, realStart: s.Now().Add(s.StartDelay), simStart: dep.Add(-simLeadIn), arrival: arr}
+	tl := s.newTimeline(b, dep.Add(-simLeadIn), arr)
 	if dep.Add(estimateAfter).Before(arr) { // a voyage that short has no time for an estimate
 		steps = append(steps, step{at: dep.Add(estimateAfter), body: func(id string, _ time.Time) intents.Body { return s.estimate(id, tl, "") }})
 	}
@@ -265,6 +274,24 @@ func (s *Simulator) Start(b store.Booking) error {
 	sort.SliceStable(steps, func(i, j int) bool { return steps[i].at.Before(steps[j].at) })
 	tl.steps = steps
 	return s.add(tl)
+}
+
+// newTimeline is a timeline on the simulator's clock: its own, starting
+// at simStart StartDelay from now, or the shared one (Shared). Either
+// way nothing fires for StartDelay, so the booking's confirmation reaches
+// its shipper before the first event does.
+func (s *Simulator) newTimeline(b store.Booking, simStart, arrival time.Time) *timeline {
+	now := s.Now()
+	tl := &timeline{booking: b, realStart: now.Add(s.StartDelay), simStart: simStart, arrival: arrival, holdUntil: now.Add(s.StartDelay)}
+	if s.Shared {
+		s.mu.Lock()
+		if s.anchor.IsZero() {
+			s.anchor = now
+		}
+		tl.realStart, tl.simStart = s.anchor, s.anchor
+		s.mu.Unlock()
+	}
+	return tl
 }
 
 // add puts a new timeline in play.
@@ -302,7 +329,7 @@ func (s *Simulator) roadTimeline(b store.Booking) (*timeline, error) {
 				Description: describe("Container %s %s %s", ref, equipmentWords[code], stop.Facility), EquipmentReference: ref}
 		}}
 	}
-	tl := &timeline{booking: b, realStart: s.Now().Add(s.StartDelay), simStart: pickup.Add(-roadLeadIn), arrival: delivery}
+	tl := s.newTimeline(b, pickup.Add(-roadLeadIn), delivery)
 	var steps []step
 	refs := b.EquipmentRefs()
 	for _, ref := range refs {
@@ -429,6 +456,9 @@ func (s *Simulator) Advance() {
 	// Publishing under the lock keeps a booking's events in order with a
 	// concurrent Disrupt; Publish only queues, so it doesn't block.
 	for ref, tl := range s.lines {
+		if now.Before(tl.holdUntil) {
+			continue
+		}
 		sim := tl.simNow(now, s.HoursPerSecond)
 		for len(tl.steps) > 0 && !tl.steps[0].at.After(sim) {
 			st := tl.steps[0]
@@ -446,6 +476,11 @@ func (s *Simulator) Advance() {
 		if len(tl.steps) == 0 {
 			delete(s.lines, ref)
 		}
+	}
+	if len(s.lines) == 0 {
+		// Nothing playing: the next journey's first booking anchors the
+		// shared clock afresh, so it plays from its own time.
+		s.anchor = time.Time{}
 	}
 }
 

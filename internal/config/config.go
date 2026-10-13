@@ -501,7 +501,19 @@ type Simulator struct {
 	// HoursPerSecond is simulated hours per real second (default 1, at most
 	// MaxHoursPerSecond).
 	HoursPerSecond float64 `yaml:"hoursPerSecond"`
+	// Clock is "booking" (the default: each voyage's clock starts just
+	// before its first step, whatever its dates) or "shared" (one clock
+	// for every voyage, from the real time of the node's first: bookings
+	// on real dates play in their real order, across nodes whose first
+	// bookings come together, as a forwarder's legs do).
+	Clock string `yaml:"clock"`
 }
+
+// Simulator clocks.
+const (
+	ClockBooking = "booking"
+	ClockShared  = "shared"
+)
 
 // MaxHoursPerSecond bounds the simulator's clock speed: a whole voyage in
 // well under a second, for tests.
@@ -822,6 +834,13 @@ func (c *Config) validate() error {
 		// NaN fails both comparisons, so it is caught too.
 		if !(c.Simulator.HoursPerSecond >= 0 && c.Simulator.HoursPerSecond <= MaxHoursPerSecond) {
 			return fmt.Errorf("simulator: hoursPerSecond must be between 0 and %d", MaxHoursPerSecond)
+		}
+		switch c.Simulator.Clock {
+		case "":
+			c.Simulator.Clock = ClockBooking
+		case ClockBooking, ClockShared:
+		default:
+			return fmt.Errorf("simulator: clock %q is not booking or shared", c.Simulator.Clock)
 		}
 		if c.Simulator.HoursPerSecond == 0 {
 			c.Simulator.HoursPerSecond = 1

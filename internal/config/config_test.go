@@ -427,6 +427,22 @@ forwarder:
 	}
 }
 
+// TestSimulatorClock: the simulator's clock is booking (the default) or
+// shared.
+func TestSimulatorClock(t *testing.T) {
+	c, err := Parse([]byte(operatorYAML))
+	if err != nil || c.Simulator.Clock != ClockBooking {
+		t.Fatalf("default: %+v, %v", c.Simulator, err)
+	}
+	shared := strings.Replace(operatorYAML, "simulator: { hoursPerSecond: 1 }", "simulator: { hoursPerSecond: 1, clock: shared }", 1)
+	if c, err := Parse([]byte(shared)); err != nil || c.Simulator.Clock != ClockShared {
+		t.Errorf("shared: %+v, %v", c, err)
+	}
+	if _, err := Parse([]byte(strings.Replace(operatorYAML, "simulator: { hoursPerSecond: 1 }", "simulator: { hoursPerSecond: 1, clock: wall }", 1))); err == nil {
+		t.Error("an unknown clock: accepted")
+	}
+}
+
 // TestRoles: a node may have several roles; the one-role form still
 // works; each role's section follows its role.
 func TestRoles(t *testing.T) {

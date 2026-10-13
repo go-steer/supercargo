@@ -35,6 +35,7 @@ func TestRun(t *testing.T) {
 		"no such out drop":   {"edifact", "--id", "a", "--partner", "b", "--in", t.TempDir(), "--out", "/nonexistent/x"},
 		"an unknown flag":    {"edifact", "--carrier", "a"},
 		"a bad e-CMR prefix": {"edifact", "--id", "a", "--partner", "b", "--in", t.TempDir(), "--out", t.TempDir(), "--ecmr-prefix", "ECMR NL"},
+		"an unknown clock":   {"edifact", "--id", "a", "--partner", "b", "--in", t.TempDir(), "--out", t.TempDir(), "--clock", "wall"},
 		"too fast":           {"edifact", "--id", "a", "--partner", "b", "--in", t.TempDir(), "--out", t.TempDir(), "--hours-per-second", "100000"},
 	} {
 		if err := run(context.Background(), args, &stderr); err == nil {
