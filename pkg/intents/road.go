@@ -260,10 +260,11 @@ func documents(field string, docs []DocumentRef, types map[string]bool) error {
 	seen := map[DocumentRef]bool{}
 	for i, d := range docs {
 		at := fmt.Sprintf("%s[%d]", field, i)
-		if seen[d] {
+		key := DocumentRef{Type: d.Type, AccessKey: d.AccessKey, Number: strings.ToUpper(d.Number)}
+		if seen[key] {
 			errs = append(errs, fmt.Errorf("%s: the same document twice", at))
 		}
-		seen[d] = true
+		seen[key] = true
 		switch {
 		case !types[d.Type]:
 			errs = append(errs, fmt.Errorf("%s.type: %s is not one of %v", at, logsafe.Quote(d.Type), slices.Sorted(maps.Keys(types))))
@@ -285,7 +286,7 @@ func documents(field string, docs []DocumentRef, types map[string]bool) error {
 // facility code, or the same UN/LOCODE and facility name (ignoring case
 // and surrounding space).
 func sameStop(a, b Stop) bool {
-	if a.FacilityCode != "" && a.FacilityCode == b.FacilityCode {
+	if a.FacilityCode != "" && strings.EqualFold(a.FacilityCode, b.FacilityCode) {
 		return true
 	}
 	return a.UNLocationCode == b.UNLocationCode && strings.EqualFold(strings.TrimSpace(a.Facility), strings.TrimSpace(b.Facility))

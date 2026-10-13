@@ -143,13 +143,13 @@ func TestDecodeRoadRejects(t *testing.T) {
 		"a half-punctuated CNPJ":    {R, `"12.345.678/0001-90"`, `"12345678/0001-90"`},
 		"a CNPJ with letter checks": {R, `"12.345.678/0001-90"`, `"12ABC34501DE3F"`},
 		"a lowercase CNPJ":          {R, `"12.345.678/0001-90"`, `"12abc34501de35"`},
-		"a half-punctuated CPF":     {R, `"12.345.678/0001-90"`, `"123.456.78909"`},
+		"a half-punctuated CPF":     {R, `{"scheme": "BR:CNPJ", "value": "12.345.678/0001-90"}`, `{"scheme": "BR:CPF", "value": "123.456.78909"}`},
 		"a postal code ending -":    {R, `"postal_code": "07750-000"`, `"postal_code": "07750-"`},
 		"another's shipper domain":  {R, `"domain": "meridian-forwarding.example"`, `"domain": "cymbal-calcados.example"`},
 		"a delivery before pickup":  {R, `"latest": "2026-10-26T12:00:00Z"`, `"latest": "2026-10-24T13:00:00Z"`},
 		"the pickup, renamed":       {R, `"facility": "Cymbal Calçados DC, dock 2", "un_location_code": "BRSAO"`, `"facility": " santos brasil TECON terminal", "un_location_code": "BRSSZ"`},
-		"the pickup's facility":     {R, `"un_location_code": "BRSAO"`, `"un_location_code": "BRSAO", "facility_code": "BRSSZTCN"`},
-		"a document twice":          {C, `"transport_documents": [{"type": "CRT", "number": "BR-2026-0913"}]`, `"transport_documents": [{"type": "CRT", "number": "BR-2026-0913"}, {"type": "CRT", "number": "BR-2026-0913"}]`},
+		"the pickup's facility":     {R, `"un_location_code": "BRSAO"`, `"un_location_code": "BRSAO", "facility_code": "brssztcn"`},
+		"a document twice":          {C, `"transport_documents": [{"type": "CRT", "number": "BR-2026-0913"}]`, `"transport_documents": [{"type": "CRT", "number": "BR-2026-0913"}, {"type": "CRT", "number": "br-2026-0913"}]`},
 		"letters in the key's date": {C, `"35261012345678000190570010000012341000012345"`, `"3526AB12345678000190570010000012341000012345"`},
 	} {
 		base := map[string]string{R: roadRequestJSON, C: roadConfirmationJSON, A: roadAmendmentJSON}[tc.intent]

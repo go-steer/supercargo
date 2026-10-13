@@ -249,24 +249,34 @@ type statusResult struct {
 // missing IDs among them, so a large booking still fits a tool result.
 func trimStatus(st *shipper.StatusResponse) statusResult {
 	out := statusResult{StatusResponse: st}
-	if st.Status == nil || len(st.Status.Events) <= maxRecords {
+	if st.Status == nil {
 		return out
 	}
 	trimmed := *st.Status
-	out.OmittedEvents = len(trimmed.Events) - maxRecords
-	trimmed.Events = trimmed.Events[out.OmittedEvents:]
+	if n := len(trimmed.Events) - maxRecords; n > 0 {
+		out.OmittedEvents = n
+	}
+	// A copy without derived_from: unchecked partner text, never for a model.
+	trimmed.Events = slices.Clone(trimmed.Events[out.OmittedEvents:])
+	for i := range trimmed.Events {
+		trimmed.Events[i].DerivedFrom = nil
+	}
+	resp := *st
+	resp.Status = &trimmed
+	out.StatusResponse = &resp
+	if out.OmittedEvents == 0 {
+		return out
+	}
 	kept := map[string]bool{}
 	for _, e := range trimmed.Events {
 		kept[e.EventID] = true
 	}
-	resp := *st
-	resp.Status, resp.Missing = &trimmed, nil
+	resp.Missing = nil
 	for _, id := range st.Missing {
 		if kept[id] {
 			resp.Missing = append(resp.Missing, id)
 		}
 	}
-	out.StatusResponse = &resp
 	return out
 }
 
