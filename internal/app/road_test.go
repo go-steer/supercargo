@@ -44,7 +44,8 @@ func TestRoadCarrierFromConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := resp.Body.(*intents.RoadBookingConfirmationBody)
-	if c.Status != intents.StatusConfirmed || len(c.FiscalDocuments) != 1 || *resp.Envelope.Header.BookingRef != c.BookingRef {
+	// Ocean Blue books ocean too: its truck legs have their own numbers.
+	if c.Status != intents.StatusConfirmed || len(c.FiscalDocuments) != 1 || *resp.Envelope.Header.BookingRef != c.BookingRef || c.BookingRef != "OB-BKG-R-0913" {
 		t.Fatalf("confirmation %+v", c)
 	}
 	b, err := p.operator.Carrier.Bookings.Get("ocean-blue.example", c.BookingRef)

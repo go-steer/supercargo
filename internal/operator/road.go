@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,7 +71,7 @@ func (s *RoadBookingService) Handle(ctx context.Context, req *node.Request) (*no
 	if err != nil {
 		return nil, err
 	}
-	if err := checkRoadAnswer(conf, b.Subscription != nil); err != nil {
+	if err := checkRoadAnswer(conf, b); err != nil {
 		return nil, err
 	}
 	if conf.Status != intents.StatusConfirmed {
@@ -101,17 +102,37 @@ func (s *RoadBookingService) Handle(ctx context.Context, req *node.Request) (*no
 // checkRoadAnswer checks what a backend answered before anything is
 // stored or signed: a bug there must not become a live booking or a
 // malformed message to a partner.
-func checkRoadAnswer(conf *intents.RoadBookingConfirmationBody, subscribed bool) error {
+func checkRoadAnswer(conf *intents.RoadBookingConfirmationBody, b *intents.RoadBookingRequestBody) error {
 	if conf == nil {
 		return errors.New("operator: the booking system gave no answer")
 	}
 	if err := conf.Validate(); err != nil {
 		return fmt.Errorf("operator: the booking system's answer: %w", err)
 	}
-	if conf.Status == intents.StatusConfirmed && subscribed && conf.SubscriptionID == "" {
+	if conf.Status != intents.StatusConfirmed {
+		return nil
+	}
+	if b.Subscription != nil && conf.SubscriptionID == "" {
 		return errors.New("operator: the booking system confirmed a subscribed leg without a subscription_id")
 	}
+	// The plan keeps the windows the shipper asked for: confirming a
+	// pickup outside them would promise what wasn't asked.
+	if !inWindow(conf.PlannedPickup, b.Pickup) || !inWindow(conf.PlannedDelivery, b.Delivery) {
+		return fmt.Errorf("operator: the booking system planned %s → %s outside the leg's windows", conf.PlannedPickup, conf.PlannedDelivery)
+	}
 	return nil
+}
+
+// inWindow reports whether the time at falls in the stop's window.
+func inWindow(at string, s intents.Stop) bool {
+	t, _ := parseTime(at) // validated
+	if e, ok := parseTime(s.Earliest); ok && t.Before(e) {
+		return false
+	}
+	if l, ok := parseTime(s.Latest); ok && t.After(l) {
+		return false
+	}
+	return true
 }
 
 // RoadAmendmentService handles ulp.road.booking.amendment: the shipper of
@@ -124,6 +145,10 @@ type RoadAmendmentService struct {
 	// not block.
 	OnAmended func(store.Booking)
 }
+
+// errLegChanged reports a leg amended by someone else while an amendment
+// was being planned.
+var errLegChanged = errors.New("operator: the leg changed meanwhile")
 
 // forbiddenLeg is the one answer to an amendment of a leg the sender
 // doesn't hold, whether it exists or not, so the answer reveals nothing.
@@ -171,7 +196,7 @@ func (s *RoadAmendmentService) Handle(ctx context.Context, req *node.Request) (*
 	if err != nil {
 		return nil, err
 	}
-	if err := checkRoadAnswer(conf, amended.Subscription != nil); err != nil {
+	if err := checkRoadAnswer(conf, &amended); err != nil {
 		return nil, err
 	}
 	if conf.BookingRef != a.BookingRef {
@@ -180,14 +205,26 @@ func (s *RoadAmendmentService) Handle(ctx context.Context, req *node.Request) (*
 	if conf.Status != intents.StatusConfirmed {
 		return &node.Reply{BookingRef: a.BookingRef, Body: conf}, nil
 	}
+	if conf.SubscriptionID != b.Road.Confirmation.SubscriptionID {
+		return nil, fmt.Errorf("operator: the booking system changed %s's subscription in an amendment", a.BookingRef)
+	}
+	snapshot := b.Road
 	stored, err := s.Bookings.Update(h.Receiver, a.BookingRef, func(b *store.Booking) error {
-		if b.Road == nil || b.Shipper != h.Sender {
-			return store.ErrNotFound // replaced by a reset since; unreachable otherwise
+		// Only over the leg this plan was made from: another amendment
+		// stored meanwhile would otherwise be lost, and its shipper told a
+		// plan that no longer holds.
+		if b.Road == nil || b.Shipper != h.Sender || !reflect.DeepEqual(b.Road, snapshot) {
+			return errLegChanged
 		}
 		b.Road.Request, b.Road.Confirmation = amended, *conf
 		return nil
 	})
-	if err != nil {
+	if errors.Is(err, errLegChanged) {
+		return &node.Reply{BookingRef: a.BookingRef, Body: &intents.RoadBookingConfirmationBody{
+			BookingRef: a.BookingRef, Status: intents.StatusRejected,
+			Messages: []intents.Message{{Code: "changed_meanwhile", Detail: "The leg changed while this amendment was planned; the plan confirmed meanwhile stands. Send the amendment again if it still applies."}},
+		}}, nil
+	} else if err != nil {
 		return nil, err
 	}
 	if s.OnAmended != nil {
@@ -211,9 +248,11 @@ func amendWindow(s *intents.Stop, w *intents.Window) {
 }
 
 // TruckBookings is the in-memory road booking system: it plans each leg
-// from its windows (the pickup as early as allowed, at least Lead from
-// now, on the hour; the delivery Transit later, or at the delivery window's
-// start if that's later), and declines a leg it can't run inside them. It
+// from its windows (the pickup at the window's start, or at least Lead
+// from now on the next full hour if that's later; the delivery Transit
+// later, or at the delivery window's start if that's later), and declines
+// a leg it can't run inside them. An amendment that moves only the
+// delivery keeps the planned pickup. It
 // issues a mock CT-e (CTe) and an e-CMR number (ECMRPrefix) when
 // configured. It is what a road carrier's TMS would decide; the demo's
 // default.
@@ -251,7 +290,7 @@ func (t *TruckBookings) Decide(_ context.Context, r backend.RoadBookingRequest) 
 	t.next++
 	t.mu.Unlock()
 	ref := fmt.Sprintf("%s-%04d", t.RefPrefix, n)
-	conf, msg := t.plan(ref, r.Body)
+	conf, msg := t.plan(ref, r.Body, time.Time{})
 	if msg != nil {
 		return &intents.RoadBookingConfirmationBody{BookingRef: ref, Status: intents.StatusRejected, Messages: []intents.Message{*msg}}, nil
 	}
@@ -266,7 +305,9 @@ func (t *TruckBookings) Decide(_ context.Context, r backend.RoadBookingRequest) 
 		conf.TransportDocuments = []intents.DocumentRef{{Type: "e-CMR", Number: fmt.Sprintf("%s-%06d", t.ECMRPrefix, n)}}
 	}
 	if r.Body.Subscription != nil {
-		conf.SubscriptionID = fmt.Sprintf("SUB-%04d", n)
+		// From the reference, which is unique in the store: an ocean
+		// booking's counter can't produce the same ID.
+		conf.SubscriptionID = "SUB-" + ref
 	}
 	return conf, nil
 }
@@ -274,7 +315,13 @@ func (t *TruckBookings) Decide(_ context.Context, r backend.RoadBookingRequest) 
 // Amend implements backend.RoadBookings: the leg is planned again in its
 // new windows, keeping its reference, documents and subscription.
 func (t *TruckBookings) Amend(_ context.Context, r backend.RoadAmendment) (*intents.RoadBookingConfirmationBody, error) {
-	conf, msg := t.plan(r.Current.BookingRef, r.Request)
+	var keep time.Time
+	if r.Amendment.Pickup == nil {
+		// Only the delivery moves: the truck still collects when planned
+		// (it may have already).
+		keep, _ = parseTime(r.Current.PlannedPickup)
+	}
+	conf, msg := t.plan(r.Current.BookingRef, r.Request, keep)
 	if msg != nil {
 		return &intents.RoadBookingConfirmationBody{BookingRef: r.Current.BookingRef, Status: intents.StatusRejected,
 			Messages: []intents.Message{{Code: msg.Code, Detail: msg.Detail + " The current plan stands."}}}, nil
@@ -284,14 +331,21 @@ func (t *TruckBookings) Amend(_ context.Context, r backend.RoadAmendment) (*inte
 	return conf, nil
 }
 
-// plan places the leg in its windows, or says why it can't.
-func (t *TruckBookings) plan(ref string, b *intents.RoadBookingRequestBody) (*intents.RoadBookingConfirmationBody, *intents.Message) {
-	pickup := t.Now().Add(t.Lead).UTC().Truncate(time.Hour).Add(time.Hour)
-	if e, ok := parseTime(b.Pickup.Earliest); ok && e.After(pickup) {
-		pickup = e
-	}
-	if l, ok := parseTime(b.Pickup.Latest); ok && pickup.After(l) {
-		return nil, &intents.Message{Code: "pickup_window_missed", Detail: "This carrier can't collect inside the pickup window."}
+// plan places the leg in its windows, or says why it can't. A non-zero
+// keep is a pickup already planned, which stays.
+func (t *TruckBookings) plan(ref string, b *intents.RoadBookingRequestBody, keep time.Time) (*intents.RoadBookingConfirmationBody, *intents.Message) {
+	pickup := keep
+	if pickup.IsZero() {
+		pickup = t.Now().Add(t.Lead).UTC()
+		if p := pickup.Truncate(time.Hour); !p.Equal(pickup) {
+			pickup = p.Add(time.Hour) // the next full hour
+		}
+		if e, ok := parseTime(b.Pickup.Earliest); ok && e.After(pickup) {
+			pickup = e
+		}
+		if l, ok := parseTime(b.Pickup.Latest); ok && pickup.After(l) {
+			return nil, &intents.Message{Code: "pickup_window_missed", Detail: "This carrier can't collect inside the pickup window."}
+		}
 	}
 	delivery := pickup.Add(t.Transit)
 	if e, ok := parseTime(b.Delivery.Earliest); ok && e.After(delivery) {
@@ -320,9 +374,13 @@ func (c *CTeIssuer) accessKey(at time.Time, n int) (string, error) {
 	if c.State < 11 || c.State > 53 || len(c.CNPJ) != 14 {
 		return "", fmt.Errorf("operator: CT-e issuer state %d / CNPJ %q", c.State, c.CNPJ)
 	}
-	body := fmt.Sprintf("%02d%s%s57001%09d1%08d", c.State, at.UTC().Format("0601"), strings.ToUpper(c.CNPJ), n%1_000_000_000, (n*7919+1)%100_000_000)
+	body := fmt.Sprintf("%02d%s%s57001%09d1%08d", c.State, at.In(brasilia).Format("0601"), strings.ToUpper(c.CNPJ), n%1_000_000_000, (n*7919+1)%100_000_000)
 	return body + strconv.Itoa(mod11(body)), nil
 }
+
+// brasilia is Brasília time, the year and month of a CT-e issued in São
+// Paulo (UTC-3; Brazil has kept no daylight saving time since 2019).
+var brasilia = time.FixedZone("BRT", -3*60*60)
 
 // mod11 is the CT-e access key's check digit: the characters' values
 // (ASCII minus 48, which keeps digits and gives the alphanumeric CNPJ's

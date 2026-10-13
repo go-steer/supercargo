@@ -98,7 +98,7 @@ func TestRoadBooking(t *testing.T) {
 	}
 	c := reply.Body.(*intents.RoadBookingConfirmationBody)
 	if reply.BookingRef != "SR-BKG-0913" || c.Status != intents.StatusConfirmed || c.PlannedPickup != "2026-10-24T14:00:00Z" ||
-		c.PlannedDelivery != "2026-10-25T20:00:00Z" || c.SubscriptionID != "SUB-0913" || len(c.FiscalDocuments) != 1 {
+		c.PlannedDelivery != "2026-10-25T20:00:00Z" || c.SubscriptionID != "SUB-SR-BKG-0913" || len(c.FiscalDocuments) != 1 {
 		t.Fatalf("reply %s %+v", reply.BookingRef, c)
 	}
 	if key := c.FiscalDocuments[0].AccessKey; !strings.HasPrefix(key, "352610"+"12345678000190"+"57001000000913") {
@@ -108,7 +108,7 @@ func TestRoadBooking(t *testing.T) {
 	if err != nil || b.Road == nil || b.Shipper != meridian || b.Road.Confirmation.PlannedPickup != c.PlannedPickup || len(booked) != 1 {
 		t.Fatalf("stored %+v, %v; booked %d", b, err, len(booked))
 	}
-	if from, to := b.Places(); from != "BRSSZ" || to != "BRSAO" || b.Subscription() == nil || b.SubscriptionID() != "SUB-0913" ||
+	if from, to := b.Places(); from != "BRSSZ" || to != "BRSAO" || b.Subscription() == nil || b.SubscriptionID() != "SUB-SR-BKG-0913" ||
 		b.EquipmentRefs()[0] != "OCBU0000004" || b.ShipperRef() != "MF-0007-L3" {
 		t.Errorf("booking views: %s→%s, %v", from, to, b.EquipmentRefs())
 	}
@@ -234,7 +234,7 @@ func TestRoadAmendment(t *testing.T) {
 	}
 	c := reply.Body.(*intents.RoadBookingConfirmationBody)
 	if reply.BookingRef != "SR-BKG-0913" || c.Status != intents.StatusConfirmed || c.PlannedPickup != "2026-10-27T14:00:00Z" ||
-		c.PlannedDelivery != "2026-10-28T20:00:00Z" || c.FiscalDocuments[0] != was.FiscalDocuments[0] || c.SubscriptionID != "SUB-0913" {
+		c.PlannedDelivery != "2026-10-28T20:00:00Z" || c.FiscalDocuments[0] != was.FiscalDocuments[0] || c.SubscriptionID != "SUB-SR-BKG-0913" {
 		t.Fatalf("reply %+v", c)
 	}
 	b, _ := bookings.Get(serra, "SR-BKG-0913")
@@ -363,5 +363,96 @@ func TestRoadBackendChecked(t *testing.T) {
 	reply, err := full.Handle(context.Background(), roadRequest(meridian, roadBody()))
 	if err != nil || reply.Body.(*intents.RoadBookingConfirmationBody).Messages[0].Code != "at_capacity" {
 		t.Errorf("at capacity: %+v, %v", reply, err)
+	}
+}
+
+// racingRoad is a booking system during whose planning another amendment
+// of the same leg is stored.
+type racingRoad struct {
+	*TruckBookings
+	race func()
+}
+
+func (r racingRoad) Amend(ctx context.Context, a backend.RoadAmendment) (*intents.RoadBookingConfirmationBody, error) {
+	r.race()
+	return r.TruckBookings.Amend(ctx, a)
+}
+
+// TestRoadAmendmentRace: an amendment planned while another was stored is
+// refused, and the one stored stands: no update is lost.
+func TestRoadAmendmentRace(t *testing.T) {
+	s, am, bookings := roadServices()
+	if _, err := s.Handle(context.Background(), roadRequest(meridian, roadBody())); err != nil {
+		t.Fatal(err)
+	}
+	other := &RoadAmendmentService{Bookings: bookings, Backend: trucks()}
+	am.Backend = racingRoad{trucks(), func() {
+		// The delivery moves meanwhile.
+		if _, err := other.Handle(context.Background(), amendment(meridian, "SR-BKG-0913", &intents.RoadBookingAmendmentBody{
+			Delivery: &intents.Window{Latest: "2026-10-28T12:00:00Z"}})); err != nil {
+			t.Error(err)
+		}
+	}}
+	reply, err := am.Handle(context.Background(), amendment(meridian, "SR-BKG-0913", &intents.RoadBookingAmendmentBody{
+		Pickup: &intents.Window{Earliest: "2026-10-25T14:00:00Z"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := reply.Body.(*intents.RoadBookingConfirmationBody); c.Status != intents.StatusRejected || c.Messages[0].Code != "changed_meanwhile" {
+		t.Errorf("reply %+v", c)
+	}
+	b, _ := bookings.Get(serra, "SR-BKG-0913")
+	if b.Road.Request.Delivery.Latest != "2026-10-28T12:00:00Z" || b.Road.Request.Pickup.Earliest != "2026-10-24T14:00:00Z" {
+		t.Errorf("stored %+v", b.Road.Request)
+	}
+}
+
+// TestTruckPlanEdges: notice ending on the hour isn't rounded further; an
+// amendment of the delivery alone keeps the planned pickup.
+func TestTruckPlanEdges(t *testing.T) {
+	tb := trucks()
+	tb.Now = func() time.Time { return time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC) }
+	b := roadBody()
+	b.Pickup.Earliest, b.Pickup.Latest, b.Delivery.Latest = "", "2026-10-20T12:00:00Z", ""
+	c, err := tb.Decide(context.Background(), backend.RoadBookingRequest{Body: b})
+	if err != nil || c.Status != intents.StatusConfirmed || c.PlannedPickup != "2026-10-20T12:00:00Z" {
+		t.Fatalf("on the hour: %+v, %v", c, err)
+	}
+	// Two days later, only the delivery moves: the truck still collects
+	// when planned, though that's now in the past.
+	tb.Now = func() time.Time { return time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC) }
+	moved := *b
+	moved.Delivery.Earliest = "2026-10-22T20:00:00Z"
+	a, err := tb.Amend(context.Background(), backend.RoadAmendment{Request: &moved, Current: c,
+		Amendment: &intents.RoadBookingAmendmentBody{Delivery: &intents.Window{Earliest: "2026-10-22T20:00:00Z"}}})
+	if err != nil || a.PlannedPickup != "2026-10-20T12:00:00Z" || a.PlannedDelivery != "2026-10-22T20:00:00Z" {
+		t.Errorf("delivery only: %+v, %v", a, err)
+	}
+}
+
+// TestRoadBackendPlanChecked: a backend's plan outside the windows asked
+// for, or an amendment that changes the subscription, is never stored.
+func TestRoadBackendPlanChecked(t *testing.T) {
+	early := &intents.RoadBookingConfirmationBody{BookingRef: "SR-BKG-0913", Status: intents.StatusConfirmed,
+		PlannedPickup: "2026-10-23T14:00:00Z", PlannedDelivery: "2026-10-25T20:00:00Z", SubscriptionID: "SUB-1"}
+	late := *early
+	late.PlannedPickup, late.PlannedDelivery = "2026-10-24T14:00:00Z", "2026-10-28T20:00:00Z"
+	for name, conf := range map[string]*intents.RoadBookingConfirmationBody{"before the pickup window": early, "after the delivery window": &late} {
+		bookings := store.NewBookings()
+		s := &RoadBookingService{Bookings: bookings, Backend: badRoad{conf}, Now: time.Now}
+		if _, err := s.Handle(context.Background(), roadRequest(meridian, roadBody())); err == nil || bookings.Len() != 0 {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	s, _, bookings := roadServices()
+	if _, err := s.Handle(context.Background(), roadRequest(meridian, roadBody())); err != nil {
+		t.Fatal(err)
+	}
+	resub := &intents.RoadBookingConfirmationBody{BookingRef: "SR-BKG-0913", Status: intents.StatusConfirmed,
+		PlannedPickup: "2026-10-24T15:00:00Z", PlannedDelivery: "2026-10-25T20:00:00Z", SubscriptionID: "SUB-OTHER"}
+	am := &RoadAmendmentService{Bookings: bookings, Backend: badRoad{resub}}
+	if _, err := am.Handle(context.Background(), amendment(meridian, "SR-BKG-0913", &intents.RoadBookingAmendmentBody{
+		Pickup: &intents.Window{Earliest: "2026-10-24T15:00:00Z"}})); err == nil {
+		t.Error("a changed subscription was accepted")
 	}
 }

@@ -250,7 +250,7 @@ type Operator struct {
 // Ocean reports whether the operator takes ocean bookings: it has the
 // ocean fields, or no road section (and the ocean fields are required).
 func (o *Operator) Ocean() bool {
-	return o.Road == nil || o.Vessel != "" || o.Voyage != "" || o.ContainerPrefix != "" || o.Transit != 0
+	return o.Road == nil || o.Vessel != "" || o.Voyage != "" || o.ContainerPrefix != "" || o.Transit != 0 || o.DepartureHour != 0
 }
 
 // Road configures a road carrier's in-memory booking system

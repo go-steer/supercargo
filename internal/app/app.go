@@ -643,7 +643,13 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	if r := o.Road; r != nil {
 		// A road carrier: its booking system plans each leg (in memory
 		// until a backend adapter is configured).
-		trucks := &operator.TruckBookings{RefPrefix: o.RefPrefix, Transit: r.Transit, Lead: r.Lead, ECMRPrefix: r.ECMRPrefix, Now: time.Now}
+		prefix := o.RefPrefix
+		if o.Ocean() {
+			// The ocean bookings number from the same prefix in the same
+			// store: the truck legs get their own, so no two collide.
+			prefix += "-R"
+		}
+		trucks := &operator.TruckBookings{RefPrefix: prefix, Transit: r.Transit, Lead: r.Lead, ECMRPrefix: r.ECMRPrefix, Now: time.Now}
 		if r.CTe != nil {
 			trucks.CTe = &operator.CTeIssuer{CNPJ: r.CTe.CNPJ, State: r.CTe.State}
 		}

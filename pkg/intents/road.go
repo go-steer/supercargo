@@ -104,7 +104,8 @@ type RoadBookingRequestBody struct {
 	Pickup     Stop        `json:"pickup"`
 	Delivery   Stop        `json:"delivery"`
 	Equipment  []Equipment `json:"containers"`
-	// EquipmentReferences are the containers to collect (ISO 6346), when
+	// EquipmentReferences are the containers to collect (in ISO 6346 form:
+	// four letters and seven digits; the check digit isn't checked), when
 	// they're known: a truck from a port picks up the container the ship
 	// discharged, by its number.
 	EquipmentReferences []string      `json:"equipment_references,omitempty"`

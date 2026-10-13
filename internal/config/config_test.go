@@ -305,6 +305,7 @@ func TestRoadCarrier(t *testing.T) {
 		"a dotted e-CMR":      {"transit: 30h", "transit: 30h, ecmrPrefix: ECMR.NL"},
 		"half an ocean":       {"  road:", "  vessel: Ocean Blue Aurora\n  road:"},
 		"an unknown road key": {"transit: 30h", "transit: 30h, trucks: 4"},
+		"only a departure":    {"  road:", "  departureHour: 18\n  road:"},
 	} {
 		in := strings.Replace(only, edit[0], edit[1], 1)
 		if in == only {
