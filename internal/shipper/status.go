@@ -42,6 +42,11 @@ func (s *Shipper) Status(ctx context.Context, operator, ref string) (*Status, er
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s with %s", ErrNotOurBooking, ref, operator)
 	}
+	if b.Road != nil {
+		// A status request is DCSA's, for an ocean booking: a truck leg
+		// reports through its events.
+		return nil, fmt.Errorf("shipper: %s is a truck leg, which has no ocean status", ref)
+	}
 	tdr := b.Confirmation.TransportDocumentReference()
 	body := &intents.TnTStatusRequestBody{TnTRequest: intents.TnTRequest{TransportDocumentReference: tdr, CarrierBookingReference: ref}}
 	h := envelope.NewHeader(intents.OceanTnTRequest, s.Node.Domain(), operator, s.Now())

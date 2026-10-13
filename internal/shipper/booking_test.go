@@ -75,6 +75,9 @@ func shipperWith(t *testing.T, answer func(req envelope.Header) (string, any), o
 			if c, ok := body.(*intents.BookingConfirmationBody); ok {
 				h.BookingRef = &c.BookingRef
 			}
+			if c, ok := body.(*intents.RoadBookingConfirmationBody); ok {
+				h.BookingRef = &c.BookingRef
+			}
 			b, _ := json.Marshal(body)
 			return envelope.Seal(&envelope.Envelope{Header: h, Body: b}, "ob-1", obSigner)
 		}),

@@ -56,6 +56,24 @@ func TestBusinessContextNeverLeaves(t *testing.T) {
 	if !errors.Is(err, business.ErrLeak) {
 		t.Errorf("an inquiry carrying the warehouse: %v, want ErrLeak", err)
 	}
+	// So does a truck leg's request, or a forwarding order.
+	leg := &intents.RoadBookingRequestBody{ShipperRef: "CY-L3", Shipper: intents.Party{Name: "Cymbal Shoes"},
+		Pickup:    intents.Stop{Facility: "Port Newark terminal", UNLocationCode: "USEWR"},
+		Delivery:  intents.Stop{Facility: "Newark DC dock 4", UNLocationCode: "USNYC"},
+		Equipment: []intents.Equipment{{ISOType: "45G1", Count: 1, GrossWeightKg: 12000}}, Cargo: intents.Cargo{Description: "Shoes", HSCode: "6404"}}
+	if _, err := a.Node.Exchange(context.Background(), intents.HeaderFor(intents.RoadBookingRequest, "cymbal-shoes.example", "trucks.example", time.Now()),
+		leg, intents.RoadBookingConfirmation); !errors.Is(err, business.ErrLeak) {
+		t.Errorf("a truck leg to the warehouse: %v, want ErrLeak", err)
+	}
+	order := &intents.ForwardingRequestBody{ShipperRef: "CY-PO-55120", Incoterms: intents.Incoterms{Rule: "DAP", Version: "2020", NamedPlace: "Newark DC dock 4"},
+		Shipper: intents.Party{Name: "Cymbal Shoes"}, Consignee: intents.Party{Name: "Cymbal Footwear"},
+		PlaceOfReceipt:  intents.Place{Type: intents.PlacePort, Facility: "Euromax", UNLocationCode: "NLRTM"},
+		PlaceOfDelivery: intents.Place{Type: intents.PlacePort, Facility: "Port Newark", UNLocationCode: "USEWR"},
+		Equipment:       []intents.Equipment{{ISOType: "45G1", Count: 1, GrossWeightKg: 12000}}, Cargo: intents.Cargo{Description: "Shoes", HSCode: "6404"}}
+	if _, err := a.Node.Exchange(context.Background(), intents.HeaderFor(intents.ForwardingRequest, "cymbal-shoes.example", "forwarder.example", time.Now()),
+		order); !errors.Is(err, business.ErrLeak) {
+		t.Errorf("an order naming the warehouse: %v, want ErrLeak", err)
+	}
 
 	_ = os.WriteFile(file, []byte("secret: yes\n"), 0o600)
 	if _, err := New(c, quiet()); err == nil {

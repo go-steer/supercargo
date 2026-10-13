@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- The customer side of a truck leg: a shipper (a forwarder, in the door-to-door story) books and amends truck legs through its node (`Shipper.BookRoad`, `AmendRoad`), holds each carrier's plan to the windows asked for before recording it, and takes the leg's signed events. Road requests, amendments and forwarding orders pass the business context's guard, so private context can't leave in them.
+
 - The road simulator: a road carrier's legs play out on the shipment simulator like voyages (per container pick-up, the truck's departure, an estimated delivery, the arrival, per container drop-off), `ulpctl disrupt` delays a truck as it does a ship, and an amendment re-plans the leg (from scratch before the pick-up, the delivery only after it).
 
 - Road carriers (phase 1 of the door-to-door proposal): an operator with a `road` section takes `ulp.road.booking.request` and `.amendment`, planning each truck leg inside its windows with the in-memory `TruckBookings` (or declining it), and issuing a mock CT-e (the real access key layout and check digit, never sent to any authority) or an e-CMR number. Without the ocean fields it is a road carrier only. Only a leg's shipper may amend it; a rejected amendment leaves the plan as it was. Bookings are kept with their kind, so pushes, summaries and journeys work for truck legs too. A road request may name the containers to collect (`equipment_references`), and profiles list the road capability.

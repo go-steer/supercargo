@@ -313,8 +313,11 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	return a, nil
 }
 
-// customerSends are the intents the shipper and receiver roles send.
-var customerSends = map[string]bool{intents.BookingRequest: true, intents.TnTInquiry: true, intents.OceanTnTRequest: true}
+// customerSends are the intents the shipper and receiver roles send: what
+// the business context's guard checks, and what puts a conversation on the
+// customer side.
+var customerSends = map[string]bool{intents.BookingRequest: true, intents.TnTInquiry: true, intents.OceanTnTRequest: true,
+	intents.RoadBookingRequest: true, intents.RoadBookingAmendment: true, intents.ForwardingRequest: true}
 
 // customerGuard applies the business context's guard to what the customer
 // side sends, and only that. Applied to a carrier role's replies, which
