@@ -49,9 +49,29 @@ type Orders struct {
 	OnOrder  func(store.Booking)
 	OnAnswer func(store.Booking)
 
-	mu        sync.Mutex
-	next      int
-	answering map[string]bool // orders whose answer is being sent
+	mu      sync.Mutex
+	next    int
+	claimed map[string]bool // orders being answered or booked
+}
+
+// claim takes ref for one answer or booking at a time: two at once could
+// both reach the shipper (which takes only the first), or book carriers
+// for an order being rejected. The release must be called.
+func (o *Orders) claim(ref string) (func(), error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.claimed[ref] {
+		return nil, fmt.Errorf("%w: %s is being answered or booked", ErrAnswered, ref)
+	}
+	if o.claimed == nil {
+		o.claimed = map[string]bool{}
+	}
+	o.claimed[ref] = true
+	return func() {
+		o.mu.Lock()
+		delete(o.claimed, ref)
+		o.mu.Unlock()
+	}, nil
 }
 
 // Authorize implements node.Handler: the sender is not denied, and a
@@ -122,23 +142,16 @@ func (o *Orders) Answer(ctx context.Context, ref string, conf *intents.Forwardin
 	if conf.Status == intents.StatusPending {
 		return fmt.Errorf("%w: the final answer is confirmed or rejected", ErrInvalidAnswer)
 	}
-	// One answer at a time per order: two sent at once would both reach
-	// the shipper, which takes only the first.
-	o.mu.Lock()
-	if o.answering[ref] {
-		o.mu.Unlock()
-		return fmt.Errorf("%w: %s is being answered", ErrAnswered, ref)
+	release, err := o.claim(ref)
+	if err != nil {
+		return err
 	}
-	if o.answering == nil {
-		o.answering = map[string]bool{}
-	}
-	o.answering[ref] = true
-	o.mu.Unlock()
-	defer func() {
-		o.mu.Lock()
-		delete(o.answering, ref)
-		o.mu.Unlock()
-	}()
+	defer release()
+	return o.answer(ctx, ref, conf)
+}
+
+// answer is Answer for an order already claimed.
+func (o *Orders) answer(ctx context.Context, ref string, conf *intents.ForwardingConfirmationBody) error {
 	b, err := o.Bookings.Get(o.Node.Domain(), ref)
 	if err != nil || b.Order == nil {
 		return fmt.Errorf("%w: %s", ErrUnknownOrder, ref)

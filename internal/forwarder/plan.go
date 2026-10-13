@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/go-steer/supercargo/internal/config"
@@ -63,9 +62,6 @@ type Orchestrator struct {
 	Name     string
 	Endpoint string
 	Now      func() time.Time
-
-	mu      sync.Mutex
-	booking map[string]bool // orders being booked
 }
 
 // Handover is how long after a ship's planned arrival a container is
@@ -80,6 +76,13 @@ var (
 	ErrEDILeg = errors.New("forwarder: the lane has an EDI leg, which this node can't book yet")
 	// ErrLegRefused is a leg its carrier didn't confirm.
 	ErrLegRefused = errors.New("forwarder: a carrier didn't confirm its leg")
+	// ErrPlanUnfit is a leg whose carrier's plan the journey can't use (a
+	// ship leaving before the cargo is ready), or a journey that can't
+	// make the order's delivery date.
+	ErrPlanUnfit = errors.New("forwarder: the journey doesn't fit the order")
+	// ErrPlanChanged is an order whose booked legs no longer match its
+	// lane (the lane was edited after they were booked).
+	ErrPlanChanged = errors.New("forwarder: the order's booked legs don't match its lane")
 )
 
 // Plan is the order's plan: the steps of its lane, with the legs booked
@@ -97,6 +100,12 @@ func (o *Orchestrator) plan(b store.Booking) ([]Step, error) {
 	from, to := req.PlaceOfReceipt.UNLocationCode, req.PlaceOfDelivery.UNLocationCode
 	for _, l := range o.Lanes {
 		if l.From != from || l.To != to {
+			continue
+		}
+		// A door is reached by truck: a lane starting or ending at sea
+		// can't serve a door at that end.
+		if req.PlaceOfReceipt.Type == intents.PlaceDoor && l.Legs[0].Mode != intents.ModeRoad ||
+			req.PlaceOfDelivery.Type == intents.PlaceDoor && l.Legs[len(l.Legs)-1].Mode != intents.ModeRoad {
 			continue
 		}
 		steps := make([]Step, len(l.Legs))
@@ -135,21 +144,11 @@ func placeName(p intents.Place) string {
 // recorded, and the person decides (book again later, which resumes after
 // them, or answer the order with a rejection).
 func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.ForwardingConfirmationBody, error) {
-	o.mu.Lock()
-	if o.booking[ref] {
-		o.mu.Unlock()
-		return nil, fmt.Errorf("%w: %s is being booked", ErrAnswered, ref)
+	release, err := o.Orders.claim(ref)
+	if err != nil {
+		return nil, err
 	}
-	if o.booking == nil {
-		o.booking = map[string]bool{}
-	}
-	o.booking[ref] = true
-	o.mu.Unlock()
-	defer func() {
-		o.mu.Lock()
-		delete(o.booking, ref)
-		o.mu.Unlock()
-	}()
+	defer release()
 
 	self := o.Orders.Node.Domain()
 	b, err := o.Orders.Bookings.Get(self, ref)
@@ -173,21 +172,45 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 	if t, ok := parseTime(req.PlaceOfReceipt.Earliest); ok && t.After(ready) {
 		ready = t
 	}
+	latest, hasLatest := parseTime(req.PlaceOfDelivery.Latest)
 	var containers []string
 	for i, s := range steps {
+		last := i == len(steps)-1
 		if i < len(b.Order.Legs) {
-			// Booked before (a resumed booking): carry on from its plan.
+			// Booked before (a resumed booking): carry on from its plan,
+			// if it's still this step's.
 			done := b.Order.Legs[i]
+			if done.Mode != s.Mode || done.Carrier != s.Carrier || done.From != s.From || done.To != s.To {
+				return nil, fmt.Errorf("%w: leg %d was booked with %s, %s → %s", ErrPlanChanged, i+1, done.Carrier, done.From, done.To)
+			}
 			ready, containers = afterLeg(done, ready), done.Containers
 			continue
 		}
-		leg, err := o.bookLeg(ctx, b, i, s, ready, containers, i == len(steps)-1)
+		if hasLatest && ready.After(latest) {
+			return nil, fmt.Errorf("%w: the cargo is ready for leg %d only on %s, after the order's delivery date %s",
+				ErrPlanUnfit, i+1, ready.Format(envelope.TimeLayout), req.PlaceOfDelivery.Latest)
+		}
+		leg, err := o.bookLeg(ctx, b, i, s, ready, containers, last)
 		if err != nil {
 			return nil, err
 		}
+		// The carrier's plan, held to the journey before it's used: a leg
+		// that leaves before the cargo is ready, or (last) delivers late.
+		// It's booked with the carrier, but not recorded: the person takes
+		// it up with them (ULP can't cancel a leg yet).
+		if dep, ok := parseTime(leg.Departure); !ok || dep.Before(ready) {
+			return nil, fmt.Errorf("%w: %s planned leg %d (%s) to leave %s, before the cargo is ready (%s)",
+				ErrPlanUnfit, s.Name, i+1, leg.Ref, leg.Departure, ready.Format(envelope.TimeLayout))
+		}
+		if arr, ok := parseTime(leg.Arrival); last && hasLatest && (!ok || arr.After(latest)) {
+			return nil, fmt.Errorf("%w: %s planned leg %d (%s) to arrive %s, after the order's delivery date %s",
+				ErrPlanUnfit, s.Name, i+1, leg.Ref, leg.Arrival, req.PlaceOfDelivery.Latest)
+		}
 		if _, err := o.Orders.Bookings.Update(self, ref, func(b *store.Booking) error {
-			if b.Order == nil || len(b.Order.Legs) != i {
-				return errors.New("forwarder: the order's legs changed meanwhile")
+			// Still pending (the claim keeps a hand-made answer out, and a
+			// reset is the only other change), and still this leg's turn.
+			if b.Order == nil || b.Order.Confirmation.Status != intents.StatusPending || len(b.Order.Legs) != i {
+				return errors.New("forwarder: the order changed meanwhile")
 			}
 			b.Order.Legs = append(b.Order.Legs, *leg)
 			return nil
@@ -203,7 +226,7 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 			PlannedDeparture: l.Departure, PlannedArrival: l.Arrival})
 	}
 	conf.PlannedDelivery = b.Order.Legs[len(b.Order.Legs)-1].Arrival
-	if err := o.Orders.Answer(ctx, ref, conf); err != nil {
+	if err := o.Orders.answer(ctx, ref, conf); err != nil {
 		return nil, err
 	}
 	return conf, nil
@@ -243,7 +266,7 @@ func (o *Orchestrator) bookLeg(ctx context.Context, b store.Booking, i int, s St
 		vessel, voyage := conf.Vessel()
 		leg.Ref, leg.Departure, leg.Arrival, leg.Containers = conf.BookingRef, conf.PlannedDeparture, conf.PlannedArrival, conf.EquipmentRefs()
 		if vessel != "" {
-			leg.Vessel = vessel + " " + voyage
+			leg.Vessel = clip(vessel+" "+voyage, 128) // a planned leg's vessel is at most 128
 		}
 	case intents.ModeRoad:
 		r := &intents.RoadBookingRequestBody{
@@ -276,6 +299,14 @@ func (o *Orchestrator) bookLeg(ctx context.Context, b store.Booking, i int, s St
 		return nil, fmt.Errorf("forwarder: leg %d: mode %q", i+1, s.Mode) // config validated
 	}
 	return leg, nil
+}
+
+// clip cuts s to n characters.
+func clip(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
 
 func totalContainers(eq []intents.Equipment) int {

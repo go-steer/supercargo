@@ -15,6 +15,7 @@
 package forwarder
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -72,14 +73,16 @@ func RegisterControl(mux *http.ServeMux, o *Orders, orch *Orchestrator) {
 		// and answer the order.
 		mux.HandleFunc("POST /orders/{ref}/book", func(w http.ResponseWriter, r *http.Request) {
 			ref := r.PathValue("ref")
-			answer, err := orch.Book(r.Context(), ref)
+			// Detached from the request: a client going away mid-leg must
+			// not leave a leg confirmed by its carrier but not recorded.
+			answer, err := orch.Book(context.WithoutCancel(r.Context()), ref)
 			steps, _ := orch.Plan(ref)
 			switch {
 			case errors.Is(err, ErrUnknownOrder):
 				control.Answer(w, http.StatusNotFound, BookResponse{Error: err.Error()})
 			case errors.Is(err, ErrAnswered):
 				control.Answer(w, http.StatusConflict, BookResponse{Error: err.Error(), Steps: steps})
-			case errors.Is(err, ErrNoLane), errors.Is(err, ErrEDILeg), errors.Is(err, ErrInvalidAnswer):
+			case errors.Is(err, ErrNoLane), errors.Is(err, ErrEDILeg), errors.Is(err, ErrInvalidAnswer), errors.Is(err, ErrPlanUnfit), errors.Is(err, ErrPlanChanged):
 				control.Answer(w, http.StatusUnprocessableEntity, BookResponse{Error: err.Error(), Steps: steps})
 			case err != nil:
 				control.Answer(w, http.StatusBadGateway, BookResponse{Error: err.Error(), Steps: steps})
@@ -95,7 +98,7 @@ func RegisterControl(mux *http.ServeMux, o *Orders, orch *Orchestrator) {
 			return
 		}
 		a := req.Answer
-		err := o.Answer(r.Context(), req.OrderRef, &a)
+		err := o.Answer(context.WithoutCancel(r.Context()), req.OrderRef, &a)
 		switch {
 		case errors.Is(err, ErrUnknownOrder):
 			control.Answer(w, http.StatusNotFound, AnswerResponse{Error: err.Error()})
