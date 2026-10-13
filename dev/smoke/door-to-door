@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Smoke: the door-to-door journey (docs/proposals/door-to-door-forwarder.md)
+# as real processes over real sockets. Four ulpnode processes (Cymbal Shoes,
+# Meridian Forwarding, Ocean Blue, Serra Transportes) and the mock EDIFACT
+# trucker (Polder Haulage, which has no node) on Meridian's file drops.
+# Cymbal orders Tilburg to Cajamar; Meridian books Polder over EDI, Ocean
+# Blue and Serra over ULP, and answers; Polder's statuses reach Cymbal
+# marked unsigned; the ship's delay becomes Meridian's proposal, which,
+# confirmed, re-times Serra's truck.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+work="$(mktemp -d)"
+trap 'smoke_stop; rm -rf "$work"' EXIT
+chmod 700 "$work"
+
+demo_build "$work"
+base=$((10000 + RANDOM % 10000))
+CY=$base MF=$((base + 1)) OB=$((base + 2)) SR=$((base + 3))
+mkdir -p "$work/edi/to-polder" "$work/edi/from-polder"
+chmod 700 "$work/edi" "$work/edi/to-polder" "$work/edi/from-polder"
+for k in cy mf ob sr; do "$work/bin/ulpnode" keygen --kid "$k-1" --out "$work/$k.pem" >/dev/null; done
+
+peers="peers:
+  cymbal-shoes.example: 127.0.0.1:$CY
+  meridian-forwarding.example: 127.0.0.1:$MF
+  ocean-blue.example: 127.0.0.1:$OB
+  serra-transportes.example: 127.0.0.1:$SR"
+all="cymbal-shoes.example meridian-forwarding.example ocean-blue.example serra-transportes.example"
+
+node() { # node FILE DOMAIN NAME PORT KID BODY
+  local others d
+  others="$(for d in $all; do [[ $d == "$2" ]] || printf '%s, ' "$d"; done)"
+  cat >"$work/$1.yaml" <<EOF
+domain: $2
+name: $3
+listen: 127.0.0.1:$4
+tls: { mode: insecure-dev }
+keys: [{ kid: $5-1, privateKeyFile: $work/$5.pem }]
+$peers
+partners: [${others%, }]
+control: { socket: $work/$5.sock }
+$6
+EOF
+}
+node cymbal cymbal-shoes.example "Cymbal Shoes" "$CY" cy "role: shipper"
+node meridian meridian-forwarding.example "Meridian Forwarding" "$MF" mf "roles: [operator, shipper]
+forwarder:
+  refPrefix: MF
+  edi:
+    - { carrier: polder-haulage.example, id: polder-haulage.example, outbox: $work/edi/to-polder, inbox: $work/edi/from-polder, transit: 3h }
+  lanes:
+    - from: NLTLB
+      to: BRSAO
+      legs:
+        - { mode: road, carrier: polder-haulage.example, name: Polder Haulage, to: NLRTM, facility: Euromax terminal, edi: true }
+        - { mode: ocean, carrier: ocean-blue.example, name: Ocean Blue, to: BRSSZ, facility: Santos Brasil Tecon terminal }
+        - { mode: road, carrier: serra-transportes.example, name: Serra Transportes, to: BRSAO }"
+node ocean ocean-blue.example "Ocean Blue" "$OB" ob "role: operator
+operator: { refPrefix: OB-BKG, containerPrefix: OCBU, vessel: Ocean Blue Aurora, voyage: 42W, departureHour: 18, transit: 380h }
+simulator: { hoursPerSecond: 20 }"
+node serra serra-transportes.example "Serra Transportes" "$SR" sr "role: operator
+operator: { refPrefix: SR-BKG, road: { transit: 30h, cte: { cnpj: \"12345678000190\", state: 35 } } }
+simulator: { hoursPerSecond: 20 }"
+
+for n in cymbal meridian ocean serra; do
+  "$work/bin/ulpnode" serve --config "$work/$n.yaml" --log-format json 2>"$work/$n.log" &
+  SMOKE_PIDS+=($!)
+done
+for p in "$CY" "$MF" "$OB" "$SR"; do smoke_wait_up "$work" "$p" "${SMOKE_PIDS[0]}"; done
+"$work/bin/ulpmock" edifact --id polder-haulage.example --partner meridian-forwarding.example \
+  --in "$work/edi/to-polder" --out "$work/edi/from-polder" --ecmr-prefix ECMR-NL-2026 --hours-per-second 3600 --tick 100ms 2>"$work/polder.log" &
+SMOKE_PIDS+=($!)
+
+ctl() { curl -fsS --max-time "${3:-30}" --unix-socket "$work/$1.sock" "http://control$2" "${@:4}"; }
+post() { ctl "$1" "$2" 60 -X POST -H 'Content-Type: application/json' ${3:+--data "$3"}; }
+
+# Cymbal orders, door to door.
+latest="$(date -u -d '+60 days' +%Y-%m-%dT12:00:00Z)"
+order='{"forwarder": "meridian-forwarding.example", "order": {
+  "shipper_reference": "CY-PO-55120",
+  "incoterms": {"rule": "DAP", "version": "2020", "named_place": "Cymbal Calçados DC, Cajamar"},
+  "shipper": {"name": "Cymbal Shoes B.V.", "domain": "cymbal-shoes.example"},
+  "consignee": {"name": "Cymbal Calçados Ltda"},
+  "place_of_receipt": {"type": "door", "un_location_code": "NLTLB",
+    "address": {"street": "Ringbaan Oost 100", "postal_code": "5013 CD", "locality": "Tilburg", "country": "NL"}},
+  "place_of_delivery": {"type": "door", "facility": "Cymbal Calçados DC, dock 2", "un_location_code": "BRSAO", "latest": "'"$latest"'",
+    "address": {"street": "Rodovia Anhanguera, km 33", "locality": "Cajamar", "region": "SP", "country": "BR"}},
+  "containers": [{"equipment_size_type": "45G1", "count": 1, "gross_weight_kg": 12000}],
+  "cargo": {"description": "Footwear (sneakers)", "hs_code": "6404"},
+  "subscription": {"endpoint": "http://cymbal-shoes.example/ulp", "intents": ["ulp.tnt.event", "ulp.tnt.alert"]}}}'
+out="$(post cy /orders "$order")" || smoke_fail "$work" "ordering failed"
+grep -q '"status":"pending"' <<<"$out" || smoke_fail "$work" "the order wasn't taken as pending: $out"
+ref="$(sed -n 's/.*"forwarder_reference":"\([^"]*\)".*/\1/p' <<<"$out")"
+echo "order $ref pending"
+
+# Meridian's person confirms the plan: the three legs are booked.
+out="$(post mf "/orders/$ref/book")" || smoke_fail "$work" "booking the legs failed"
+for carrier in "Polder Haulage" "Ocean Blue" "Serra Transportes"; do
+  grep -q "\"carrier\":\"$carrier\"" <<<"$out" || smoke_fail "$work" "the journey lacks $carrier: $out"
+done
+echo "booked: Polder (EDI), Ocean Blue, Serra"
+ctl cy /shipments | grep -q "\"bookingRef\":\"$ref\",[^}]*\"status\":\"confirmed\"" ||
+  smoke_fail "$work" "Cymbal doesn't hold the confirmed order"
+
+# Polder's EDI statuses reach Cymbal as Meridian's events, marked unsigned.
+for _ in $(seq 1 100); do
+  ctl cy "/shipments/meridian-forwarding.example/$ref/events" | grep -q 'EDIFACT IFTSTA from polder-haulage.example' && break
+  sleep 0.2
+done
+events="$(ctl cy "/shipments/meridian-forwarding.example/$ref/events")"
+grep -q '"signed":false' <<<"$events" || smoke_fail "$work" "no unsigned event at Cymbal"
+echo "Polder's statuses at Cymbal, unsigned"
+
+# The ship is 72 hours late: Meridian proposes re-timing the truck.
+ship="$(ctl mf /shipments | grep -o '"bookingRef":"OB-BKG-[0-9]*"' | head -1 | cut -d'"' -f4)"
+[[ -n "$ship" ]] || smoke_fail "$work" "Meridian holds no ocean leg"
+"$work/bin/ulpctl" disrupt --config "$work/ocean.yaml" --booking "$ship" --delay 72h --reason "Engine repair at Las Palmas." >/dev/null ||
+  smoke_fail "$work" "disrupting the ship failed"
+for _ in $(seq 1 100); do
+  proposals="$(ctl mf "/orders/$ref/proposals")"
+  grep -q '"status":"proposed"' <<<"$proposals" && break
+  sleep 0.2
+done
+grep -q '"status":"proposed"' <<<"$proposals" || smoke_fail "$work" "no proposal at Meridian: $proposals"
+id="$(sed -n 's/.*"id":"\([^"]*\)".*/\1/p' <<<"$proposals" | head -1)"
+ctl cy "/shipments/meridian-forwarding.example/$ref/events" | grep -q '"kind":"delay"' ||
+  smoke_fail "$work" "Cymbal has no delay alert on the order"
+out="$(post mf "/proposals/$id/confirm")" || smoke_fail "$work" "confirming the proposal failed"
+grep -q '"status":"confirmed"' <<<"$out" || smoke_fail "$work" "the truck wasn't re-timed: $out"
+echo "the delay: alert at Cymbal; proposal confirmed; Serra re-planned"
+
+echo "✓ smoke/door-to-door: four nodes and an EDI trucker, Tilburg to Cajamar, the delay cascaded"

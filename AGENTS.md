@@ -180,7 +180,19 @@ are in:
   `receiver` role, records kept per side (`App.Carrier`, `App.Customer`),
   each model within one role, and no message to or from the node itself.
 
-Next: the rest of #75 (per-role assistants, personas), then the browser
-UI (#30) and the deployment (#38); the M5 TUI work is in review
-(#55–#57). Cited cause IDs in alerts are always checked against the
-shipper's log before a model.
+- Door to door, phase 1 of
+  [the forwarder proposal](./docs/proposals/door-to-door-forwarder.md)
+  and of [backend integration](./docs/proposals/backend-integration.md):
+  - backend ports (`internal/backend`);
+  - road bookings in `ULP_ROAD` and road carriers (`operator.road`,
+    `TruckBookings`, a mock CT-e, the road simulator);
+  - forwarding orders (`pending` first) and the forwarder
+    (`internal/forwarder`): the order desk, the orchestrator on lanes,
+    the relay (`derived_from`) with the delay cascade's proposals, and
+    the EDI gateway (`internal/edi`, `ulpmock edifact`).
+  - `dev/smoke/door-to-door` runs the whole journey as real processes.
+
+Next: the door-to-door UI (Meridian's orders, legs and proposals; the
+multi-leg journey; unsigned marks), then the six-company deployment.
+Cited cause IDs in alerts are always checked against the shipper's log
+before a model, and `derived_from` never reaches one.
