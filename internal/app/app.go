@@ -651,7 +651,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 		},
 		OnRetry: func(string, string) { a.metrics.Retry() },
 	}
-	a.Simulator = &operator.Simulator{Publisher: a.Publisher, HoursPerSecond: cfg.Simulator.HoursPerSecond,
+	a.Simulator = &operator.Simulator{Publisher: a.Publisher, HoursPerSecond: cfg.Simulator.HoursPerSecond, Shared: cfg.Simulator.Clock == config.ClockShared,
 		OnError: func(ref string, err error) {
 			a.Activity.Publish(activity.Entry{Side: activity.SideOperator, Kind: activity.KindPush,
 				Push: &activity.Push{Booking: ref, Problem: "unpublished", Error: err.Error()}})

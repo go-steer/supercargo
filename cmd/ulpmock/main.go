@@ -51,7 +51,7 @@ func main() {
 }
 
 const usage = `usage:
-  ulpmock edifact --id ID --partner ID --in DIR --out DIR [--ecmr-prefix P] [--zone ZONE] [--hours-per-second N] [--tick D]`
+  ulpmock edifact --id ID --partner ID --in DIR --out DIR [--ecmr-prefix P] [--zone ZONE] [--hours-per-second N] [--tick D] [--clock trip|shared]`
 
 var prefixPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,39}$`)
 
@@ -78,6 +78,7 @@ func edifact(ctx context.Context, args []string, stderr io.Writer) error {
 	zone := fs.String("zone", "UTC", "the time zone agreed for EDI times, e.g. Europe/Amsterdam")
 	speed := fs.Float64("hours-per-second", 1, "the trips' clock speed")
 	tick := fs.Duration("tick", 500*time.Millisecond, "how often the drop is checked")
+	clock := fs.String("clock", "trip", "trip (each trip's clock starts an hour before its pickup) or shared (one clock from the first instruction, as the nodes' simulator.clock: shared)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -86,6 +87,9 @@ func edifact(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 	if *ecmr != "" && !prefixPattern.MatchString(*ecmr) {
 		return fmt.Errorf("edifact: --ecmr-prefix %q must be 1-40 of [A-Za-z0-9-], starting with a letter or digit", *ecmr)
+	}
+	if *clock != "trip" && *clock != "shared" {
+		return errors.New("edifact: --clock is trip or shared")
 	}
 	loc, err := time.LoadLocation(*zone)
 	if err != nil {
@@ -104,6 +108,7 @@ func edifact(ctx context.Context, args []string, stderr io.Writer) error {
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 	c := &mockcarrier.EDIFACT{ID: *id, Partner: *partner, In: inDir, Out: outDir, ECMRPrefix: *ecmr, Zone: loc,
 		HoursPerSecond: *speed, Now: time.Now, Log: log}
+	c.Shared = *clock == "shared"
 	log.Info("ulpmock edifact", "id", *id, "partner", *partner, "in", *in, "out", *out)
 	return c.Run(ctx, *tick)
 }

@@ -25,6 +25,8 @@ var names = map[string]string{
 	"NLRTM": "Rotterdam", "USEWR": "Newark", "USNYC": "New York", "DEHAM": "Hamburg", "BEANR": "Antwerp",
 	"CNSHA": "Shanghai", "SGSIN": "Singapore", "GBFXT": "Felixstowe", "USLAX": "Los Angeles", "USLGB": "Long Beach",
 	"CAHAL": "Halifax", "ESVLC": "Valencia", "FRLEH": "Le Havre", "JPTYO": "Tokyo", "KRPUS": "Busan",
+	// The door-to-door journey's places: inland ones too, for its trucks.
+	"BRSSZ": "Santos", "NLTLB": "Tilburg", "BRSAO": "São Paulo",
 }
 
 // coords are where the ports are, approximately (latitude, longitude in
@@ -34,6 +36,7 @@ var coords = map[string][2]float64{
 	"NLRTM": {51.95, 4.05}, "USEWR": {40.68, -74.15}, "USNYC": {40.70, -74.01}, "DEHAM": {53.54, 9.97}, "BEANR": {51.26, 4.40},
 	"CNSHA": {31.36, 121.60}, "SGSIN": {1.26, 103.84}, "GBFXT": {51.96, 1.33}, "USLAX": {33.74, -118.26}, "USLGB": {33.75, -118.21},
 	"CAHAL": {44.64, -63.57}, "ESVLC": {39.44, -0.32}, "FRLEH": {49.48, 0.11}, "JPTYO": {35.62, 139.78}, "KRPUS": {35.10, 129.04},
+	"BRSSZ": {-23.96, -46.30}, "NLTLB": {51.56, 5.09}, "BRSAO": {-23.55, -46.63},
 }
 
 // Coords is where the port is (latitude, longitude), if this node knows.

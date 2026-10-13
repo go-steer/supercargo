@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- `dev/demo/door-to-door`: the door-to-door demo on localhost, step by step (`up`, `order`, `book`, `disrupt`, `confirm`, `status`, `down`): four nodes with their browser UIs (and a presenter page showing all four) and the mock EDIFACT trucker. `simulator.clock: shared` (and `ulpmock edifact --clock shared`) puts every voyage on one clock from the node's first booking, so the legs of a journey play in their real order across companies. The ports table knows Santos, Tilburg and São Paulo.
+
 - `dev/smoke/door-to-door`: the whole door-to-door journey as real processes. Four `ulpnode` processes (Cymbal, Meridian, Ocean Blue, Serra) and `ulpmock edifact` (Polder) on Meridian's file drops: Cymbal orders Tilburg to Cajamar, Meridian books the three legs and answers, Polder's statuses reach Cymbal marked unsigned, and a 72-hour ship delay becomes Meridian's alert and proposal, which, confirmed, re-times Serra's truck.
 
 - The forwarder's EDI gateway: a forwarder books a lane's leg with a carrier without a node over EDIFACT file drops (`forwarder.edi`: the instruction out, the acknowledgement and statuses in), records it as unsigned with the carrier's e-CMR, and re-issues the carrier's statuses on the order, marked `derived_from` the unsigned EDI message. With the mock carrier, the whole door-to-door journey (Tilburg → Rotterdam → Santos → Cajamar) runs end to end.
