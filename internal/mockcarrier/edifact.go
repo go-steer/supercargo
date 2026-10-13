@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sort"
 	"time"
 
@@ -53,9 +54,18 @@ type EDIFACT struct {
 	Log     *slog.Logger
 
 	seq   int
-	acked map[string]edi.Ack // by instruction reference
+	acked map[string]taken // by instruction reference
 	trips []*trip
 }
+
+// taken is an instruction acknowledged, and what it said.
+type taken struct {
+	ack         edi.Ack
+	instruction edi.Instruction
+}
+
+// MaxTaken bounds the instructions remembered for resends.
+const MaxTaken = 10_000
 
 // trip is one instruction's statuses still to send, on its own clock.
 type trip struct {
@@ -67,7 +77,13 @@ type trip struct {
 // statuses due. Run calls it on a ticker; tests call it directly.
 func (c *EDIFACT) Step() error {
 	if c.acked == nil {
-		c.acked = map[string]edi.Ack{}
+		c.acked = map[string]taken{}
+	}
+	if c.Now == nil {
+		c.Now = time.Now
+	}
+	if c.Log == nil {
+		c.Log = slog.New(slog.DiscardHandler)
 	}
 	err := c.In.Receive(func(name string, data []byte) error {
 		i, sender, err := edi.ParseIFTMIN(data, c.Zone)
@@ -77,8 +93,17 @@ func (c *EDIFACT) Step() error {
 		if sender != c.Partner {
 			return fmt.Errorf("mockcarrier: an instruction from %q, not %q", sender, c.Partner)
 		}
-		if ack, ok := c.acked[i.Reference]; ok {
+		if prev, ok := c.acked[i.Reference]; ok {
+			ack := prev.ack
+			if !reflect.DeepEqual(prev.instruction, i) {
+				// The same reference for a different trip: not taken. A
+				// change is a new instruction, under a new reference.
+				ack = edi.Ack{Reference: i.Reference, CarrierRef: prev.ack.CarrierRef, Errors: []string{"DUP"}}
+			}
 			return c.send("APERAK", func(env edi.Envelope) ([]byte, error) { return edi.WriteAPERAK(ack, env) })
+		}
+		if len(c.acked) >= MaxTaken {
+			return fmt.Errorf("mockcarrier: %d instructions taken; no more", MaxTaken)
 		}
 		c.seq++
 		ack := edi.Ack{Reference: i.Reference, CarrierRef: fmt.Sprintf("PH%04d", 4470+c.seq), Accepted: true}
@@ -88,7 +113,7 @@ func (c *EDIFACT) Step() error {
 		if err := c.send("APERAK", func(env edi.Envelope) ([]byte, error) { return edi.WriteAPERAK(ack, env) }); err != nil {
 			return err
 		}
-		c.acked[i.Reference] = ack
+		c.acked[i.Reference] = taken{ack, i}
 		c.trips = append(c.trips, c.plan(i, ack))
 		c.Log.Info("instruction accepted", "reference", i.Reference, "carrierRef", ack.CarrierRef)
 		return nil
@@ -110,14 +135,19 @@ func (c *EDIFACT) plan(i edi.Instruction, ack edi.Ack) *trip {
 		transit = 3 * time.Hour
 	}
 	arrival := pickup.Add(transit)
-	if l := i.Delivery.Latest; !l.IsZero() && l.Before(arrival) {
-		arrival = l
+	if l := i.Delivery.Latest; !l.IsZero() && l.Before(arrival) && l.After(pickup.Add(30*time.Minute)) {
+		arrival = l // a deadline before the truck could be there is missed, not undone
 	}
 	doc := ""
 	if len(ack.TransportDocuments) > 0 {
 		doc = ack.TransportDocuments[0]
 	}
 	st := func(code string, at time.Time, s edi.Stop) edi.Status {
+		// A local time the clocks skip or repeat can't be written: the
+		// status is reported an hour later, as a carrier's system would.
+		for n := 0; n < 3 && !edi.Writable(at, c.Zone); n++ {
+			at = at.Add(time.Hour)
+		}
 		return edi.Status{Reference: i.Reference, CarrierRef: ack.CarrierRef, Code: code, Time: at, UNLocode: s.UNLocode, Facility: s.Name, TransportDocument: doc}
 	}
 	return &trip{realStart: c.Now(), simStart: pickup.Add(-time.Hour), statuses: []edi.Status{

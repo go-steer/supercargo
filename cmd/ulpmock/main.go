@@ -32,6 +32,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"regexp"
 	"syscall"
 	"time"
 
@@ -50,7 +51,9 @@ func main() {
 }
 
 const usage = `usage:
-  ulpmock edifact --id ID --partner ID --in DIR --out DIR [--ecmr-prefix P] [--zone ZONE] [--hours-per-second N]`
+  ulpmock edifact --id ID --partner ID --in DIR --out DIR [--ecmr-prefix P] [--zone ZONE] [--hours-per-second N] [--tick D]`
+
+var prefixPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,39}$`)
 
 func run(ctx context.Context, args []string, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -78,8 +81,11 @@ func edifact(ctx context.Context, args []string, stderr io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *id == "" || *partner == "" || *in == "" || *out == "" || *speed <= 0 || *tick <= 0 {
-		return errors.New("edifact: --id, --partner, --in and --out are required; --hours-per-second and --tick are positive")
+	if *id == "" || *partner == "" || *in == "" || *out == "" || *speed <= 0 || *speed > 3600 || *tick <= 0 {
+		return errors.New("edifact: --id, --partner, --in and --out are required; --hours-per-second is above 0 and at most 3600, --tick positive")
+	}
+	if *ecmr != "" && !prefixPattern.MatchString(*ecmr) {
+		return fmt.Errorf("edifact: --ecmr-prefix %q must be 1-40 of [A-Za-z0-9-], starting with a letter or digit", *ecmr)
 	}
 	loc, err := time.LoadLocation(*zone)
 	if err != nil {

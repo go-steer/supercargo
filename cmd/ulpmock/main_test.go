@@ -27,13 +27,15 @@ import (
 func TestRun(t *testing.T) {
 	var stderr bytes.Buffer
 	for name, args := range map[string][]string{
-		"no command":       nil,
-		"unknown command":  {"x12"},
-		"missing flags":    {"edifact", "--id", "a"},
-		"a bad zone":       {"edifact", "--id", "a", "--partner", "b", "--in", t.TempDir(), "--out", t.TempDir(), "--zone", "Mars/Olympus"},
-		"no such drop":     {"edifact", "--id", "a", "--partner", "b", "--in", "/nonexistent/x", "--out", t.TempDir()},
-		"no such out drop": {"edifact", "--id", "a", "--partner", "b", "--in", t.TempDir(), "--out", "/nonexistent/x"},
-		"an unknown flag":  {"edifact", "--carrier", "a"},
+		"no command":         nil,
+		"unknown command":    {"x12"},
+		"missing flags":      {"edifact", "--id", "a"},
+		"a bad zone":         {"edifact", "--id", "a", "--partner", "b", "--in", t.TempDir(), "--out", t.TempDir(), "--zone", "Mars/Olympus"},
+		"no such drop":       {"edifact", "--id", "a", "--partner", "b", "--in", "/nonexistent/x", "--out", t.TempDir()},
+		"no such out drop":   {"edifact", "--id", "a", "--partner", "b", "--in", t.TempDir(), "--out", "/nonexistent/x"},
+		"an unknown flag":    {"edifact", "--carrier", "a"},
+		"a bad e-CMR prefix": {"edifact", "--id", "a", "--partner", "b", "--in", t.TempDir(), "--out", t.TempDir(), "--ecmr-prefix", "ECMR NL"},
+		"too fast":           {"edifact", "--id", "a", "--partner", "b", "--in", t.TempDir(), "--out", t.TempDir(), "--hours-per-second", "100000"},
 	} {
 		if err := run(context.Background(), args, &stderr); err == nil {
 			t.Errorf("%s: no error", name)

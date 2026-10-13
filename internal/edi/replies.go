@@ -15,7 +15,9 @@
 package edi
 
 import (
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -44,16 +46,18 @@ func WriteAPERAK(a Ack, env Envelope) ([]byte, error) {
 	if a.Accepted {
 		function = "29"
 	}
-	stamp := stamper(env)
+	st := newStamper(env)
 	segs := []Segment{
 		Seg("BGM", E("305"), E(a.CarrierRef), E(function)),
-		Seg("DTM", E("137", stamp(env.At), "203")),
+		Seg("DTM", E("137", st.stamp(env.At), "203")),
 		Seg("RFF", E("ACW", a.Reference)),
 	}
+	seen := map[string]bool{}
 	for _, d := range a.TransportDocuments {
-		if !docPattern.MatchString(d) {
-			return nil, contentErr("document number %q is not a document number", d)
+		if !docPattern.MatchString(d) || seen[d] {
+			return nil, contentErr("document number %q is not a document number, or is named twice", d)
 		}
+		seen[d] = true
 		segs = append(segs, Seg("RFF", E("AAS", d)))
 	}
 	for _, e := range a.Errors {
@@ -61,6 +65,9 @@ func WriteAPERAK(a Ack, env Envelope) ([]byte, error) {
 			return nil, contentErr("error code %q is malformed", e)
 		}
 		segs = append(segs, Seg("ERC", E(e)))
+	}
+	if st.err != nil {
+		return nil, st.err
 	}
 	msg := Message{Ref: "1", Type: "APERAK", Version: "D", Release: "04A", Agency: "UN", Segments: segs}
 	return Write(env.Sender, env.Recipient, env.Control, env.At.In(location(env)), msg), nil
@@ -75,13 +82,13 @@ func WriteIFTSTA(sts []Status, env Envelope) ([]byte, error) {
 	if len(sts) == 0 {
 		return nil, contentErr("an IFTSTA has at least one status")
 	}
-	stamp := stamper(env)
+	st := newStamper(env)
 	segs := []Segment{
 		Seg("BGM", E("23"), E(env.Control), E("9")),
-		Seg("DTM", E("137", stamp(env.At), "203")),
+		Seg("DTM", E("137", st.stamp(env.At), "203")),
 	}
-	for n, st := range sts {
-		switch {
+	for n, s := range sts {
+		switch st := s; {
 		case !refPattern.MatchString(st.Reference):
 			return nil, contentErr("status reference %q is not a reference", st.Reference)
 		case st.CarrierRef != "" && !refPattern.MatchString(st.CarrierRef):
@@ -96,21 +103,26 @@ func WriteIFTSTA(sts []Status, env Envelope) ([]byte, error) {
 			return nil, contentErr("container %q is not ISO 6346", st.Equipment)
 		case st.TransportDocument != "" && !docPattern.MatchString(st.TransportDocument):
 			return nil, contentErr("document number %q is not a document number", st.TransportDocument)
+		case st.Facility != "" && st.UNLocode == "":
+			return nil, contentErr("status %s names a facility without its place (UN/LOCODE)", st.Code)
 		}
-		if err := text("facility name", st.Facility, false); err != nil {
+		if err := text("facility name", s.Facility, false); err != nil {
 			return nil, err
 		}
-		segs = append(segs, Seg("CNI", E(strconv.Itoa(n+1)), E(st.CarrierRef)), Seg("RFF", E("CU", st.Reference)))
-		if st.TransportDocument != "" {
-			segs = append(segs, Seg("RFF", E("AAS", st.TransportDocument)))
+		segs = append(segs, Seg("CNI", E(strconv.Itoa(n+1)), E(s.CarrierRef)), Seg("RFF", E("CU", s.Reference)))
+		if s.TransportDocument != "" {
+			segs = append(segs, Seg("RFF", E("AAS", s.TransportDocument)))
 		}
-		segs = append(segs, Seg("STS", E("1"), E(st.Code)), Seg("DTM", E("334", stamp(st.Time), "203")))
-		if st.UNLocode != "" {
-			segs = append(segs, Seg("LOC", E("175"), E(st.UNLocode, "139", "6", st.Facility)))
+		segs = append(segs, Seg("STS", E("1"), E(s.Code)), Seg("DTM", E("334", st.stamp(s.Time), "203")))
+		if s.UNLocode != "" {
+			segs = append(segs, Seg("LOC", E("175"), E(s.UNLocode, "139", "6", s.Facility)))
 		}
-		if st.Equipment != "" {
-			segs = append(segs, Seg("EQD", E("CN"), E(st.Equipment)))
+		if s.Equipment != "" {
+			segs = append(segs, Seg("EQD", E("CN"), E(s.Equipment)))
 		}
+	}
+	if st.err != nil {
+		return nil, st.err
 	}
 	msg := Message{Ref: "1", Type: "IFTSTA", Version: "D", Release: "04A", Agency: "UN", Segments: segs}
 	return Write(env.Sender, env.Recipient, env.Control, env.At.In(location(env)), msg), nil
@@ -118,7 +130,12 @@ func WriteIFTSTA(sts []Status, env Envelope) ([]byte, error) {
 
 // ParseIFTMIN reads an instruction from an interchange holding one IFTMIN
 // (the subset WriteIFTMIN writes), with times in loc (UTC if nil), and
-// checks it as WriteIFTMIN would. It returns the UNB sender too.
+// checks it as WriteIFTMIN would. Each part is given once (a reference, a
+// party, a place, a carrier, a description, an HS code; a count and a
+// weight per equipment line), a window's times follow their own place
+// (234/235 after LOC+9, 64/63 after LOC+7), and BGM and RFF+CU name the
+// same reference; anything else is refused rather than read over. It
+// returns the UNB sender too.
 func ParseIFTMIN(data []byte, loc *time.Location) (Instruction, string, error) {
 	if loc == nil {
 		loc = time.UTC
@@ -131,81 +148,140 @@ func ParseIFTMIN(data []byte, loc *time.Location) (Instruction, string, error) {
 		return Instruction{}, "", contentErr("want one IFTMIN message")
 	}
 	var i Instruction
-	var at *Stop // the stop the last LOC named, for its DTMs
+	var bgm string
+	seen := map[string]bool{}
+	once := func(part string) error {
+		if seen[part] {
+			return contentErr("IFTMIN gives %s twice", part)
+		}
+		seen[part] = true
+		return nil
+	}
+	var at string // the place the last LOC named: "9" or "7"
 	var line *Container
+	var lineSeen map[string]bool
 	for _, s := range ic.Messages[0].Segments {
+		var err error
 		switch s.Tag {
+		case "BGM":
+			if err = once("BGM"); err == nil {
+				bgm = s.Value(1, 0)
+			}
 		case "RFF":
-			switch s.Value(0, 0) {
-			case "CU":
-				i.Reference = s.Value(0, 1)
-			case "CR":
-				i.ShipperRef = s.Value(0, 1)
+			switch q := s.Value(0, 0); q {
+			case "CU", "CR":
+				if err = once("RFF+" + q); err == nil && q == "CU" {
+					i.Reference = s.Value(0, 1)
+				} else if err == nil {
+					i.ShipperRef = s.Value(0, 1)
+				}
 			}
 		case "FTX":
 			if s.Value(0, 0) == "AAA" {
-				i.CargoDescription = s.Value(3, 0)
+				if err = once("FTX+AAA"); err == nil {
+					i.CargoDescription = s.Value(3, 0)
+				}
 			}
 		case "TDT":
-			i.Carrier = s.Value(4, 0)
+			if err = once("TDT"); err == nil {
+				i.Carrier = s.Value(4, 0)
+			}
 		case "NAD":
-			st := Stop{Name: s.Value(3, 0), Street: s.Value(4, 0), Locality: s.Value(5, 0), PostalCode: s.Value(7, 0), Country: s.Value(8, 0)}
-			switch s.Value(0, 0) {
-			case "CZ":
-				st.UNLocode = i.Pickup.UNLocode
-				i.Pickup = st
-			case "CN":
-				st.UNLocode = i.Delivery.UNLocode
-				i.Delivery = st
+			q := s.Value(0, 0)
+			stop := map[string]*Stop{"CZ": &i.Pickup, "CN": &i.Delivery}[q]
+			if stop == nil {
+				break
+			}
+			if err = once("NAD+" + q); err == nil {
+				// The party's name and address; its place and window come
+				// from its LOC and DTMs, before or after.
+				stop.Name, stop.Street, stop.Locality, stop.PostalCode, stop.Country = s.Value(3, 0), s.Value(4, 0), s.Value(5, 0), s.Value(7, 0), s.Value(8, 0)
 			}
 		case "LOC":
-			switch s.Value(0, 0) {
-			case "9":
-				i.Pickup.UNLocode, at = s.Value(1, 0), &i.Pickup
-			case "7":
-				i.Delivery.UNLocode, at = s.Value(1, 0), &i.Delivery
+			q := s.Value(0, 0)
+			stop := map[string]*Stop{"9": &i.Pickup, "7": &i.Delivery}[q]
+			if stop == nil {
+				break
+			}
+			if err = once("LOC+" + q); err == nil {
+				stop.UNLocode, at = s.Value(1, 0), q
 			}
 		case "DTM":
-			if at == nil {
-				continue // the message's own (137)
+			q := s.Value(0, 0)
+			if q == "137" {
+				break // the message's own
 			}
-			t, err := parseTime(s.Value(0, 1), s.Value(0, 2), loc)
-			if err != nil {
-				return Instruction{}, "", err
-			}
-			switch s.Value(0, 0) {
-			case "234", "64":
-				at.Earliest = t
-			case "235", "63":
-				at.Latest = t
+			stop, earliest := map[string]*Stop{"234": &i.Pickup, "235": &i.Pickup, "64": &i.Delivery, "63": &i.Delivery}[q], q == "234" || q == "64"
+			want := map[string]string{"234": "9", "235": "9", "64": "7", "63": "7"}[q]
+			switch {
+			case stop == nil:
+				err = contentErr("IFTMIN date qualifier %q is not one of the subset's", q)
+			case want != at:
+				err = contentErr("IFTMIN date %s doesn't follow its place (LOC+%s)", q, want)
+			default:
+				if err = once("DTM+" + q); err == nil {
+					var t time.Time
+					if t, err = parseTime(s.Value(0, 1), s.Value(0, 2), loc); err == nil && earliest {
+						stop.Earliest = t
+					} else if err == nil {
+						stop.Latest = t
+					}
+				}
 			}
 		case "PIA":
-			i.HSCode = s.Value(1, 0)
+			if err = once("PIA"); err == nil {
+				i.HSCode = s.Value(1, 0)
+			}
 		case "EQD":
 			i.Containers = append(i.Containers, Container{SizeType: s.Value(2, 0)})
-			line = &i.Containers[len(i.Containers)-1]
+			line, lineSeen = &i.Containers[len(i.Containers)-1], map[string]bool{}
 		case "EQN":
-			if line != nil {
+			switch {
+			case line == nil:
+				err = contentErr("IFTMIN gives a count (EQN) before any equipment (EQD)")
+			case lineSeen["EQN"]:
+				err = contentErr("IFTMIN gives an equipment line's count twice")
+			default:
+				lineSeen["EQN"] = true
 				n, ok := count(s.Value(0, 0))
 				if !ok {
-					return Instruction{}, "", contentErr("container count %q is malformed", s.Value(0, 0))
+					err = contentErr("container count %q is malformed", s.Value(0, 0))
 				}
 				line.Count = n
 			}
 		case "MEA":
-			if line != nil {
-				kg, err := strconv.ParseFloat(s.Value(2, 1), 64)
-				if err != nil {
-					return Instruction{}, "", contentErr("weight %q is malformed", s.Value(2, 1))
-				}
-				line.GrossWeightKg = kg
+			if line == nil {
+				break // the goods' total, before the lines: checked by the lines
 			}
+			if lineSeen["MEA"] {
+				err = contentErr("IFTMIN gives an equipment line's weight twice")
+				break
+			}
+			lineSeen["MEA"] = true
+			line.GrossWeightKg, err = weight(s.Value(2, 1), ic.Separators.Decimal)
 		}
+		if err != nil {
+			return Instruction{}, "", err
+		}
+	}
+	if bgm != i.Reference {
+		return Instruction{}, "", contentErr("BGM names %q, RFF+CU %q", bgm, i.Reference)
 	}
 	if err := i.validate(); err != nil {
 		return Instruction{}, "", err
 	}
 	return i, ic.Sender, nil
+}
+
+var weightPattern = regexp.MustCompile(`^[0-9]{1,6}([.,][0-9]{1,3})?$`)
+
+// weight reads a weight in kilograms: digits, and up to three decimals
+// after the interchange's decimal mark (no signs, exponents or hex).
+func weight(v string, decimal byte) (float64, error) {
+	if !weightPattern.MatchString(v) || (strings.ContainsAny(v, ".,") && !strings.ContainsRune(v, rune(decimal))) {
+		return 0, contentErr("weight %q is not kilograms with up to three decimals", v)
+	}
+	return strconv.ParseFloat(strings.Replace(v, ",", ".", 1), 64)
 }
 
 func checkEnvelope(env Envelope) error {
@@ -225,8 +301,31 @@ func location(env Envelope) *time.Location {
 	return env.Location
 }
 
-// stamper writes times in format 203 in the envelope's zone.
-func stamper(env Envelope) func(time.Time) string {
-	loc := location(env)
-	return func(t time.Time) string { return t.In(loc).Format("200601021504") }
+// stamper writes times in format 203 in the envelope's zone, refusing
+// one the parser wouldn't read back (a local time a daylight-saving
+// change skips or repeats, a year out of range); err holds the first.
+type stamper struct {
+	loc *time.Location
+	err error
+}
+
+func newStamper(env Envelope) *stamper { return &stamper{loc: location(env)} }
+
+func (s *stamper) stamp(t time.Time) string {
+	v := t.In(s.loc).Format("200601021504")
+	if _, err := parseTime(v, "203", s.loc); err != nil && s.err == nil {
+		s.err = err
+	}
+	return v
+}
+
+// Writable reports whether t can be written in format 203 in loc and read
+// back: not in an hour a daylight-saving change skips or repeats there,
+// and in the years the parser accepts.
+func Writable(t time.Time, loc *time.Location) bool {
+	if loc == nil {
+		loc = time.UTC
+	}
+	_, err := parseTime(t.In(loc).Format("200601021504"), "203", loc)
+	return err == nil
 }

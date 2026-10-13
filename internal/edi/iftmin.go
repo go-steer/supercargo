@@ -105,6 +105,11 @@ func WriteIFTMIN(i Instruction, env Envelope) ([]byte, error) {
 	if loc == nil {
 		loc = time.UTC
 	}
+	for _, t := range []time.Time{env.At, i.Pickup.Earliest, i.Pickup.Latest, i.Delivery.Earliest, i.Delivery.Latest} {
+		if !t.IsZero() && !Writable(t, loc) {
+			return nil, contentErr("time %s can't be written in %s and read back (a daylight-saving change, or out of range)", t.UTC().Format(time.RFC3339), loc)
+		}
+	}
 	stamp := func(t time.Time) string { return t.In(loc).Format("200601021504") }
 	segs := []Segment{
 		Seg("BGM", E("610"), E(i.Reference), E("9")),
