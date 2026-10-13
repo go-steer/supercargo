@@ -21,12 +21,13 @@
 # the integration tests in internal/node). Keys are minted with
 # `ulpnode keygen`; nothing is read from the repo but the source.
 
-# demo_build DIR: build ulpnode and ulpctl into DIR/bin.
+# demo_build DIR: build ulpnode, ulpctl, ulpchat and ulpmock into DIR/bin.
 demo_build() {
   local dir=$1 root
   root="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
   mkdir -p "$dir/bin"
-  (cd "$root" && go build -o "$dir/bin/ulpnode" ./cmd/ulpnode && go build -o "$dir/bin/ulpctl" ./cmd/ulpctl && go build -o "$dir/bin/ulpchat" ./cmd/ulpchat)
+  (cd "$root" && go build -o "$dir/bin/ulpnode" ./cmd/ulpnode && go build -o "$dir/bin/ulpctl" ./cmd/ulpctl &&
+    go build -o "$dir/bin/ulpchat" ./cmd/ulpchat && go build -o "$dir/bin/ulpmock" ./cmd/ulpmock)
 }
 
 # demo_ports: pick an operator and a shipper port (OP_PORT, SH_PORT), below

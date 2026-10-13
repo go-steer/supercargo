@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- `dev/smoke/door-to-door`: the whole door-to-door journey as real processes. Four `ulpnode` processes (Cymbal, Meridian, Ocean Blue, Serra) and `ulpmock edifact` (Polder) on Meridian's file drops: Cymbal orders Tilburg to Cajamar, Meridian books the three legs and answers, Polder's statuses reach Cymbal marked unsigned, and a 72-hour ship delay becomes Meridian's alert and proposal, which, confirmed, re-times Serra's truck.
+
 - The forwarder's EDI gateway: a forwarder books a lane's leg with a carrier without a node over EDIFACT file drops (`forwarder.edi`: the instruction out, the acknowledgement and statuses in), records it as unsigned with the carrier's e-CMR, and re-issues the carrier's statuses on the order, marked `derived_from` the unsigned EDI message. With the mock carrier, the whole door-to-door journey (Tilburg → Rotterdam → Santos → Cajamar) runs end to end.
 
 - A mock EDIFACT road carrier for the demo: `ulpmock edifact` acknowledges each transport instruction (IFTMIN) from its forwarder with an APERAK and an e-CMR number, and reports the trip as IFTSTA statuses on an accelerated clock, through file drops. `internal/edi` gains the carrier's side (`WriteAPERAK`, `WriteIFTSTA`, `ParseIFTMIN`).
