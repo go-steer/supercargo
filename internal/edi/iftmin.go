@@ -45,10 +45,12 @@ type Container struct {
 }
 
 // Envelope is an interchange's UNB: who sends, to whom, its control
-// reference, and when it was prepared.
+// reference, and when it was prepared; and the zone agreed with the
+// partner for times, which format 203 writes without one.
 type Envelope struct {
 	Sender, Recipient, Control string
 	At                         time.Time
+	Location                   *time.Location // nil is UTC
 }
 
 // Limits on an instruction.
@@ -63,7 +65,6 @@ var (
 	sizeTypePattern = regexp.MustCompile(`^[0-9A-Z]{4}$`)
 	hsPattern       = regexp.MustCompile(`^[0-9]{4,10}$`)
 	carrierPattern  = regexp.MustCompile(`^[A-Z0-9]{2,8}$`)
-	partyPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.:_-]{0,34}$`)
 )
 
 // WriteIFTMIN writes an instruction as an IFTMIN in an interchange of its
@@ -88,17 +89,23 @@ var (
 //	EQD+CN++<size type>  EQN+<count>  MEA+AAE+G+KGM:<kg>   per equipment line, each
 //	UNT+<n>+1
 //
-// Times are written in UTC (format 203).
+// Times, the UNB's included, are written in format 203, which has no
+// zone, in env.Location, the zone agreed with the partner (UTC if nil).
 func WriteIFTMIN(i Instruction, env Envelope) ([]byte, error) {
 	if err := i.validate(); err != nil {
 		return nil, err
 	}
-	if !partyPattern.MatchString(env.Sender) || !partyPattern.MatchString(env.Recipient) || !refPattern.MatchString(env.Control) || len(env.Control) > 14 {
+	if !partyPattern.MatchString(env.Sender) || !partyPattern.MatchString(env.Recipient) || !controlPattern.MatchString(env.Control) {
 		return nil, contentErr("the envelope needs a sender, a recipient and a control reference of at most 14 characters")
 	}
 	if env.At.IsZero() {
 		return nil, contentErr("the envelope needs a time")
 	}
+	loc := env.Location
+	if loc == nil {
+		loc = time.UTC
+	}
+	stamp := func(t time.Time) string { return t.In(loc).Format("200601021504") }
 	segs := []Segment{
 		Seg("BGM", E("610"), E(i.Reference), E("9")),
 		Seg("DTM", E("137", stamp(env.At), "203")),
@@ -114,8 +121,8 @@ func WriteIFTMIN(i Instruction, env Envelope) ([]byte, error) {
 		tdt.Elements = append(tdt.Elements, nil, E(i.Carrier, "172"))
 	}
 	segs = append(segs, tdt, i.Pickup.nad("CZ"), i.Delivery.nad("CN"))
-	segs = append(segs, i.Pickup.loc("9", "234", "235")...)
-	segs = append(segs, i.Delivery.loc("7", "64", "63")...)
+	segs = append(segs, i.Pickup.loc("9", "234", "235", stamp)...)
+	segs = append(segs, i.Delivery.loc("7", "64", "63", stamp)...)
 	count, total := 0, 0.0
 	for _, c := range i.Containers {
 		count += c.Count
@@ -130,10 +137,8 @@ func WriteIFTMIN(i Instruction, env Envelope) ([]byte, error) {
 		segs = append(segs, Seg("EQD", E("CN"), nil, E(c.SizeType)), Seg("EQN", E(strconv.Itoa(c.Count))), mea(c.GrossWeightKg))
 	}
 	msg := Message{Ref: "1", Type: "IFTMIN", Version: "D", Release: "04A", Agency: "UN", Segments: segs}
-	return Write(env.Sender, env.Recipient, env.Control, env.At, msg), nil
+	return Write(env.Sender, env.Recipient, env.Control, env.At.In(loc), msg), nil
 }
-
-func stamp(t time.Time) string { return t.UTC().Format("200601021504") }
 
 func mea(kg float64) Segment {
 	return Seg("MEA", E("AAE"), E("G"), E("KGM", strconv.FormatFloat(kg, 'f', -1, 64)))
@@ -143,7 +148,7 @@ func (s Stop) nad(qualifier string) Segment {
 	return Seg("NAD", E(qualifier), nil, nil, E(s.Name), E(s.Street), E(s.Locality), nil, E(s.PostalCode), E(s.Country))
 }
 
-func (s Stop) loc(qualifier, earliest, latest string) []Segment {
+func (s Stop) loc(qualifier, earliest, latest string, stamp func(time.Time) string) []Segment {
 	out := []Segment{Seg("LOC", E(qualifier), E(s.UNLocode, "139", "6"))}
 	if !s.Earliest.IsZero() {
 		out = append(out, Seg("DTM", E(earliest, stamp(s.Earliest), "203")))
@@ -216,19 +221,6 @@ func (s Stop) validate(name string) error {
 	return nil
 }
 
-// text checks a free-text value: present if required, at most 70
-// characters (EDIFACT's an..70 for names and text), no control characters.
-func text(field, v string, required bool) error {
-	if required && v == "" {
-		return contentErr("%s is missing", field)
-	}
-	if len([]rune(v)) > 70 {
-		return contentErr("%s is over 70 characters", field)
-	}
-	for _, r := range v {
-		if r < 0x20 || r == 0x7f {
-			return contentErr("%s has a control character", field)
-		}
-	}
-	return nil
-}
+// text checks a name or short text: checkText's rules, at most 70
+// characters (EDIFACT's an..70 for names and text).
+func text(field, v string, required bool) error { return checkText(field, v, required, 70) }

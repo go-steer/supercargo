@@ -106,6 +106,19 @@ func TestIFTMIN(t *testing.T) {
 	if !strings.Contains(string(got), "GID+1+3:CN'") || !strings.Contains(string(got), "MEA+AAE+G+KGM:28000.5'") {
 		t.Errorf("totals:\n%s", got)
 	}
+
+	// Times in the zone agreed with the partner, the UNB's included.
+	e := envelope
+	e.Location = time.FixedZone("CEST", 2*3600)
+	got, err = WriteIFTMIN(instruction(), e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"+261020:1102+MF000031'", "DTM+137:202610201102:203'", "DTM+234:202610210900:203'", "DTM+63:202610211800:203'"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("in CEST, no %s:\n%s", want, got)
+		}
+	}
 }
 
 // TestIFTMINRefuses: every instruction and envelope rejection path.
@@ -117,6 +130,9 @@ func TestIFTMINRefuses(t *testing.T) {
 		"no pickup name":         func(i *Instruction, _ *Envelope) { i.Pickup.Name = "" },
 		"long delivery name":     func(i *Instruction, _ *Envelope) { i.Delivery.Name = strings.Repeat("x", 71) },
 		"control in a street":    func(i *Instruction, _ *Envelope) { i.Pickup.Street = "a\nb" },
+		"C1 in a locality":       func(i *Instruction, _ *Envelope) { i.Pickup.Locality = "a\u0085b" },
+		"bidi in a description":  func(i *Instruction, _ *Envelope) { i.CargoDescription = "shoes \u202eexe.fdp" },
+		"not UTF-8 in a name":    func(i *Instruction, _ *Envelope) { i.Delivery.Name = "a\xffb" },
 		"bad country":            func(i *Instruction, _ *Envelope) { i.Pickup.Country = "nl" },
 		"bad UN/LOCODE":          func(i *Instruction, _ *Envelope) { i.Delivery.UNLocode = "NLRT1" },
 		"inverted window":        func(i *Instruction, _ *Envelope) { i.Pickup.Latest = i.Pickup.Earliest.Add(-time.Hour) },
@@ -195,6 +211,26 @@ func TestAPERAKRefuses(t *testing.T) {
 		"bad document":        wrap(body + "RFF+AAS:ECMR NL'"),
 		"too many documents":  wrap(body + strings.Repeat("RFF+AAS:D1'", MaxDocuments+1)),
 		"ERC without code":    wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC'"),
+		"bad ERC code":        wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12 a'"),
+		"long ERC code":       wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+1234'"),
+		"C1 in error text":    wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\u009bb'"),
+		"bidi in error text":  wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\u202eb'"),
+		"isolate in text":     wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\u2066b'"),
+		"mark in error text":  wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\u200fb'"),
+		"zero width in text":  wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\u200bb'"),
+		"BOM in error text":   wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++\ufeffab'"),
+		"soft hyphen in text": wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\u00adb'"),
+		"tag chars in text":   wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\U000e0041\U000e0042b'"),
+		"private use in text": wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\ue000b'"),
+		"line separator":      wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\u2028b'"),
+		"variation selector":  wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\ufe0f\U000e0100b'"),
+		"Hangul filler":       wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\u3164b'"),
+		"braille blank":       wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\u2800b'"),
+		"stacked marks":       wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\u0301\u0301\u0301\u0301\u0301b'"),
+		"noncharacter":        wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++a\ufdd0b'"),
+		"empty ACW, then one": wrap("BGM+305+PH4471+29'RFF+ACW'RFF+ACW:MF-0007-L1'"),
+		"document twice":      wrap(body + "RFF+AAS:D1'RFF+AAS:D1'"),
+		"long error text":     wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'ERC+12'FTX+AAO+++" + strings.Repeat("a", MaxErrorText+1) + "'"),
 		"too many errors":     wrap("BGM+305+PH4471+27'RFF+ACW:MF-0007-L1'" + strings.Repeat("ERC+1'", MaxErrors+1)),
 		"accepts with errors": wrap(body + "ERC+12'"),
 	} {
@@ -234,17 +270,30 @@ func TestIFTSTA(t *testing.T) {
 		t.Errorf("delivered:\n got %+v\nwant %+v %+v", got, gateIn, delivered)
 	}
 
-	// A code the mapping doesn't know is kept, unmapped; a status's own
-	// reference overrides its consignment's; ignored qualifiers are ignored.
-	in := "UNH+1+IFTSTA:D:04A:UN'BGM+23+X+9'DTM+137:202610211450:203'CNI+1'RFF+CU:MF-0007-L1'RFF+ZZZ:x'" +
-		"STS+1+99'RFF+CU:MF-0007-L9'DTM+178:20261021:102'DTM+334:20261021:102'LOC+11+XXXXX'EQD+BX+whatever'NAD+DP'UNT+14+1'"
+	// A code the mapping doesn't know is kept, unmapped; a status may give
+	// its own reference, or repeat its consignment's; ignored qualifiers
+	// (LOC's departure and destination among them) are ignored; a time
+	// with its zone (303) is read in it.
+	in := "UNH+1+IFTSTA:D:04A:UN'BGM+23+X+9'DTM+137:202610211450:203'CNI+1'RFF+ZZZ:x'RFF+AAS:ECMR-1'" +
+		"STS+1+99'RFF+CU:MF-0007-L9'RFF+AAS:ECMR-1'DTM+178:20261021:102'DTM+334:202610211450?+02:303'LOC+11+XXXXX'LOC+5+NLTLB'LOC+8+NLRTM'EQD+BX+whatever'NAD+DP'UNT+17+1'"
 	got, err = ParseIFTSTA([]byte(in))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Meaning != Unknown || got[0].Code != "99" || got[0].Reference != "MF-0007-L9" ||
-		got[0].CarrierRef != "" || got[0].UNLocode != "" || got[0].Equipment != "" || got[0].Facility != "" || got[0].ControlRef != "1" {
+	if len(got) != 1 || got[0].Meaning != Unknown || got[0].Code != "99" || got[0].Reference != "MF-0007-L9" || got[0].TransportDocument != "ECMR-1" ||
+		got[0].CarrierRef != "" || got[0].UNLocode != "" || got[0].Equipment != "" || got[0].Facility != "" || got[0].ControlRef != "1" ||
+		!got[0].Time.Equal(time.Date(2026, 10, 21, 12, 50, 0, 0, time.UTC)) || got[0].Time.Location() != time.UTC {
 		t.Errorf("unknown code: %+v", got)
+	}
+
+	// Times without a zone are read in the zone agreed with the partner.
+	brt := time.FixedZone("BRT", -3*3600)
+	got, err = ParseIFTSTAIn(read(t, "iftsta-picked-up.edi"), brt)
+	if err != nil || len(got) != 1 || !got[0].Time.Equal(time.Date(2026, 10, 21, 10, 45, 0, 0, time.UTC)) || got[0].Time.Location() != time.UTC {
+		t.Errorf("in BRT: %+v %v", got, err)
+	}
+	if got, err := ParseIFTSTAIn(read(t, "iftsta-picked-up.edi"), nil); err != nil || !got[0].Time.Equal(want.Time) {
+		t.Errorf("nil location: %+v %v", got, err)
 	}
 	if MeaningOf("13") != Departed || MeaningOf("14") != Arrived {
 		t.Error("MeaningOf")
@@ -272,9 +321,22 @@ func TestIFTSTARefuses(t *testing.T) {
 		"bad date format":        wrap(ok[:len(ok)-len("DTM+334:202610210745:203'")] + "DTM+334:202610210745:999'"),
 		"two times":              wrap(ok + "DTM+334:202610210746:203'"),
 		"bad UN/LOCODE":          wrap(ok + "LOC+175+NLTL1'"),
-		"two places":             wrap(ok + "LOC+175+NLTLB'LOC+5+NLRTM'"),
+		"two places":             wrap(ok + "LOC+175+NLTLB'LOC+175+NLRTM'"),
+		"date only":              wrap(ok[:len(ok)-len("DTM+334:202610210745:203'")] + "DTM+334:20261021:102'"),
+		"bad zone":               wrap(ok[:len(ok)-len("DTM+334:202610210745:203'")] + "DTM+334:202610210745:303'"),
+		"two consignment refs":   wrap("CNI+1'RFF+CU:MF-0007-L1'RFF+CU:MF-0007-L2'STS+1+12'DTM+334:202610210745:203'"),
+		"two status refs":        wrap("CNI+1'STS+1+12'RFF+CU:MF-0007-L1'RFF+CU:MF-0007-L1'DTM+334:202610210745:203'"),
+		"status ref contradicts": wrap(ok + "RFF+CU:MF-0007-L2'"),
+		"two consignment docs":   wrap("CNI+1'RFF+AAS:D1'RFF+AAS:D2'" + ok[len("CNI+1+PH4471'"):]),
+		"two status docs":        wrap(ok + "RFF+AAS:D1'RFF+AAS:D1'"),
+		"status doc contradicts": wrap("CNI+1'RFF+AAS:D1'" + ok[len("CNI+1+PH4471'"):] + "RFF+AAS:D2'"),
+		"bidi in LOC name":       wrap(ok + "LOC+175+NLTLB:139:6:Tilburg \u202egnp.exe'"),
+		"C1 in NAD name":         wrap(ok + "NAD+DP+++ECT\u0085Delta'"),
+		"container category":     wrap(ok + "EQD+CN+OCBX0000003'"),
 		"long LOC name":          wrap(ok + "LOC+175+NLTLB:139:6:" + strings.Repeat("x", 71) + "'"),
 		"long NAD name":          wrap(ok + "NAD+DP+++" + strings.Repeat("x", 71) + "'"),
+		"two NAD names":          wrap(ok + "NAD+DP+++ECT Delta'NAD+CZ+++Somewhere else'"),
+		"year out of range":      wrap(ok[:len(ok)-len("DTM+334:202610210745:203'")] + "DTM+334:000101010000:203'"),
 		"bad container":          wrap(ok + "EQD+CN+OCBU0000005'"),
 		"two containers":         wrap(ok + "EQD+CN+OCBU0000004'EQD+CN+OCBU1234563'"),
 		"bad document":           wrap(ok + "RFF+AAS:ECMR NL'"),
