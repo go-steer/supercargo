@@ -107,8 +107,16 @@ func (s *BookingService) Handle(ctx context.Context, req *node.Request) (*node.R
 	if err != nil {
 		return nil, err
 	}
-	// What the backend says is checked before it is signed: a bug there
-	// must not become a malformed message to a partner.
+	if conf == nil {
+		return nil, errors.New("operator: the booking system gave no answer")
+	}
+	if conf.Status == intents.StatusConfirmed && b.Subscription != nil && conf.SubscriptionID == "" {
+		// Recorded with the booking; the Publisher pushes to it.
+		conf.SubscriptionID = "SUB-" + strings.TrimPrefix(conf.BookingRef, s.backendPrefix())
+	}
+	// What the backend says, and what we added, is checked before anything
+	// is stored or signed: a bug there must not become a live booking or a
+	// malformed message to a partner.
 	if err := conf.Validate(); err != nil {
 		return nil, fmt.Errorf("operator: the booking system's answer: %w", err)
 	}
@@ -116,10 +124,6 @@ func (s *BookingService) Handle(ctx context.Context, req *node.Request) (*node.R
 		// The protocol's answer to "no", rather than an error: the request
 		// was valid, the operator just won't take it.
 		return &node.Reply{BookingRef: conf.BookingRef, Body: conf}, nil
-	}
-	if b.Subscription != nil && conf.SubscriptionID == "" {
-		// Recorded with the booking; the Publisher pushes to it.
-		conf.SubscriptionID = "SUB-" + strings.TrimPrefix(conf.BookingRef, s.backendPrefix())
 	}
 	if err := s.Bookings.Add(store.Booking{
 		Ref:          conf.BookingRef,

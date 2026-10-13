@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,7 +39,7 @@ func backendAPI(t *testing.T) (http.Handler, *fakePusher, *Publisher, *[]string)
 	p := publisher(f, &drops{})
 	t.Cleanup(p.Close)
 	bookings := store.NewBookings()
-	if err := bookings.Add(subscribed(intents.TnTEvent, intents.TnTAlert)); err != nil {
+	if err := bookings.Add(withContainer(subscribed(intents.TnTEvent, intents.TnTAlert), "OCBU0000004")); err != nil {
 		t.Fatal(err)
 	}
 	var mu sync.Mutex
@@ -50,6 +51,12 @@ func backendAPI(t *testing.T) (http.Handler, *fakePusher, *Publisher, *[]string)
 		published = append(published, ref+" "+pushID(body))
 	})
 	return mux, f, p, &published
+}
+
+// withContainer gives b an eBL with one container.
+func withContainer(b store.Booking, container string) store.Booking {
+	b.Confirmation.EBL = &intents.EBL{Containers: []intents.ShippingContainer{{ContainerNumber: container}}}
+	return b
 }
 
 func postEvent(t *testing.T, h http.Handler, body string) (int, EventResponse) {
@@ -115,6 +122,7 @@ func TestBackendEventRejects(t *testing.T) {
 		"an invalid event":     {`{"bookingRef":"OB-BKG-1","intent":"ulp.tnt.event","body":` + strings.Replace(good, `"GTIN"`, `"WARP"`, 1) + `}`, http.StatusBadRequest},
 		"an alert citing none": {`{"bookingRef":"OB-BKG-1","intent":"ulp.tnt.alert","body":` + strings.Replace(alertTmpl, "%s", `"EV-404"`, 1) + `}`, http.StatusBadRequest},
 		"an oversized body":    {`{"bookingRef":"OB-BKG-1","intent":"ulp.tnt.event","body":"` + strings.Repeat("x", MaxEventBody) + `"}`, http.StatusBadRequest},
+		"another container":    {`{"bookingRef":"OB-BKG-1","intent":"ulp.tnt.event","body":` + strings.Replace(good, `"OCBU0000004"`, `"MSKU1234565"`, 1) + `}`, http.StatusBadRequest},
 	} {
 		if code, resp := postEvent(t, h, c.body); code != c.want || resp.Error == "" {
 			t.Errorf("%s: %d %+v, want %d with an error", name, code, resp, c.want)
@@ -185,7 +193,7 @@ func TestBookingBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 	conf := reply.Body.(*intents.BookingConfirmationBody)
-	if conf.BookingRef != "SR-BKG-1042" || conf.SubscriptionID == "" || s.Bookings.Len() != 1 {
+	if conf.BookingRef != "SR-BKG-1042" || conf.SubscriptionID != "SUB-SR-BKG-1042" || s.Bookings.Len() != 1 {
 		t.Errorf("confirmed: %+v, stored %d", conf, s.Bookings.Len())
 	}
 	if len(fb.got) != 1 || fb.got[0].Shipper != "cymbal-shoes.example" || fb.got[0].Operator != "ocean-blue.example" {
@@ -204,11 +212,140 @@ func TestBookingBackend(t *testing.T) {
 	// An invalid answer is never signed, and a backend failure is an error.
 	bad := *inMemory
 	bad.PlannedArrival = "soon"
-	for name, fb := range map[string]*fixedBackend{"an invalid answer": {conf: &bad}, "a failure": {err: errors.New("TMS down")}} {
+	long := *inMemory // a valid 64-character reference: its derived subscription ID would be too long
+	long.BookingRef = strings.Repeat("R", 64)
+	long.SubscriptionID = ""
+	for name, fb := range map[string]*fixedBackend{"an invalid answer": {conf: &bad}, "a failure": {err: errors.New("TMS down")},
+		"no answer": {}, "an invalid derived subscription ID": {conf: &long}} {
 		s3 := service()
 		s3.Backend = fb
-		if reply, err := s3.Handle(ctx, request("cymbal-shoes.example", body())); err == nil || s3.Bookings.Len() != 0 {
+		sb := body()
+		sb.Subscription = &intents.Subscription{Endpoint: "https://cymbal-shoes.example/ulp", Intents: []string{intents.TnTEvent}}
+		if reply, err := s3.Handle(ctx, request("cymbal-shoes.example", sb)); err == nil || s3.Bookings.Len() != 0 {
 			t.Errorf("%s: %+v, %v, stored %d", name, reply, err, s3.Bookings.Len())
 		}
+	}
+}
+
+// TestBackendEventRightBooking: while other customers' bookings keep
+// arriving, every event lands on the booking it names, never on another
+// customer's (a regression: the lookup once took the booking's position
+// from one listing and read it from a second, fresh one).
+func TestBackendEventRightBooking(t *testing.T) {
+	f := &fakePusher{}
+	p := publisher(f, &drops{})
+	t.Cleanup(p.Close)
+	bookings := store.NewBookings()
+	named := withContainer(subscribed(), "OCBU0000004") // recorded only: nothing to push
+	named.CreatedAt = time.Now().Add(-time.Hour)
+	if err := bookings.Add(named); err != nil {
+		t.Fatal(err)
+	}
+	rec := &recordingPublisher{Publishing: p}
+	mux := http.NewServeMux()
+	RegisterBackend(mux, rec, bookings, p.Log, nil)
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() { // a partner's booking arriving, newest first, again and again
+		defer close(done)
+		for i := 2; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = bookings.Add(store.Booking{Ref: fmt.Sprintf("OB-BKG-%d", i), Shipper: "mallory.example", Operator: "ocean-blue.example", CreatedAt: time.Now()})
+		}
+	}()
+	for i := range 300 {
+		code, resp := postEvent(t, mux, `{"bookingRef":"OB-BKG-1","intent":"ulp.tnt.event","body":`+eventJSON(t, fmt.Sprintf("EV-%d", i))+`}`)
+		if code != http.StatusOK {
+			t.Fatalf("event %d: %d %+v", i, code, resp)
+		}
+	}
+	close(stop)
+	<-done
+	for _, b := range rec.list() {
+		if b.Ref != "OB-BKG-1" || b.Shipper != "cymbal-shoes.example" {
+			t.Fatalf("an event went to %s of %s, want OB-BKG-1 of cymbal-shoes.example", b.Ref, b.Shipper)
+		}
+	}
+}
+
+// recordingPublisher keeps the bookings it was asked to publish on.
+type recordingPublisher struct {
+	Publishing
+	mu  sync.Mutex
+	got []store.Booking
+}
+
+func (r *recordingPublisher) Publish(b store.Booking, body intents.Body) error {
+	r.mu.Lock()
+	r.got = append(r.got, b)
+	r.mu.Unlock()
+	return r.Publishing.Publish(b, body)
+}
+
+func (r *recordingPublisher) list() []store.Booking {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]store.Booking(nil), r.got...)
+}
+
+// TestBackendEventNotQueued: recorded but not pushed is a 200 that says
+// so: when the booking has no subscription for the intent, and when the
+// subscriber's queue is full.
+func TestBackendEventNotQueued(t *testing.T) {
+	f := &fakePusher{}
+	p := publisher(f, &drops{})
+	p.QueueLen, p.MaxWorkers = 1, 1
+	f.block = make(chan struct{})
+	t.Cleanup(func() { close(f.block); p.Close() })
+	bookings := store.NewBookings()
+	_ = bookings.Add(withContainer(subscribed(intents.TnTEvent), "OCBU0000004")) // alerts aren't subscribed
+	var published []string
+	mux := http.NewServeMux()
+	RegisterBackend(mux, p, bookings, p.Log, func(_ string, body intents.Body) { published = append(published, pushID(body)) })
+	if code, resp := postEvent(t, mux, `{"bookingRef":"OB-BKG-1","intent":"ulp.tnt.event","body":`+eventJSON(t, "EV-1")+`}`); code != http.StatusOK || !resp.Queued {
+		t.Fatalf("first: %d %+v", code, resp)
+	}
+	// An alert nobody subscribed to: recorded, not queued.
+	if code, resp := postEvent(t, mux, `{"bookingRef":"OB-BKG-1","intent":"ulp.tnt.alert","body":`+strings.Replace(alertTmpl, "%s", `"EV-1"`, 1)+`}`); code != http.StatusOK || resp.Queued {
+		t.Errorf("an unsubscribed alert: %d %+v, want 200 not queued", code, resp)
+	}
+	// Fill the queue (one in flight, one waiting), then one more: recorded,
+	// not queued.
+	waitFor(t, func() bool { return true })
+	_, _ = postEvent(t, mux, `{"bookingRef":"OB-BKG-1","intent":"ulp.tnt.event","body":`+eventJSON(t, "EV-2")+`}`)
+	code, resp := postEvent(t, mux, `{"bookingRef":"OB-BKG-1","intent":"ulp.tnt.event","body":`+eventJSON(t, "EV-3")+`}`)
+	if code != http.StatusOK || resp.Queued || resp.ID != "EV-3" {
+		t.Errorf("a full queue: %d %+v, want 200 not queued", code, resp)
+	}
+	if got := p.Log.List("ocean-blue.example", "OB-BKG-1"); len(got) != 4 {
+		t.Errorf("recorded %d, want 4", len(got))
+	}
+	if len(published) != 4 {
+		t.Errorf("reported %v to the activity stream, want all four", published)
+	}
+}
+
+// TestBackendAlertOtherBookingsEvent: an alert can't cite an event of
+// another booking.
+func TestBackendAlertOtherBookingsEvent(t *testing.T) {
+	f := &fakePusher{}
+	p := publisher(f, &drops{})
+	t.Cleanup(p.Close)
+	bookings := store.NewBookings()
+	_ = bookings.Add(withContainer(subscribed(intents.TnTEvent, intents.TnTAlert), "OCBU0000004"))
+	other := withContainer(store.Booking{Ref: "OB-BKG-2", Shipper: "mallory.example", Operator: "ocean-blue.example"}, "OCBU0000004")
+	_ = bookings.Add(other)
+	mux := http.NewServeMux()
+	RegisterBackend(mux, p, bookings, p.Log, nil)
+	if code, resp := postEvent(t, mux, `{"bookingRef":"OB-BKG-2","intent":"ulp.tnt.event","body":`+eventJSON(t, "EV-OTHER")+`}`); code != http.StatusOK {
+		t.Fatalf("other booking's event: %d %+v", code, resp)
+	}
+	if code, _ := postEvent(t, mux, `{"bookingRef":"OB-BKG-1","intent":"ulp.tnt.alert","body":`+strings.Replace(alertTmpl, "%s", `"EV-OTHER"`, 1)+`}`); code != http.StatusBadRequest {
+		t.Errorf("an alert citing another booking's event: %d, want 400", code)
 	}
 }

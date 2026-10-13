@@ -41,9 +41,11 @@ type EventRequest struct {
 type EventResponse struct {
 	// ID is the event or alert ID recorded.
 	ID string `json:"id,omitempty"`
-	// Queued is false when the event was recorded but its push couldn't be
-	// queued (the subscriber's queue is full, say): the activity stream
-	// says so, and the subscriber can catch up with a status request.
+	// Queued is true when a push to the booking's subscriber is queued. It
+	// is false when the booking has no subscription for this intent
+	// (recorded only), or when the push couldn't be queued (the
+	// subscriber's queue is full, say: the activity stream says so, and the
+	// subscriber can catch up with a status request).
 	Queued bool   `json:"queued"`
 	Error  string `json:"error,omitempty"`
 }
@@ -66,16 +68,33 @@ func RegisterBackend(mux *http.ServeMux, pub Publishing, bookings *store.Booking
 			control.Answer(w, http.StatusBadRequest, EventResponse{Error: "intent must be " + intents.TnTEvent + " or " + intents.TnTAlert})
 			return
 		}
-		i := slices.IndexFunc(bookings.List(), func(b store.Booking) bool { return b.Ref == req.BookingRef })
-		if i < 0 {
+		// By key, never by position in a listing: another booking stored
+		// meanwhile must not shift which one this is.
+		ops := bookings.Operators(req.BookingRef)
+		if len(ops) != 1 {
 			control.Answer(w, http.StatusNotFound, EventResponse{Error: "no booking " + req.BookingRef})
 			return
 		}
-		b := bookings.List()[i]
+		b, err := bookings.Get(ops[0], req.BookingRef)
+		if err != nil {
+			control.Answer(w, http.StatusNotFound, EventResponse{Error: "no booking " + req.BookingRef})
+			return
+		}
 		body, err := intents.DecodeBody(req.Intent, req.Body)
 		if err != nil {
 			control.Answer(w, http.StatusBadRequest, EventResponse{Error: err.Error()})
 			return
+		}
+		// An equipment event names one of this booking's containers: a
+		// backend mixing up bookings mustn't tell this customer about
+		// another's container.
+		if e, ok := body.(*intents.TnTEventBody); ok && e.EquipmentReference != "" {
+			if b.Confirmation.EBL == nil || !slices.ContainsFunc(b.Confirmation.EBL.Containers, func(c intents.ShippingContainer) bool {
+				return c.ContainerNumber == e.EquipmentReference
+			}) {
+				control.Answer(w, http.StatusBadRequest, EventResponse{Error: "equipment " + e.EquipmentReference + " isn't a container of " + b.Ref})
+				return
+			}
 		}
 		// An alert may only cite events this booking already has: the
 		// shipper checks the same before believing it.
@@ -109,6 +128,8 @@ func RegisterBackend(mux *http.ServeMux, pub Publishing, bookings *store.Booking
 		if onPublish != nil {
 			onPublish(b.Ref, body)
 		}
-		control.Answer(w, http.StatusOK, EventResponse{ID: id, Queued: err == nil})
+		sub := b.Request.Subscription
+		subscribed := sub != nil && slices.Contains(sub.Intents, req.Intent)
+		control.Answer(w, http.StatusOK, EventResponse{ID: id, Queued: err == nil && subscribed})
 	})
 }
