@@ -1,6 +1,8 @@
 # Proposal: door to door through a freight forwarder
 
-**Status:** proposal for review (2026-10-12). Nothing here is built.
+**Status:** proposal for review (2026-10-12; revised 2026-10-13: a legacy
+carrier in the core, continuity checks, a cold-chain variant). Nothing here
+is built.
 Parts of it are protocol changes (new intents and bodies), flagged where
 they appear; the rest builds on what the demo already has.
 
@@ -36,11 +38,17 @@ Its business shape is simpler than the real world:
 - **Tracking comes straight from the one carrier.** In practice someone
   stitches several carriers' tracking into one journey: the forwarder, or a
   visibility platform acting as a control tower.
+- **Every carrier speaks the same modern protocol.** In practice many,
+  especially small truckers, send flat-file EDI (status messages such as
+  EDI 214) over a file drop or a VAN, and the forwarder translates. A
+  protocol that only works once everyone has adopted it isn't one a
+  forwarder can use on Monday.
 
 This proposal makes the demo's story match that shape, without giving up
 anything the demo stands for: no central database, no party seeing more
-than its share, every message signed by whoever sent it, and a person
-confirming anything with an external effect.
+than its share, every message signed by whoever sent it (and data that
+isn't signed marked as such), and a person confirming anything with an
+external effect.
 
 ## The story
 
@@ -61,13 +69,15 @@ for Thursday the 15th.
 |---|---|---|---|
 | **Cymbal Shoes** | Seller; it hires the forwarder (DAP) | `cymbal-shoes.example` | shipper |
 | **Meridian Forwarding** | Freight forwarder: one contract with Cymbal, books every leg, and tracks the whole journey | `meridian-forwarding.example` | operator (toward Cymbal) and shipper (toward the carriers) |
-| **Polder Haulage** | Trucker: Tilburg warehouse to the port of Rotterdam | `polder-haulage.example` | operator |
+| **Polder Haulage** | Trucker: Tilburg warehouse to the port of Rotterdam. A small carrier **without a ULP node**: it takes load tenders and sends status messages as EDI | `polder-haulage.example` (no profile, no keys) | none |
 | **Ocean Blue** | Ocean carrier: Rotterdam to Newark | `ocean-blue.example` | operator |
 | **Garden State Drayage** | Trucker: port of Newark to the distribution center | `garden-state-drayage.example` | operator |
 | **Cymbal Footwear** | Buyer and consignee: receives, and signs for delivery | `cymbal-footwear.example` | receiver |
 
 All names are fictional demo brands. Meridian, Polder and Garden State are
-new; the rest exist today.
+new; the rest exist today. Polder is deliberately a legacy carrier: most
+real journeys have at least one, and how a ULP node lives next to it is
+part of the story.
 
 **Had the terms been different,** the same protocol tells a different
 story. Under *Ex Works* (EXW), Cymbal Footwear would hire Meridian and
@@ -85,13 +95,20 @@ in the demo.
    and Cymbal's node sends it signed.
 2. **The forwarder plans.** Meridian's node accepts the order and proposes
    a plan: three legs, with carriers and dates. Meridian's planning
-   assistant drafts the three leg bookings; a person at Meridian reviews
-   the plan and confirms. Meridian's node sends each booking, signed by
-   Meridian, to each carrier. Each carrier sees only its own leg.
-3. **The journey runs.** Polder picks up the container and gates it in at
-   Rotterdam; Ocean Blue loads it and sails; each carrier's signed events
-   go to Meridian, the shipper of its leg. Meridian's node relates each to
-   Cymbal's order and tells Cymbal what happened, as one journey.
+   assistant drafts the leg bookings; the node checks that the plan is
+   **continuous** (each leg starts at the facility where the previous one
+   ends); a person at Meridian reviews the plan and confirms. Meridian's
+   node sends Ocean Blue and Garden State their bookings as signed ULP
+   messages, and Polder its leg as an **EDI load tender**. Each carrier
+   sees only its own leg.
+3. **The journey runs.** Polder picks up the container and delivers it to
+   the Rotterdam terminal, reporting both as **EDI status messages**;
+   Meridian's node translates them into the same events as everyone
+   else's, marked as **unsigned, vouched for by Meridian**. At the
+   handoff, the node checks that Polder delivered to the terminal Ocean
+   Blue loads from. Ocean Blue loads the container and sails, and reports
+   in signed ULP events. Meridian relates each event to Cymbal's order and
+   tells Cymbal what happened, as one journey.
 4. **A delay, and a cascade.** Ocean Blue reports a 72-hour delay
    (engine repair, Halifax). Meridian's node sees that Garden State's
    pickup at Newark is now impossible, and its planner drafts a new pickup
@@ -107,20 +124,24 @@ in the demo.
    delivery is signed by Garden State and co-signed by Cymbal Footwear;
    both nodes check the other's signature and keep the proof. Meridian
    relays "delivered" to Cymbal Shoes, citing the proof.
-7. **Optional: a carrier without a node.** Polder Haulage turns out to be
-   a small trucker that only sends EDI over a file drop. Meridian's node
-   translates its status messages into the same events, marked as coming
-   from an unsigned source that Meridian vouches for.
+7. **Optional: a cold-chain variant.** The same journey with
+   temperature-sensitive cargo in a refrigerated (reefer) container. Ocean
+   Blue's events carry the container's temperature readings; when the
+   temperature leaves the agreed range, Ocean Blue raises an excursion
+   alert, Meridian relays it, and Cymbal's assistant explains what it means
+   for the goods. Same flows; higher stakes.
 
-Scenes 1 to 4 are the core. Scene 5 needs delegation, scene 6 the proof of
-delivery from #80, and scene 7 is a stretch.
+Scenes 1 to 4 are the core, including the legacy carrier. Scene 5 needs
+delegation, scene 6 the proof of delivery from #80, and scene 7 is a
+variant to show when the audience ships perishables or pharmaceuticals.
 
 ## Architecture
 
 ### Who talks to whom
 
-Every arrow is a signed ULP envelope between two companies. Nobody talks to
-a carrier of a leg it didn't book, and no message is relayed through a
+Every solid arrow is a signed ULP envelope between two companies; the
+dashed yellow ones to Polder are EDI files, with no signature. Nobody talks
+to a carrier of a leg it didn't book, and no message is relayed through a
 third party: Meridian receives a carrier's event and, separately, sends its
 own message to Cymbal.
 
@@ -128,23 +149,24 @@ own message to Cymbal.
 flowchart LR
     CS["Cymbal Shoes<br/>(shipper)"]
     MF["Meridian Forwarding<br/>(operator toward Cymbal,<br/>shipper toward carriers)"]
-    PH["Polder Haulage<br/>(road, NL)"]
+    PH["Polder Haulage<br/>(road, NL)<br/>no ULP node: EDI"]
     OB["Ocean Blue<br/>(ocean)"]
     GS["Garden State Drayage<br/>(road, US)"]
     CF["Cymbal Footwear<br/>(receiver)"]
 
     CS -- "door-to-door order,<br/>questions" --> MF
     MF -- "journey events,<br/>alerts, answers" --> CS
-    MF -- "leg 1 booking" --> PH
+    MF -. "leg 1: EDI 204<br/>load tender" .-> PH
     MF -- "leg 2 booking" --> OB
     MF -- "leg 3 booking,<br/>amendments" --> GS
-    PH -- "leg 1 events" --> MF
+    PH -. "leg 1: EDI 214<br/>status (unsigned)" .-> MF
     OB -- "leg 2 events,<br/>alerts" --> MF
     GS -- "leg 3 events" --> MF
     CS -. "delegation:<br/>track this order" .-> CF
     CF -- "questions,<br/>with the delegation" --> MF
     GS -- "proof of delivery" --> CF
     CF -- "co-signature" --> GS
+    linkStyle 2,5 stroke:#e3b341,stroke-dasharray:5 4
 ```
 
 What this picture says, in words:
@@ -155,6 +177,8 @@ What this picture says, in words:
 - **Each carrier has one counterparty**, Meridian, the shipper of its leg.
   Polder doesn't know about Garden State, and neither knows Cymbal's
   deadline.
+- **Polder isn't on ULP at all**, and that's fine: Meridian talks to it
+  the way forwarders talk to small truckers today, and translates.
 - **Meridian is the control tower**, because it holds the only relationship
   with every leg. That's the realistic answer to "who sees the whole
   journey?": the party that booked it.
@@ -184,6 +208,7 @@ flowchart TB
         subgraph CUS["customer side: legs it bought"]
             LEGS["leg bookings<br/>(Polder, Ocean Blue, Garden State)"]
             INB["inbound events<br/>(from each leg's carrier)"]
+            EDI["EDI gateway<br/>(Polder's files in and out)"]
         end
         ORCH["orchestrator<br/>(deterministic code)<br/>plan: order to legs"]
         PLAN["planning assistant<br/>(model: proposes only)"]
@@ -191,6 +216,8 @@ flowchart TB
     ORD --> ORCH
     ORCH --> LEGS
     INB --> ORCH
+    EDI --> INB
+    LEGS --> EDI
     ORCH --> PUB
     PLAN -. "drafts a plan,<br/>a person confirms" .-> ORCH
 ```
@@ -200,6 +227,14 @@ The orchestrator's rules:
 - **It is code, not a model.** It holds a **plan** per order: which leg
   bookings serve which order, in which sequence, with which planned times.
   It maps events through the plan and nothing else.
+- **It checks that the journey is continuous.** Before a plan can be
+  confirmed, each leg must start at the facility where the previous leg
+  ends, and no later than it ends: Polder's delivery is Ocean Blue's
+  terminal of loading; Ocean Blue's discharge is Garden State's pickup.
+  While the journey runs, it checks each handoff the same way: if a
+  carrier reports delivering somewhere other than where the next leg
+  starts, or after the next leg was due to start, it raises an alert to a
+  person at Meridian before anything is passed on.
 - **It moves only what the plan names.** An event on leg 2 becomes a
   journey event on the order: the milestone, the location, the time, and a
   citation of the carrier's event it came from. Nothing else from one side
@@ -212,6 +247,44 @@ The orchestrator's rules:
   plan and amendments from the order and the carriers' answers; a person at
   Meridian confirms each before any leg booking or amendment is sent, as
   every external effect in the demo requires.
+
+### A carrier without a node
+
+Polder Haulage has no ULP node, no published keys and no profile: it runs
+a small dispatch system that takes **EDI 204** load tenders and sends
+**EDI 214** shipment status messages through a file drop. Meridian's node
+has an **EDI gateway** on its customer side for carriers like this:
+
+- **Out:** when a person confirms the plan, the gateway turns leg 1 into
+  an EDI 204 tender (and takes Polder's EDI 990 acceptance back).
+- **In:** each EDI 214 status becomes the same track & trace event every
+  other carrier sends (`AF`, departed pickup, becomes `DEPA`; `D1`,
+  delivered, becomes `ARRI` at the terminal), with Polder's SCAC and the
+  facility mapped to the standard identifiers the plan uses.
+- **Provenance stays honest.** These events carry no carrier signature.
+  Meridian vouches for them: in what it tells Cymbal, `derived_from` says
+  the source was an unsigned EDI message from Polder, and Cymbal's journey
+  shows that mark differently from a signed one. Nothing pretends an EDI
+  file is a ULP message.
+- **The rest of the journey doesn't care.** The orchestrator, the
+  continuity check and Cymbal's view work the same for every leg.
+  Replacing Polder with a ULP carrier later changes the gateway's input,
+  nothing else.
+
+In the demo, Polder is a small mock that writes EDI files as the simulated
+truck moves, so the gateway reads real flat files, not JSON pretending to
+be EDI.
+
+### Places: standard identifiers first
+
+Every place in a plan is a **facility with a standard identifier**: a
+UN/LOCODE for the port or town, and a terminal or warehouse code where one
+exists (an SMDG terminal code for Rotterdam's ECT Delta, for example). The
+continuity check compares those. Precise coordinates, as a Plus Code or a
+geospatial cell, may ride along as optional metadata on a facility, useful
+for a map or for a "the truck stopped somewhere else" check, but nothing
+depends on them: the industry identifies places by code and address, and
+a check that only works with coordinates wouldn't match its data.
 
 ### What the deadline is, and isn't
 
@@ -243,10 +316,11 @@ sequenceDiagram
     CS->>MF: forwarding.request (signed by Cymbal)
     MF->>MF: verify, authorize, record the order
     MF->>MF: planning assistant drafts a 3-leg plan
+    MF->>MF: orchestrator checks the plan is continuous
     MF-->>Mia: plan for review
     Mia->>MF: confirm plan
-    MF->>PH: road.booking.request, leg 1 (signed by Meridian)
-    PH-->>MF: road.booking.confirmation
+    MF-->>PH: EDI 204 load tender, leg 1 (file, unsigned)
+    PH-->>MF: EDI 990 accepted
     MF->>OB: ocean.booking.request, leg 2
     OB-->>MF: ocean.booking.confirmation
     MF->>GS: road.booking.request, leg 3
@@ -254,10 +328,12 @@ sequenceDiagram
     MF->>CS: forwarding.confirmation (order ref, planned journey)
 ```
 
-Steps 4 and 9 to 14 are signed envelopes between two companies, each
+Steps 4, 12 to 15 and 16 are signed envelopes between two companies, each
 verified against the sender's published keys before anything else
-happens. Step 15 could also come first, with the plan to follow; the
-confirmation carrying the planned journey is simpler to show.
+happens. Steps 10 and 11 are EDI files with Polder, outside ULP: what any
+forwarder does with a carrier that has no API. Step 16 could also come
+first, with the plan to follow; the confirmation carrying the planned
+journey is simpler to show.
 
 ### Execution: carriers report, the forwarder tells one story
 
@@ -269,13 +345,15 @@ sequenceDiagram
     participant MF as Meridian
     participant CS as Cymbal Shoes
 
-    PH->>MF: tnt.event: picked up, Tilburg (leg 1)
-    MF->>CS: tnt.event: picked up, Tilburg (order), citing Polder's event
-    PH->>MF: tnt.event: gated in, Rotterdam (leg 1)
-    MF->>CS: tnt.event: at the port of Rotterdam (order)
-    OB->>MF: tnt.event: loaded, departed (leg 2)
-    MF->>CS: tnt.event: departed Rotterdam on Aurora 42W (order)
-    Note over MF,CS: Cymbal sees one journey with three legs.<br/>Each event says which carrier's signed event it came from.
+    PH-->>MF: EDI 214 AF: departed pickup, Tilburg (file, unsigned)
+    MF->>MF: EDI gateway: becomes a DEPA event, source unsigned
+    MF->>CS: tnt.event: picked up, Tilburg, derived from Polder's EDI (unsigned)
+    PH-->>MF: EDI 214 D1: delivered, ECT Delta terminal, Rotterdam
+    MF->>MF: handoff check: leg 1 ends where leg 2 starts, in time
+    MF->>CS: tnt.event: at the terminal in Rotterdam (order)
+    OB->>MF: tnt.event: loaded, departed (leg 2, signed by Ocean Blue)
+    MF->>CS: tnt.event: departed Rotterdam on Aurora 42W, derived from Ocean Blue's event
+    Note over MF,CS: Cymbal sees one journey with three legs.<br/>Each event says where it came from, signed or not.
 ```
 
 ### Disruption: one delay, a cascade, one alert
@@ -323,6 +401,29 @@ sequenceDiagram
     MF->>CS: tnt.event: delivered (order), citing the proof
 ```
 
+### Cold-chain variant: an excursion
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant OB as Ocean Blue
+    participant MF as Meridian
+    participant CS as Cymbal Shoes
+    actor Alex as Alex (Cymbal)
+
+    OB->>MF: tnt.event: reefer reading 4.1 C, setpoint 2 to 8 C (leg 2)
+    OB->>MF: tnt.alert: temperature excursion, 11.3 C for 40 min (leg 2)
+    MF->>CS: tnt.alert: excursion on the order, derived from Ocean Blue's alert
+    CS->>CS: alert summarizer, with the product's handling rules
+    CS-->>Alex: Outside the range long enough to need a quality check on arrival. Notify the receiving QA team?
+```
+
+The readings come from the reefer container's own controller, reported by
+the carrier in its signed events. Which readings to report, and what counts
+as an excursion, are agreed in the booking; what the excursion means for
+the product (discard, test, or accept) is the cargo owner's knowledge, in
+its private context, as the delivery slot is today.
+
 ## What changes in the protocol
 
 Most of the demo carries over unchanged: the envelope, signing, discovery,
@@ -333,10 +434,13 @@ new parts:
 | What | Why | Protocol change? |
 |---|---|---|
 | `ulp.forwarding.request` / `.confirmation` | A door-to-door order: places (door or port at each end), cargo, delivery window, Incoterm; answered with the forwarder's reference and the planned journey | **Yes**: new intents and bodies |
-| `ulp.road.booking.request` / `.confirmation` | A truck leg, in pf's DSDC truckload payload (#80) | **Yes**: new intents, a second dialect |
+| `ulp.road.booking.request` / `.confirmation` | A truck leg with a carrier that has a node (Garden State), in pf's DSDC truckload payload (#80) | **Yes**: new intents, a second dialect |
 | `ulp.road.booking.amendment` | Moving a pickup or delivery time without cancelling | **Yes**: new intent |
 | Road events | The same track & trace event payload with road event codes (#80) | Body values only |
-| `derived_from` on a forwarder's events and alerts | The carrier's event or alert IDs an order event came from, so a customer can ask for the evidence | **Yes**: an optional member |
+| `derived_from` on a forwarder's events and alerts | Where an order event came from: a carrier's signed event or alert ID, or an unsigned source (an EDI message, with its control number), so a customer can tell evidence from hearsay and ask for it | **Yes**: an optional member |
+| Facility identifiers on places | The terminal or warehouse a leg starts and ends at, beside the UN/LOCODE, so plans and handoffs can be checked; optional coordinates as metadata | **Yes**: optional members |
+| Reefer readings and excursion alerts (cold-chain variant) | Temperature setpoint and readings on a reefer container's events, and an alert kind for an excursion; DCSA's reefer work is the place to take field names from | **Yes**: optional members, a new alert kind |
+| EDI with a legacy carrier | Load tenders out (EDI 204) and status in (EDI 214), through Meridian's gateway | **No**: it never touches ULP; only `derived_from` records it |
 | `pod.request` / `pod.countersign` | Proof of delivery signed by the carrier and the receiver (#80) | **Yes**: new intents |
 | Delegation | The receiver tracking the order (milestone 7, already designed) | Already planned |
 
@@ -424,7 +528,8 @@ the job. The proposal contains it three ways:
 ## What people see
 
 - **Cymbal Shoes' UI:** one order, with a journey strip of three legs by
-  mode (truck, ship, truck), each event marked with where it came from.
+  mode (truck, ship, truck), each event marked with where it came from: a
+  carrier's signed event, or an unsigned source Meridian vouches for.
   The route map (#83) draws the road legs too. Cymbal's Activity shows
   only its messages with Meridian.
 - **Meridian's UI:** two views, as today's multi-role nodes have:
@@ -442,20 +547,23 @@ the job. The proposal contains it three ways:
 
 ## Phases
 
-1. **The forwarder and one truck leg.** Meridian as a new node; the
-   forwarding order; the orchestrator with re-issue and `derived_from`;
-   Garden State for the last leg (road booking, events, amendment); the
-   delay cascade. Scenes 1 to 4, with two legs instead of three.
-2. **Door to door.** Polder for the first leg; road events at both ends;
-   the route map with road legs.
-3. **The receiver.** Delegation (milestone 7); proof of delivery co-signed
-   by Cymbal Footwear. Scenes 5 and 6.
-4. **The legacy carrier.** An EDI adapter in Meridian's node for Polder.
-   Scene 7.
-5. **Pass through,** if wanted, designed with #103.
+1. **Door to door, with a legacy carrier.** Scenes 1 to 4:
+   - Meridian as a new node, the forwarding order, and the orchestrator
+     with re-issue, `derived_from` and the continuity checks;
+   - Polder as a mocked legacy carrier behind Meridian's EDI gateway
+     (tenders out, status in, unsigned provenance);
+   - Garden State for the last leg (road booking, events, amendment);
+   - the delay cascade;
+   - the journey strip with three legs, marking unsigned sources.
+2. **The receiver.** Delegation (milestone 7); proof of delivery co-signed
+   by Cymbal Footwear. Scenes 5 and 6. The route map draws the road legs.
+3. **The cold-chain variant.** A reefer container, readings on Ocean
+   Blue's events, an excursion alert relayed by Meridian. Scene 7.
+4. **Pass through,** if wanted, designed with #103.
 
-Each phase is demo-able on its own, and each adds nodes to the local rig
-and the Cloud Run deployment (one service per company).
+Each phase is demo-able on its own. Phase 1 adds two nodes (Meridian and
+Garden State) and the Polder mock to the local rig and the Cloud Run
+deployment (one service per company with a node).
 
 ## Open questions
 
@@ -475,13 +583,28 @@ and the Cloud Run deployment (one service per company).
    first version handles time changes only.
 5. **Advertising the forwarder role** in profiles and the directory: useful
    for "find a forwarder Tilburg to Newark", not needed for trust.
-6. **Visibility models elsewhere.** Some ULP designs let any party on a
+6. **How much EDI to speak.** EDI 204, 990 and 214 cover tendering and
+   status for trucking. Ocean terminals use other messages (EDI 322 for
+   terminal and vessel milestones). The demo needs only the trucker's;
+   which others are worth mocking depends on the audience.
+7. **The continuity check's tolerance.** A handoff at the right facility
+   but hours late may be fine (the container waits at the terminal) or
+   not (the vessel sailed). The first version flags any handoff after the
+   next leg's planned start; a real one needs per-facility rules.
+8. **Visibility models elsewhere.** Some ULP designs let any party on a
    journey see all of it. This proposal deliberately doesn't: each party
    sees what its counterparties send it. If the wider protocol settles
    differently, this demo is the place to show the trade-off.
 
 ## Not in scope
 
-Customs and import clearance (a customs broker's role), payments and
-invoices, rates and quotes, air and rail, splitting a shipment across
-containers, and persistence (the stores stay in memory).
+- **Autonomous negotiation between agents.** The plan is drafted by a
+  model and decided by a person, and carriers are booked under the
+  forwarder's existing agreements with them, not haggled with at booking
+  time. That is how forwarders work.
+- **Payment and escrow on delivery.** DESIGN's out-of-scope list has signed
+  invoices as the next step; a co-signed proof of delivery is what one
+  would key off.
+- **Customs and import clearance** (a customs broker's role), rates and
+  quotes, air, rail and last-mile drones, splitting a shipment across
+  containers, and persistence (the stores stay in memory).

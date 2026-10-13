@@ -78,6 +78,7 @@ svg#map { width: 100%; height: auto; display: block; }
 .node.thinking rect { stroke: var(--purple); stroke-width: 2.5; }
 .node.human rect { stroke: var(--green); stroke-width: 2.5; }
 .node.unsigned rect { stroke: var(--yellow); stroke-width: 2.5; stroke-dasharray: 4 3; }
+.node.legacy rect { stroke: var(--yellow); stroke-dasharray: 4 3; }
 .node .name { fill: var(--text); font-weight: 700; font-size: 14px; }
 .node .role { fill: var(--text-dim); font-size: 11px; }
 .node .domain { fill: var(--cyan); font-size: 10.5px; }
@@ -105,7 +106,7 @@ aside { display: flex; flex-direction: column; min-height: 0; overflow: auto; }
 .tag.human { border-color: var(--green); color: var(--green); }
 .tag.model { border-color: var(--purple); color: var(--purple); }
 .tag.code { border-color: var(--cyan); color: var(--cyan); }
-pre.json { margin: 8px 0 0; padding: 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; overflow: auto; font-size: 11.5px; line-height: 1.45; max-height: 300px; }
+pre.json { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; padding: 10px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; overflow: auto; font-size: 11.5px; line-height: 1.45; max-height: 300px; }
 .k { color: var(--blue); } .s { color: var(--green); } .n { color: var(--orange); } .b { color: var(--purple); }
 .knows table { width: 100%; border-collapse: collapse; }
 .knows td { vertical-align: top; padding: 5px 4px; border-top: 1px solid var(--border); }
@@ -136,7 +137,7 @@ a { color: var(--blue); }
       <span><i style="border-color:var(--red)"></i>alert</span>
       <span><i style="border-color:var(--purple)"></i>a model proposes</span>
       <span><i style="border-color:var(--green)"></i>a person decides</span>
-      <span><i style="border-color:var(--yellow);border-style:dashed"></i>unsigned source</span>
+      <span><i style="border-color:var(--yellow);border-style:dashed"></i>unsigned (EDI, no node)</span>
     </div>
     <div class="controls">
       <button id="first" title="Start over">↺ Start</button>
@@ -174,7 +175,7 @@ a { color: var(--blue); }
 const CO = {
   cs: { name: 'Cymbal Shoes', role: 'seller · shipper', domain: 'cymbal-shoes.example', kid: 'cy-1', x: 60, y: 230 },
   mf: { name: 'Meridian', role: 'forwarder · operator + shipper', domain: 'meridian-forwarding.example', kid: 'mf-1', x: 420, y: 230 },
-  ph: { name: 'Polder Haulage', role: 'road · Tilburg → Rotterdam', domain: 'polder-haulage.example', kid: 'ph-1', x: 820, y: 40 },
+  ph: { name: 'Polder Haulage', role: 'road · no ULP node: EDI', domain: 'polder-haulage.example', kid: null, legacy: true, x: 820, y: 40 },
   ob: { name: 'Ocean Blue', role: 'ocean · Rotterdam → Newark', domain: 'ocean-blue.example', kid: 'ob-1', x: 820, y: 230 },
   gs: { name: 'Garden State', role: 'road · Newark port → DC', domain: 'garden-state-drayage.example', kid: 'gs-1', x: 820, y: 420 },
   cf: { name: 'Cymbal Footwear', role: 'buyer · receiver', domain: 'cymbal-footwear.example', kid: 'cf-1', x: 420, y: 420 },
@@ -193,13 +194,19 @@ const SCENES = [
   { id: 4, name: 'A delay, a cascade' },
   { id: 5, name: 'The receiver joins' },
   { id: 6, name: 'Delivery' },
-  { id: 7, name: 'A carrier without a node', optional: true },
+  { id: 7, name: 'Cold-chain variant', optional: true, after: 3 },
 ];
 
 const iso = (d, t) => `2026-10-${d}T${t}:00Z`;
 const env = (from, to, intent, extra, body) => ({
   header: Object.assign({ typ: 'ulp-envelope+jws', intent, sender: CO[from].domain, receiver: CO[to].domain, messageId: '…', sentAt: '…' }, extra || {}),
   signedBy: `${CO[from].domain} (kid ${CO[from].kid}, Ed25519)`,
+  body,
+});
+
+const edi = (from, to, format, body) => ({
+  header: { format, transport: 'file drop', signature: 'none' },
+  signedBy: 'nobody: an EDI file',
   body,
 });
 
@@ -221,22 +228,24 @@ const STEPS = [
 
   // 2. The forwarder plans
   { scene: 2, kind: 'model', at: 'mf', who: 'Meridian\'s planning assistant',
-    text: 'Meridian\'s planning assistant drafts a plan: Polder Haulage trucks the container from Tilburg to Rotterdam, Ocean Blue sails Rotterdam to Newark on Aurora 42W, and Garden State Drayage trucks it from the port to the distribution center.',
+    text: 'Meridian\'s planning assistant drafts a plan: Polder Haulage trucks the container from Tilburg to the ECT Delta terminal in Rotterdam, Ocean Blue sails from that terminal to Newark on Aurora 42W, and Garden State Drayage trucks it from Port Newark to the distribution center.',
     why: 'The model sees only what the plan needs (places, cargo, the window), never the order\'s free text, and it can only propose.',
     knows: { mf: ['draft plan: 3 legs (Polder, Ocean Blue, Garden State)'] } },
+  { scene: 2, kind: 'code', at: 'mf', who: 'Meridian\'s orchestrator',
+    text: 'The orchestrator checks that the plan is continuous: each leg starts at the facility where the previous one ends, and no earlier. Polder delivers to ECT Delta (NLRTM), where Ocean Blue loads; Ocean Blue discharges at Port Newark (USEWR), where Garden State picks up.',
+    why: 'Places are compared by standard identifiers (UN/LOCODE plus the terminal\'s code), the way the industry names them. Coordinates can ride along as metadata; nothing depends on them.' },
   { scene: 2, kind: 'human', at: 'mf', who: 'Mia at Meridian',
     text: 'Mia, an operator at Meridian, reviews the plan: each leg, its carrier, its dates, and exactly what each carrier will be told. She confirms.',
-    why: 'Anything with an external effect needs a person. Meridian\'s node builds each leg booking from the confirmed plan with deterministic code.' },
-  { scene: 2, kind: 'msg', from: 'mf', to: 'ph', intent: 'road.booking.request', proposed: true,
-    text: 'Leg 1 goes to Polder Haulage, signed by Meridian. Polder sees a pickup in Tilburg and a delivery to the port of Rotterdam, nothing more.',
-    why: 'Polder never learns who the cargo is for, where it ends up, or Cymbal\'s deadline: it doesn\'t need to.',
-    env: env('mf', 'ph', 'ulp.road.booking.request', { dialect: { standard: 'DSDC', version: '…' } }, {
-      pickup: { address: 'Cymbal EU warehouse, Tilburg', earliest: iso('06', '08:00') }, delivery: { address: 'ECT Delta terminal, Rotterdam', latest: iso('07', '12:00') },
-      containers: [{ equipment_size_type: '45G1', count: 1 }], shipper_reference: 'MF-0007-L1' }),
-    knows: { ph: ['booking from Meridian: Tilburg → Rotterdam port, 6th–7th'] } },
-  { scene: 2, kind: 'msg', from: 'ph', to: 'mf', intent: 'road.booking.confirmation', proposed: true, text: 'Polder confirms leg 1 with its own reference.',
-    env: env('ph', 'mf', 'ulp.road.booking.confirmation', { bookingRef: 'PH-4471' }, { carrier_booking_reference: 'PH-4471', status: 'confirmed' }),
-    knows: { mf: ['leg 1 confirmed: PH-4471'] } },
+    why: 'Anything with an external effect needs a person. Meridian\'s node builds each leg\'s booking from the confirmed plan with deterministic code.' },
+  { scene: 2, kind: 'unsigned', from: 'mf', to: 'ph', intent: 'EDI 204',
+    text: 'Polder Haulage has no ULP node: it\'s a small trucker that takes load tenders as EDI files. Meridian\'s EDI gateway turns leg 1 into an EDI 204 load tender and drops it in Polder\'s folder.',
+    why: 'Most real journeys include a carrier like this. A forwarder can use ULP with the partners that have it and keep working with the ones that don\'t.',
+    env: edi('mf', 'ph', 'X12 EDI 204 (load tender)', 'ST*204*0001~ B2**POLD**MF00071*PP~ S5*1*LD~ N1*SH*CYMBAL EU WAREHOUSE~ N4*TILBURG**NL~ S5*2*UL~ N1*CN*ECT DELTA TERMINAL~ N4*ROTTERDAM**NL~ SE*9*0001~'),
+    knows: { ph: ['load tender (EDI 204): Tilburg → ECT Delta, Rotterdam'] } },
+  { scene: 2, kind: 'unsigned', from: 'ph', to: 'mf', intent: 'EDI 990',
+    text: 'Polder accepts the tender with an EDI 990.',
+    env: edi('ph', 'mf', 'X12 EDI 990 (response to load tender)', 'ST*990*0001~ B1*POLD*MF00071*20261005*A~ SE*3*0001~'),
+    knows: { mf: ['leg 1 accepted by Polder (EDI 990, unsigned)'] } },
   { scene: 2, kind: 'msg', from: 'mf', to: 'ob', intent: 'ocean.booking.request',
     text: 'Leg 2 goes to Ocean Blue: the same ocean booking request the demo sends today, except the shipper is Meridian.',
     why: 'For Ocean Blue nothing changes: it\'s a booking from a shipper it can verify. That Meridian is a forwarder is Meridian\'s business.',
@@ -248,10 +257,10 @@ const STEPS = [
     env: env('ob', 'mf', 'ulp.ocean.booking.confirmation', { bookingRef: 'OB-BKG-1042', dialect: { standard: 'DCSA_OCEAN_CONTAINER', version: '2.0.0' } }, { carrier_booking_reference: 'OB-BKG-1042', vessel: 'Ocean Blue Aurora', voyage: '42W', planned_arrival: iso(13, '08:00') }),
     knows: { mf: ['leg 2 confirmed: OB-BKG-1042, Aurora 42W, arrives the 13th'] } },
   { scene: 2, kind: 'msg', from: 'mf', to: 'gs', intent: 'road.booking.request', proposed: true,
-    text: 'Leg 3 goes to Garden State Drayage: pick the container up at Port Newark on the 13th and deliver it to the distribution center.',
+    text: 'Leg 3 goes to Garden State Drayage, which does run a ULP node: pick the container up at Port Newark on the 13th and deliver it to the distribution center.',
     why: 'Garden State does need the delivery address. It doesn\'t need to know about the ocean leg or the launch.',
     env: env('mf', 'gs', 'ulp.road.booking.request', { dialect: { standard: 'DSDC', version: '…' } }, {
-      pickup: { address: 'Port Newark Container Terminal', earliest: iso(13, '14:00') }, delivery: { address: 'Cymbal Newark DC, dock 4', latest: iso(14, '12:00') }, shipper_reference: 'MF-0007-L3' }),
+      pickup: { facility: 'Port Newark Container Terminal', un_location_code: 'USEWR', earliest: iso(13, '14:00') }, delivery: { address: 'Cymbal Newark DC, dock 4', latest: iso(14, '12:00') }, shipper_reference: 'MF-0007-L3' }),
     knows: { gs: ['booking from Meridian: Port Newark → Cymbal Newark DC, 13th–14th'] } },
   { scene: 2, kind: 'msg', from: 'gs', to: 'mf', intent: 'road.booking.confirmation', proposed: true, text: 'Garden State confirms leg 3.',
     env: env('gs', 'mf', 'ulp.road.booking.confirmation', { bookingRef: 'GS-0913' }, { carrier_booking_reference: 'GS-0913', status: 'confirmed' }),
@@ -263,27 +272,31 @@ const STEPS = [
     knows: { cs: ['order confirmed: MF-0007, delivery planned the 14th'] } },
 
   // 3. The journey runs
-  { scene: 3, kind: 'msg', from: 'ph', to: 'mf', intent: 'tnt.event',
-    text: 'Polder picks up the container in Tilburg and reports it, signed, to Meridian, the shipper of its leg.',
-    env: env('ph', 'mf', 'ulp.tnt.event', { bookingRef: 'PH-4471', dialect: { standard: 'DCSA_TNT', version: '2.2.0' } }, { event_id: 'PH-EV-01', event_type: 'TRANSPORT', event_type_code: 'DEPA', event_classifier_code: 'ACT', un_location_code: 'NLTLB', description: 'Picked up at the shipper\'s warehouse' }),
-    knows: { mf: ['leg 1: picked up, Tilburg (PH-EV-01)'] } },
-  { scene: 3, kind: 'code', at: 'mf', who: 'Meridian\'s orchestrator',
-    text: 'Meridian\'s orchestrator looks the event up in its plan: leg 1 of order MF-0007. It turns it into an event on the order, moving the milestone, place and time and nothing else.',
-    why: 'This is the only bridge between what Meridian bought (legs) and what it sold (orders), and it\'s code, not a model.' },
+  { scene: 3, kind: 'unsigned', from: 'ph', to: 'mf', intent: 'EDI 214',
+    text: 'Polder\'s truck leaves the Tilburg warehouse. Polder\'s dispatch system drops an EDI 214 status file: AF, departed the pickup location.',
+    env: edi('ph', 'mf', 'X12 EDI 214 (shipment status)', 'ST*214*0001~ B10*PH4471*MF00071*POLD~ AT7*AF*NS***20261006*0800~ MS1*TILBURG**NL~ SE*5*0001~'),
+    knows: { mf: ['leg 1: departed Tilburg (EDI 214, unsigned)'] } },
+  { scene: 3, kind: 'code', at: 'mf', who: 'Meridian\'s EDI gateway and orchestrator',
+    text: 'The gateway turns the EDI status into the same track & trace event every other carrier sends: AF becomes DEPA, and Polder\'s codes become the plan\'s identifiers. The orchestrator maps it to leg 1 of order MF-0007.',
+    why: 'Honest provenance: no carrier signed this. Meridian vouches for it, and says so.' },
   { scene: 3, kind: 'msg', from: 'mf', to: 'cs', intent: 'tnt.event',
-    text: 'Meridian tells Cymbal, under its own signature, and says which carrier event this came from.',
-    why: 'Cymbal trusts its counterparty, Meridian, as in forwarding today. If it wants the evidence, it asks Meridian, which holds Polder\'s signed event.',
-    env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007', dialect: { standard: 'DCSA_TNT', version: '2.2.0' } }, { event_id: 'MF-EV-01', event_type_code: 'DEPA', event_classifier_code: 'ACT', un_location_code: 'NLTLB', description: 'Picked up in Tilburg (leg 1, road)', derived_from: ['PH-EV-01'] }),
+    text: 'Meridian tells Cymbal, under its own signature, and says this came from an unsigned EDI message, not a carrier\'s signed event.',
+    why: 'Cymbal trusts its counterparty, Meridian, as in forwarding today, and can see which parts of its journey rest on signed evidence and which on Meridian\'s word.',
+    env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007', dialect: { standard: 'DCSA_TNT', version: '2.2.0' } }, { event_id: 'MF-EV-01', event_type_code: 'DEPA', event_classifier_code: 'ACT', un_location_code: 'NLTLB', description: 'Picked up in Tilburg (leg 1, road)', derived_from: [{ source: 'EDI 214 from Polder Haulage', control_number: '0001', signed: false }] }),
     proposedField: 'derived_from',
-    knows: { cs: ['journey: picked up, Tilburg'] } },
-  { scene: 3, kind: 'msg', from: 'ph', to: 'mf', intent: 'tnt.event', text: 'Polder gates the container in at the Rotterdam terminal.',
-    env: env('ph', 'mf', 'ulp.tnt.event', { bookingRef: 'PH-4471' }, { event_id: 'PH-EV-02', event_type_code: 'ARRI', un_location_code: 'NLRTM', description: 'Delivered to the terminal' }),
-    knows: { mf: ['leg 1: at the Rotterdam terminal (PH-EV-02)'] } },
-  { scene: 3, kind: 'msg', from: 'ob', to: 'mf', intent: 'tnt.event', text: 'Ocean Blue loads it on the Aurora, which departs Rotterdam.',
+    knows: { cs: ['journey: picked up, Tilburg (unsigned source, vouched by Meridian)'] } },
+  { scene: 3, kind: 'unsigned', from: 'ph', to: 'mf', intent: 'EDI 214',
+    text: 'Polder delivers the container to the ECT Delta terminal: another EDI 214, D1, delivered.',
+    env: edi('ph', 'mf', 'X12 EDI 214 (shipment status)', 'ST*214*0002~ B10*PH4471*MF00071*POLD~ AT7*D1*NS***20261007*0930~ MS1*ROTTERDAM**NL~ N1*CN*ECT DELTA TERMINAL~ SE*6*0002~'),
+    knows: { mf: ['leg 1: delivered to ECT Delta (EDI 214, unsigned)'] } },
+  { scene: 3, kind: 'code', at: 'mf', who: 'Meridian\'s orchestrator',
+    text: 'Handoff check: leg 1 ended at ECT Delta, Rotterdam, at 09:30 on the 7th; leg 2 loads at ECT Delta from noon. Same facility, in time: the journey is continuous.',
+    why: 'Had Polder delivered to another terminal, or too late for the sailing, a person at Meridian would get an alert now, before anyone else is told anything.' },
+  { scene: 3, kind: 'msg', from: 'ob', to: 'mf', intent: 'tnt.event', text: 'Ocean Blue loads the container on the Aurora, which departs Rotterdam. This one is a signed ULP event.',
     env: env('ob', 'mf', 'ulp.tnt.event', { bookingRef: 'OB-BKG-1042' }, { event_id: 'EV-000003', event_type_code: 'DEPA', event_classifier_code: 'ACT', un_location_code: 'NLRTM', description: 'Ocean Blue Aurora 42W departed Port of Rotterdam' }),
-    knows: { mf: ['leg 2: departed Rotterdam (EV-000003)'] } },
+    knows: { mf: ['leg 2: departed Rotterdam (EV-000003, signed)'] } },
   { scene: 3, kind: 'msg', from: 'mf', to: 'cs', intent: 'tnt.event',
-    text: 'Cymbal\'s journey now shows the container on the water: one journey, three legs, each mark traceable to a carrier\'s signed event that Meridian holds.',
+    text: 'Cymbal\'s journey now shows the container on the water: one journey, three legs, each mark saying where it came from.',
     env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007' }, { event_id: 'MF-EV-03', event_type_code: 'DEPA', un_location_code: 'NLRTM', description: 'Departed Rotterdam on Ocean Blue Aurora 42W (leg 2, ocean)', derived_from: ['EV-000003'] }),
     knows: { cs: ['journey: at sea on Aurora 42W, arriving Newark the 13th'] } },
 
@@ -348,16 +361,25 @@ const STEPS = [
     env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007' }, { event_id: 'MF-EV-09', event_type_code: 'DLV', description: 'Delivered to Cymbal Newark DC, dock 4', derived_from: ['GS-EV-04'] }),
     knows: { cs: ['journey: DELIVERED on the 17th'] } },
 
-  // 7. A carrier without a node (optional)
-  { scene: 7, kind: 'unsigned', from: 'ph', to: 'mf', intent: 'EDI 214',
-    text: 'Suppose Polder Haulage is a small trucker without a ULP node: it sends status messages as EDI files. Meridian\'s node translates them into the same events.',
-    why: 'Honest provenance: these events carry no carrier signature. Meridian vouches for them, and the journey marks them as from an unsigned source.',
-    env: { header: { format: 'X12 EDI 214 (shipment status)', transport: 'file drop', signature: 'none' }, signedBy: 'nobody', body: 'ST*214*0001~ B10*PH4471*MF00071*POLD~ AT7*AF*NS***20261006*0800~ MS1*TILBURG**NL~ SE*5*0001~' },
-    knows: { mf: ['leg 1: picked up (from EDI, unsigned)'] } },
-  { scene: 7, kind: 'msg', from: 'mf', to: 'cs', intent: 'tnt.event',
-    text: 'Cymbal still gets a signed event from Meridian, but it says the source was unsigned, so Cymbal\'s journey can show that mark differently.',
-    env: env('mf', 'cs', 'ulp.tnt.event', { bookingRef: 'MF-0007' }, { event_id: 'MF-EV-01', event_type_code: 'DEPA', un_location_code: 'NLTLB', description: 'Picked up in Tilburg (leg 1, road)', derived_from: [{ source: 'EDI 214 from polder-haulage', signed: false }] }),
-    knows: { cs: ['journey: picked up, Tilburg (source unsigned, vouched by Meridian)'] } },
+  // 7. Cold-chain variant (optional)
+  { scene: 7, kind: 'msg', from: 'ob', to: 'mf', intent: 'tnt.event',
+    text: 'A variant of the journey after scene 3: suppose the cargo were temperature-sensitive, in a reefer container set to 2–8 °C. Ocean Blue\'s events carry the container controller\'s readings.',
+    why: 'The same flows as the sneakers, with higher stakes: which readings to report, and what counts as an excursion, are agreed in the booking.',
+    env: env('ob', 'mf', 'ulp.tnt.event', { bookingRef: 'OB-BKG-1042' }, { event_id: 'EV-000011', event_type: 'EQUIPMENT', description: 'Reefer reading', reefer: { setpoint_min_c: 2, setpoint_max_c: 8, reading_c: 4.1 } }),
+    proposedField: 'reefer',
+    knows: { mf: ['leg 2: reefer at 4.1 °C (in range)'] } },
+  { scene: 7, kind: 'msg', from: 'ob', to: 'mf', intent: 'tnt.alert', alert: true,
+    text: 'A power fault on board: the container reads 11.3 °C for 40 minutes. Ocean Blue raises an excursion alert.',
+    env: env('ob', 'mf', 'ulp.tnt.alert', { bookingRef: 'OB-BKG-1042' }, { alert_id: 'AL-000014', severity: 'high', kind: 'temperature_excursion', reading_c: 11.3, duration_min: 40, causes: ['EV-000012'] }),
+    proposedField: 'temperature_excursion',
+    knows: { mf: ['leg 2 ALERT: excursion, 11.3 °C for 40 min (AL-000014)'] } },
+  { scene: 7, kind: 'msg', from: 'mf', to: 'cs', intent: 'tnt.alert', alert: true,
+    text: 'Meridian relays the excursion to Cymbal on its order, citing Ocean Blue\'s alert.',
+    env: env('mf', 'cs', 'ulp.tnt.alert', { bookingRef: 'MF-0007' }, { alert_id: 'MF-AL-02', severity: 'high', kind: 'temperature_excursion', reading_c: 11.3, duration_min: 40, derived_from: ['AL-000014'] }),
+    knows: { cs: ['ALERT: temperature excursion, 11.3 °C for 40 min (MF-AL-02)'] } },
+  { scene: 7, kind: 'model', at: 'cs', who: 'Cymbal\'s alert summarizer',
+    text: 'Cymbal\'s own model explains what that means for the product, from Cymbal\'s handling rules: out of range long enough to need a quality check on arrival. It suggests telling the receiving QA team.',
+    why: 'What an excursion means for the goods is the cargo owner\'s knowledge, in its private context, like the delivery slot. The carrier and the forwarder report facts; the owner decides.' },
 ];
 
 // ── state and rendering ─────────────────────────────────────────────────
@@ -396,7 +418,7 @@ function drawStatic() {
   }
   svg.appendChild(lanes);
   for (const [id, c] of Object.entries(CO)) {
-    const g = el('g', { class: 'node', 'data-id': id, transform: `translate(${c.x},${c.y})` });
+    const g = el('g', { class: 'node' + (c.legacy ? ' legacy' : ''), 'data-id': id, transform: `translate(${c.x},${c.y})` });
     g.appendChild(el('rect', { width: W, height: H }));
     g.appendChild(el('text', { class: 'name', x: 12, y: 24 }, c.name));
     g.appendChild(el('text', { class: 'role', x: 12, y: 42 }, c.role));
@@ -424,8 +446,8 @@ function renderMap(step, animate) {
   if (step.kind === 'msg' || step.kind === 'unsigned') {
     const lane = laneFor(step.from, step.to);
     if (lane) lane.classList.add('active');
-    svg.querySelector(`.node[data-id="${step.from}"]`).classList.add(step.kind === 'unsigned' ? 'unsigned' : 'active');
-    svg.querySelector(`.node[data-id="${step.to}"]`).classList.add('active');
+    svg.querySelector(`.node[data-id="${step.from}"]`).classList.add(step.kind === 'unsigned' && CO[step.from].legacy ? 'unsigned' : 'active');
+    svg.querySelector(`.node[data-id="${step.to}"]`).classList.add(step.kind === 'unsigned' && CO[step.to].legacy ? 'unsigned' : 'active');
     const p = edge(step.from, step.to), q = edge(step.to, step.from);
     flight.appendChild(el('line', { x1: p.x, y1: p.y, x2: q.x, y2: q.y, stroke: step.alert ? 'var(--red)' : step.kind === 'unsigned' ? 'var(--yellow)' : 'var(--blue)', 'stroke-width': 2.5, 'marker-end': 'url(#arrow)', 'stroke-dasharray': step.kind === 'unsigned' ? '6 4' : null }));
     const label = step.intent + (step.proposed ? ' ✱' : '');
@@ -501,7 +523,7 @@ function renderMessage(step) {
     box.appendChild(p);
     return;
   }
-  h.textContent = step.kind === 'unsigned' ? 'The data, as it arrives' : 'The envelope';
+  h.textContent = step.kind === 'unsigned' ? 'The EDI file, as it arrives' : 'The envelope';
   const sig = document.createElement('div');
   sig.append(tag(step.kind === 'unsigned' ? 'unsigned' : 'signed', step.kind === 'unsigned' ? 'NOT SIGNED' : 'SIGNED BY'));
   sig.append(document.createTextNode(step.env.signedBy));
@@ -516,7 +538,10 @@ function renderMessage(step) {
 
 function renderKnows(i) {
   const known = Object.fromEntries(Object.keys(CO).map((k) => [k, []]));
+  // A variant scene replaces what follows the scene it branches from.
+  const variant = SCENES.find((x) => x.id === STEPS[i].scene && x.after);
   for (let j = 0; j <= i; j++) {
+    if (variant && STEPS[j].scene > variant.after && STEPS[j].scene !== variant.id) continue;
     for (const [co, items] of Object.entries(STEPS[j].knows || {})) for (const it of items) known[co].push({ it, fresh: j === i });
   }
   const t = $('knows');
