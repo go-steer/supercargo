@@ -449,7 +449,7 @@ Handlers act on the verified payload bytes, so there is no canonicalization and 
 
 ### A.5 Intents and bodies
 
-**The payload standard (decided 2026-10-07, tracking #68).** The ULP branch of `google-octo/pf` defines ULP's standard *payloads*: the message bodies for booking and track & trace, as wrappers around industry schemas it calls dialects (DCSA for ocean, DSDC for truckload, IATA for air). supercargo adopts those payload schemas, with **pf's field names exactly** (snake_case), inside *our* envelope. The JWS, the header, replay protection, domain keys and the pipeline are unchanged. pf's envelope is unsigned, and it identifies parties by self-asserted `did:ulp:` strings, so it isn't a security model to adopt. What we take, and what we don't:
+**The payload standard (decided 2026-10-07, tracking #68).** The ULP payload specification's reference implementation ("pf" below, a separate codebase) defines ULP's standard *payloads*: the message bodies for booking and track & trace, as wrappers around industry schemas it calls dialects (DCSA for ocean, DSDC for truckload, IATA for air). supercargo adopts those payload schemas, with **pf's field names exactly** (snake_case), inside *our* envelope. The JWS, the header, replay protection, domain keys and the pipeline are unchanged. pf's envelope is unsigned, and it identifies parties by self-asserted `did:ulp:` strings, so it isn't a security model to adopt. What we take, and what we don't:
 
 | Area | pf | supercargo |
 |---|---|---|

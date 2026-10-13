@@ -21,3 +21,6 @@ coverage.*
 .vscode/
 *.swp
 .DS_Store
+
+# GitHub Pages build output (dev/tools/build-pages)
+_site/
