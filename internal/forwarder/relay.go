@@ -18,10 +18,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/edi"
 	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/envelope"
@@ -62,6 +64,7 @@ type Relay struct {
 	mu        sync.Mutex
 	seq       int
 	relayed   map[legEvent]string // a leg's event or alert → the order's
+	statuses  map[statusKey]bool  // EDI statuses re-issued
 	order     []legEvent          // relayed's keys, oldest first
 	proposals map[string]*Proposal
 }
@@ -156,6 +159,114 @@ func (r *Relay) Event(leg store.Booking, e *intents.TnTEventBody) error {
 // MaxRelayed bounds the leg events remembered for alerts to cite; the
 // oldest are forgotten first.
 const MaxRelayed = 100_000
+
+// Unsigned re-issues a status a carrier without a node reported over EDI
+// as its order's event, marked derived_from an unsigned source (the EDI
+// message, by its sender and the carrier's consignment number). Its
+// description is the forwarder's own, from the status's meaning; a status
+// whose code the mapping doesn't know isn't re-issued.
+func (r *Relay) Unsigned(carrier string, s edi.Status) error {
+	order, i, ok := r.orderOf(store.Booking{Operator: carrier, Ref: s.Reference})
+	if !ok {
+		return fmt.Errorf("%w: %s's status for %s", ErrNoLeg, carrier, s.Reference)
+	}
+	l := order.Order.Legs[i]
+	if d := s.Time.Sub(r.Now()); d > StatusWindow || d < -StatusWindow {
+		return fmt.Errorf("%w: %s's status %s on %s is dated %s", ErrSkipped, carrier, s.Code, s.Reference, stamp(s.Time))
+	}
+	// A container from an unsigned source is named only if it's one of the
+	// order's own (from its signed legs); another customer's never is.
+	equipment := ""
+	for _, leg := range order.Order.Legs {
+		if slices.Contains(leg.Containers, s.Equipment) && !leg.Unsigned {
+			equipment = s.Equipment
+		}
+	}
+	s.Equipment = equipment
+	at, end := l.From, l.To
+	e := intents.TnTEventBody{EventClassifierCode: intents.ClassifierActual, EventDateTime: stamp(s.Time), FacilityName: s.Facility}
+	switch s.Meaning {
+	case edi.PickedUp:
+		e.EventType, e.EventTypeCode, e.UNLocationCode = intents.EventTypeTransport, "DEPA", at
+		if s.Equipment != "" {
+			e.EventType, e.EventTypeCode, e.EquipmentReference = intents.EventTypeEquipment, "PICK", s.Equipment
+		}
+	case edi.Departed:
+		e.EventType, e.EventTypeCode, e.UNLocationCode = intents.EventTypeTransport, "DEPA", at
+	case edi.Arrived:
+		e.EventType, e.EventTypeCode, e.UNLocationCode = intents.EventTypeTransport, "ARRI", end
+	case edi.GateIn, edi.Delivered:
+		e.EventType, e.EventTypeCode, e.UNLocationCode = intents.EventTypeTransport, "ARRI", end
+		if s.Equipment != "" {
+			code := map[edi.Meaning]string{edi.GateIn: "GTIN", edi.Delivered: "DROP"}[s.Meaning]
+			e.EventType, e.EventTypeCode, e.EquipmentReference = intents.EventTypeEquipment, code, s.Equipment
+		}
+	default:
+		return fmt.Errorf("%w: %s's status code %q on %s means nothing the forwarder knows", ErrSkipped, carrier, s.Code, s.Reference)
+	}
+	if s.UNLocode != "" {
+		e.UNLocationCode = s.UNLocode
+	}
+	e.Description = clip(fmt.Sprintf("%s (leg %d, %s, reported over EDI)", meaningWords[s.Meaning], i+1, clip(l.Name, 128)), 280)
+	src := intents.Provenance{Source: clip("EDIFACT IFTSTA from "+s.Sender, 128), Signed: false}
+	if refOK(s.CarrierRef) {
+		src.Reference = s.CarrierRef
+	}
+	e.DerivedFrom = []intents.Provenance{src}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// The same status again (a file dropped twice): re-issued once.
+	k := statusKey{carrier, s.Reference, s.Code, stamp(s.Time)}
+	if r.statuses[k] {
+		return fmt.Errorf("%w: %s's status %s on %s was re-issued already", ErrSkipped, carrier, s.Code, s.Reference)
+	}
+	if r.statuses == nil || len(r.statuses) >= MaxRelayed {
+		r.statuses = map[statusKey]bool{}
+	}
+	e.EventID = r.nextID("EV")
+	if err := r.Publish.Publish(order, &e); err != nil {
+		return fmt.Errorf("forwarder: re-issuing %s's status on %s: %w", carrier, order.Ref, err)
+	}
+	r.statuses[k] = true
+	return nil
+}
+
+var (
+	// ErrNoLeg is a status for a reference that is no order's leg (yet:
+	// a carrier may report before its acknowledgement's leg is recorded).
+	ErrNoLeg = errors.New("forwarder: no order's leg has that reference")
+	// ErrSkipped is a status not re-issued: a code the mapping doesn't
+	// know, one re-issued already, or one dated far off.
+	ErrSkipped = errors.New("forwarder: status not re-issued")
+)
+
+// StatusWindow is how far from now a status may be dated and still be
+// re-issued (statuses run on an accelerated clock in the demo).
+const StatusWindow = 400 * 24 * time.Hour
+
+type statusKey struct{ carrier, ref, code, at string }
+
+// meaningWords say what an EDI status means, in the forwarder's words.
+var meaningWords = map[edi.Meaning]string{edi.PickedUp: "Picked up", edi.Departed: "Departed", edi.Arrived: "Arrived",
+	edi.GateIn: "Gated in", edi.Delivered: "Delivered"}
+
+// refOK is a reference ULP bodies accept: 1-64 of [A-Za-z0-9_-], from a
+// letter or digit.
+func refOK(s string) bool {
+	if s == "" || len(s) > 64 || !isAlnum(s[0]) {
+		return false
+	}
+	for i := range len(s) {
+		if c := s[i]; !isAlnum(c) && c != '-' && c != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAlnum(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z'
+}
 
 func (r *Relay) remember(k legEvent, id string) {
 	if r.relayed == nil {

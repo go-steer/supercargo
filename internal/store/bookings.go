@@ -73,6 +73,11 @@ type LegRef struct {
 	Arrival    string
 	Vessel     string   // an ocean leg's vessel and voyage
 	Containers []string // the containers it carries, once known
+	// Unsigned marks a leg booked outside ULP (over EDI): its carrier
+	// signs nothing, and CarrierRef and Documents are what it reported.
+	Unsigned   bool
+	CarrierRef string
+	Documents  []string
 }
 
 // RoadBooking is a truck leg's request, as amended, and the carrier's

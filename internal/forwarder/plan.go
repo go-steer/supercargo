@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/config"
+	"github.com/go-steer/supercargo/internal/edi"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -56,6 +57,9 @@ type Orchestrator struct {
 	Orders *Orders
 	Legs   LegBooker
 	Lanes  []config.Lane
+	// EDI books the legs of carriers without a node (nil: such a lane
+	// can't be booked).
+	EDI *Gateway
 	// Name is the forwarder's company name, the legs' shipper; Endpoint
 	// is where the legs' carriers push their events (the forwarder's own
 	// /ulp).
@@ -71,9 +75,9 @@ const Handover = 30 * time.Hour
 var (
 	// ErrNoLane is an order on a lane the forwarder doesn't run.
 	ErrNoLane = errors.New("forwarder: no lane for this order")
-	// ErrEDILeg is a lane with a leg booked over EDI, which this node
-	// can't book yet.
-	ErrEDILeg = errors.New("forwarder: the lane has an EDI leg, which this node can't book yet")
+	// ErrEDILeg is a lane with a leg booked over EDI with a carrier this
+	// node has no EDI file drop for.
+	ErrEDILeg = errors.New("forwarder: the lane has an EDI leg this node can't book (no EDI partner configured)")
 	// ErrLegRefused is a leg its carrier didn't confirm.
 	ErrLegRefused = errors.New("forwarder: a carrier didn't confirm its leg")
 	// ErrPlanUnfit is a leg whose carrier's plan the journey can't use (a
@@ -163,14 +167,22 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 		return nil, err
 	}
 	for i, s := range steps {
-		if s.EDI && i >= len(b.Order.Legs) {
+		if s.EDI && i >= len(b.Order.Legs) && (o.EDI == nil || o.EDI.Partners[s.Carrier] == nil) {
 			return nil, fmt.Errorf("%w (leg %d, %s)", ErrEDILeg, i+1, s.Name)
 		}
 	}
 	req := b.Order.Request
-	ready := o.Now().UTC()
-	if t, ok := parseTime(req.PlaceOfReceipt.Earliest); ok && t.After(ready) {
-		ready = t
+	// available is when the cargo can go (the order's ready time, then
+	// each leg's handover); ready, no earlier than now, is what new
+	// bookings ask for. A leg booked before (an instruction sent again)
+	// may leave between the two.
+	var available time.Time
+	if t, ok := parseTime(req.PlaceOfReceipt.Earliest); ok {
+		available = t
+	}
+	ready := o.Now().UTC().Truncate(time.Second) // times on the wire are whole seconds
+	if available.After(ready) {
+		ready = available
 	}
 	latest, hasLatest := parseTime(req.PlaceOfDelivery.Latest)
 	var containers []string
@@ -184,6 +196,7 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 				return nil, fmt.Errorf("%w: leg %d was booked with %s, %s → %s", ErrPlanChanged, i+1, done.Carrier, done.From, done.To)
 			}
 			ready, containers = afterLeg(done, ready), done.Containers
+			available = ready
 			continue
 		}
 		if hasLatest && ready.After(latest) {
@@ -198,9 +211,9 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 		// that leaves before the cargo is ready, or (last) delivers late.
 		// It's booked with the carrier, but not recorded: the person takes
 		// it up with them (ULP can't cancel a leg yet).
-		if dep, ok := parseTime(leg.Departure); !ok || dep.Before(ready) {
+		if dep, ok := parseTime(leg.Departure); !ok || dep.Before(available) {
 			return nil, fmt.Errorf("%w: %s planned leg %d (%s) to leave %s, before the cargo is ready (%s)",
-				ErrPlanUnfit, s.Name, i+1, leg.Ref, leg.Departure, ready.Format(envelope.TimeLayout))
+				ErrPlanUnfit, s.Name, i+1, leg.Ref, leg.Departure, available.Format(envelope.TimeLayout))
 		}
 		if arr, ok := parseTime(leg.Arrival); last && hasLatest && (!ok || arr.After(latest)) {
 			return nil, fmt.Errorf("%w: %s planned leg %d (%s) to arrive %s, after the order's delivery date %s",
@@ -219,6 +232,7 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 		}
 		b.Order.Legs = append(b.Order.Legs, *leg)
 		ready, containers = afterLeg(*leg, ready), leg.Containers
+		available = ready
 	}
 	conf := &intents.ForwardingConfirmationBody{Status: intents.StatusConfirmed}
 	for _, l := range b.Order.Legs {
@@ -251,6 +265,9 @@ func (o *Orchestrator) bookLeg(ctx context.Context, b store.Booking, i int, s St
 	shipperRef := fmt.Sprintf("%s-L%d", b.Ref, i+1)
 	sub := &intents.Subscription{Endpoint: o.Endpoint, Intents: []string{intents.TnTEvent, intents.TnTAlert}}
 	leg := &store.LegRef{Mode: s.Mode, Carrier: s.Carrier, Name: s.Name, From: s.From, To: s.To}
+	if s.EDI {
+		return o.bookEDI(ctx, b, i, s, ready, shipperRef, leg)
+	}
 	switch s.Mode {
 	case intents.ModeOcean:
 		conf, err := o.Legs.Book(ctx, s.Carrier, &intents.BookingRequestBody{
@@ -307,6 +324,56 @@ func clip(s string, n int) string {
 		return string(r[:n])
 	}
 	return s
+}
+
+// bookEDI instructs a carrier without a node over EDIFACT and waits for
+// its acknowledgement. Its plan is the forwarder's own (an
+// acknowledgement gives no times): collect when the cargo is ready, and
+// arrive the partner's planned transit later. The leg is marked unsigned.
+func (o *Orchestrator) bookEDI(ctx context.Context, b store.Booking, i int, s Step, ready time.Time, ref string, leg *store.LegRef) (*store.LegRef, error) {
+	req := b.Order.Request
+	p := o.EDI.Partners[s.Carrier]
+	pickup := edi.Stop{Name: clip(s.FromFacility, 70), UNLocode: s.From, Country: s.From[:2], Earliest: ready}
+	if a := req.PlaceOfReceipt.Address; i == 0 && a != nil {
+		pickup.Street, pickup.Locality, pickup.PostalCode, pickup.Country = clip(a.Street, 70), clip(a.Locality, 70), a.PostalCode, a.Country
+	}
+	delivery := edi.Stop{Name: clip(s.ToFacility, 70), UNLocode: s.To, Country: s.To[:2]}
+	var containers []edi.Container
+	for _, e := range req.Equipment {
+		containers = append(containers, edi.Container{SizeType: e.ISOType, Count: e.Count, GrossWeightKg: e.GrossWeightKg})
+	}
+	instruction := edi.Instruction{Reference: ref, ShipperRef: req.ShipperRef,
+		Pickup: pickup, Delivery: delivery, Containers: containers,
+		CargoDescription: clip(req.Cargo.Description, 70), HSCode: req.Cargo.HSCode}
+	// A retried booking: the instruction already sent goes again, so the
+	// carrier sees one instruction, not two (its pickup time was the ready
+	// time then). One the carrier refused is sent anew under the next
+	// attempt's reference, MF-0007-L1-2.
+	for attempt := 2; ; attempt++ {
+		sent, ack, ok := o.EDI.Instructed(instruction.Reference)
+		if !ok {
+			break
+		}
+		if ack == nil || ack.Accepted {
+			instruction = sent
+			break
+		}
+		if attempt > 9 {
+			return nil, fmt.Errorf("%w: leg %d, %s refused it %d times", ErrLegRefused, i+1, s.Name, attempt-1)
+		}
+		instruction.Reference = fmt.Sprintf("%s-%d", ref, attempt)
+	}
+	ack, err := o.EDI.Instruct(ctx, s.Carrier, instruction)
+	if err != nil {
+		return nil, fmt.Errorf("forwarder: leg %d with %s: %w", i+1, s.Name, err)
+	}
+	if !ack.Accepted {
+		return nil, fmt.Errorf("%w: leg %d, %s didn't accept the instruction", ErrLegRefused, i+1, s.Name)
+	}
+	leg.Ref, leg.CarrierRef, leg.Documents, leg.Unsigned = instruction.Reference, ack.CarrierRef, ack.TransportDocuments, true
+	pickupAt := instruction.Pickup.Earliest.UTC()
+	leg.Departure, leg.Arrival = stamp(pickupAt), stamp(pickupAt.Add(p.Transit))
+	return leg, nil
 }
 
 func totalContainers(eq []intents.Equipment) int {

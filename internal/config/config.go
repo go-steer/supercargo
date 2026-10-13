@@ -259,6 +259,22 @@ type Forwarder struct {
 	// order is planned on the lane from its place of receipt to its place
 	// of delivery.
 	Lanes []Lane `yaml:"lanes"`
+	// EDI are the carriers it books over EDIFACT file drops (a lane leg
+	// with edi: true names one of them).
+	EDI []EDIPartner `yaml:"edi"`
+}
+
+// EDIPartner is a carrier booked over EDIFACT: its EDI identity, the file
+// drops (instructions out, acknowledgements and statuses in), the time
+// zone agreed for EDI times, and how long its legs are planned to take
+// (its acknowledgement gives no times).
+type EDIPartner struct {
+	Carrier string        `yaml:"carrier"` // the carrier's domain, as lanes name it
+	ID      string        `yaml:"id"`      // its UNB identity
+	Outbox  string        `yaml:"outbox"`  // where instructions go
+	Inbox   string        `yaml:"inbox"`   // where its replies arrive
+	Zone    string        `yaml:"zone"`    // e.g. Europe/Amsterdam (default UTC)
+	Transit time.Duration `yaml:"transit"` // a leg's planned duration
 }
 
 // Lane is one journey, door to door: its legs, in order, each ending
@@ -285,7 +301,31 @@ type LaneLeg struct {
 // LaneMaxLegs bounds a lane: a planned journey has at most 8 legs.
 const LaneMaxLegs = 8
 
-var locode = regexp.MustCompile(`^[A-Z]{2}[A-Z2-9]{3}$`)
+var (
+	locode = regexp.MustCompile(`^[A-Z]{2}[A-Z2-9]{3}$`)
+	// ediID is a UNB party identity, an..35.
+	ediID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.:_-]{0,34}$`)
+)
+
+func (p *EDIPartner) validate(self string) error {
+	switch {
+	case !envelope.ValidDomain(p.Carrier) || p.Carrier == self:
+		return fmt.Errorf("carrier %q is not another party's lowercase domain", p.Carrier)
+	case !ediID.MatchString(p.ID):
+		return fmt.Errorf("id %q is not an EDI identity (1-35 of [A-Za-z0-9.:_-])", p.ID)
+	case p.Outbox == "" || p.Inbox == "" || filepath.Clean(p.Outbox) == filepath.Clean(p.Inbox):
+		return errors.New("an outbox and an inbox, two different directories, are required")
+	case p.Transit <= 0:
+		return errors.New("a positive transit is required")
+	}
+	if p.Zone == "" {
+		p.Zone = "UTC"
+	}
+	if _, err := time.LoadLocation(p.Zone); err != nil {
+		return fmt.Errorf("zone %q: %w", p.Zone, err)
+	}
+	return nil
+}
 
 func (l *Lane) validate(self string) error {
 	if !locode.MatchString(l.From) || !locode.MatchString(l.To) || l.From == l.To {
@@ -615,8 +655,23 @@ func (c *Config) validate() error {
 				return fmt.Errorf("forwarder: deny entry %q is not a lowercase domain", d)
 			}
 		}
+		ediCarriers := map[string]bool{}
+		for i, p := range f.EDI {
+			if err := p.validate(c.Domain); err != nil {
+				return fmt.Errorf("forwarder: edi[%d]: %w", i, err)
+			}
+			if ediCarriers[p.Carrier] {
+				return fmt.Errorf("forwarder: edi[%d]: a second entry for %s", i, p.Carrier)
+			}
+			ediCarriers[p.Carrier] = true
+		}
 		seen := map[[2]string]bool{}
 		for i, l := range f.Lanes {
+			for j, leg := range l.Legs {
+				if leg.EDI && !ediCarriers[leg.Carrier] {
+					return fmt.Errorf("forwarder: lanes[%d].legs[%d]: an EDI leg with %s, which forwarder.edi doesn't list", i, j, leg.Carrier)
+				}
+			}
 			if err := l.validate(c.Domain); err != nil {
 				return fmt.Errorf("forwarder: lanes[%d]: %w", i, err)
 			}

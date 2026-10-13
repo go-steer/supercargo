@@ -44,6 +44,7 @@ import (
 	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/edi"
 	"github.com/go-steer/supercargo/internal/forwarder"
 	"github.com/go-steer/supercargo/internal/googleauth"
 	"github.com/go-steer/supercargo/internal/llm"
@@ -122,6 +123,11 @@ type App struct {
 	Orders       *forwarder.Orders
 	Orchestrator *forwarder.Orchestrator
 	Relay        *forwarder.Relay
+	// Gateway is a forwarder's EDI desk, for carriers without a node (nil
+	// without EDI partners); its file drops close at shutdown.
+	Gateway     *forwarder.Gateway
+	ediDrops    []*edi.Dir
+	stopGateway func()
 }
 
 // New builds an App from cfg.
@@ -278,6 +284,10 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			OnProposal: func(p forwarder.Proposal) {
 				a.Logger.Info("proposal", "id", p.ID, "order", p.OrderRef, "leg", p.Leg, "why", p.Why)
 			}}
+		if err := a.ediGateway(); err != nil {
+			a.closeDrops()
+			return nil, err
+		}
 	}
 	{
 		// One control API for every role; startup fails on a route two
@@ -304,6 +314,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			roles = append(roles, func(m *http.ServeMux) { forwarder.RegisterControl(m, a.Orders, a.Orchestrator, a.Relay) })
 		}
 		if err := registerRoutes(mux, roles...); err != nil {
+			a.closeDrops()
 			return nil, err
 		}
 		a.controlAPI = mux
@@ -312,9 +323,11 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		}
 	}
 	if a.google, err = googleClient(cfg); err != nil {
+		a.closeDrops()
 		return nil, err
 	}
 	if err := a.mcpServer(); err != nil {
+		a.closeDrops()
 		return nil, err
 	}
 	a.Server = &http.Server{
@@ -576,6 +589,11 @@ func (a *App) Serve(ctx context.Context) error {
 	if a.Simulator != nil {
 		go a.Simulator.Run()
 	}
+	if a.Gateway != nil {
+		gctx, stop := context.WithCancel(context.Background())
+		a.stopGateway = stop // shutdown stops it before closing its drops (Close waits for a Step under way)
+		go a.Gateway.Run(gctx, 500*time.Millisecond)
+	}
 	var err error
 	select {
 	case err = <-errc:
@@ -595,6 +613,10 @@ func (a *App) shutdown() {
 	if a.Simulator != nil {
 		a.Simulator.Close()
 	}
+	if a.stopGateway != nil {
+		a.stopGateway()
+	}
+	a.closeDrops()
 	if a.Publisher != nil {
 		a.Publisher.Close()
 	}
@@ -769,6 +791,44 @@ func (a *App) shipperRole(handlers map[string]node.Handler) error {
 	handlers[intents.ForwardingConfirmation] = &shipper.OrderAnswers{Bookings: a.Customer.Bookings,
 		OnAnswer: func(b store.Booking) { a.orderEntry(b, "answered by its forwarder") }}
 	return nil
+}
+
+// ediGateway opens a forwarder's EDI file drops and builds its gateway,
+// the orchestrator's way to book carriers without a node; their statuses
+// go to the relay, re-issued as unsigned.
+func (a *App) ediGateway() error {
+	cfg := a.Config
+	if cfg.Forwarder == nil || len(cfg.Forwarder.EDI) == 0 {
+		return nil
+	}
+	g := &forwarder.Gateway{Self: cfg.Domain, Partners: map[string]*forwarder.EDIPartner{}, Status: a.Relay.Unsigned,
+		Now: time.Now, Log: a.Logger.With("component", "edi")}
+	for _, p := range cfg.Forwarder.EDI {
+		zone, err := time.LoadLocation(p.Zone) // validated with the config
+		if err != nil {
+			return err
+		}
+		out, err := edi.NewDir(p.Outbox)
+		if err != nil {
+			return fmt.Errorf("app: %s's EDI outbox: %w", p.Carrier, err)
+		}
+		a.ediDrops = append(a.ediDrops, out)
+		in, err := edi.NewDir(p.Inbox)
+		if err != nil {
+			return fmt.Errorf("app: %s's EDI inbox: %w", p.Carrier, err)
+		}
+		a.ediDrops = append(a.ediDrops, in)
+		g.Partners[p.Carrier] = &forwarder.EDIPartner{ID: p.ID, Out: out, In: in, Zone: zone, Transit: p.Transit}
+	}
+	a.Gateway, a.Orchestrator.EDI = g, g
+	return nil
+}
+
+func (a *App) closeDrops() {
+	for _, d := range a.ediDrops {
+		_ = d.Close()
+	}
+	a.ediDrops = nil
 }
 
 // relay hands a leg's verified event or alert to a forwarder's relay (a
