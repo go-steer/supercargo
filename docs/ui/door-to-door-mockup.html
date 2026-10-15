@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<!--
+Copyright 2026 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+<!--
+supercargo browser UI: the door-to-door screens, a static mockup for review
+(docs/proposals/door-to-door-forwarder.md, phase 1, step 7). Sample data
+only; nothing here talks to a node. Pick a screen and a theme at the top.
+
+  1. Meridian · Orders: an order, its plan on the lane, "Confirm plan…"
+  2. Meridian · Confirm: exactly what each carrier will be sent
+  3. Meridian · Booked: the legs, and a delay's proposal waiting for Mia
+  4. Cymbal · Journey: the multi-leg strip, events signed or unsigned
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>supercargo · door-to-door UI mockup</title>
+<style>
+:root {
+  --aurora-1: #217bfe; --aurora-2: #078efb; --aurora-3: #a770ef; --aurora-4: #ff5e62;
+  --aurora: linear-gradient(90deg, var(--aurora-1), var(--aurora-2), var(--aurora-3), var(--aurora-4));
+}
+body[data-theme='grayscale-dark'] {
+  --bg: #202124; --bg-surface: #1a1b1e; --bg-elevated: #2a2b2e;
+  --border: #3c4043; --border-soft: #5f6368; --text: #e8eaed; --text-dim: #9aa0a6;
+  --green: #81c995; --red: #f28b82; --yellow: #fdd663; --blue: #8ab4f8;
+  --purple: #c58af9; --cyan: #78d9ec; --orange: #fcad70; --pink: #ff8bcb;
+  --scan: rgb(255 255 255 / 1.8%);
+  --glow: 0 0 20px rgb(33 123 254 / 15%), 0 0 40px rgb(167 112 239 / 10%);
+}
+body[data-theme='grayscale-light'] {
+  --bg: #f8f9fa; --bg-surface: #fff; --bg-elevated: #f1f3f4;
+  --border: #dadce0; --border-soft: #bdc1c6; --text: #202124; --text-dim: #5f6368;
+  --green: #188038; --red: #d50000; --yellow: #dc6d00; --blue: #1a73e8;
+  --purple: #9334e6; --cyan: #007b83; --orange: #c26401; --pink: #c5157a;
+  --scan: transparent;
+  --glow: 0 0 18px rgb(33 123 254 / 12%), 0 0 36px rgb(167 112 239 / 8%);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; display: flex; flex-direction: column;
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace; font-size: 13px;
+  background: var(--bg); color: var(--text);
+}
+button { font: inherit; color: inherit; background: none; border: 1px solid var(--border); border-radius: 4px; padding: 3px 9px; cursor: pointer; }
+button:hover { border-color: var(--border-soft); }
+button.primary { border-color: var(--blue); color: var(--blue); }
+button.primary:hover { background: color-mix(in srgb, var(--blue) 12%, transparent); }
+.dim { color: var(--text-dim); }
+.mockbar {
+  display: flex; gap: 14px; align-items: center; padding: 4px 12px; font-size: 11px;
+  background: repeating-linear-gradient(45deg, var(--bg-elevated) 0 8px, var(--bg) 8px 16px);
+  border-bottom: 1px dashed var(--border-soft); color: var(--text-dim);
+}
+.mockbar select { font: inherit; background: var(--bg-surface); color: var(--text); border: 1px solid var(--border); border-radius: 3px; }
+
+header { display: flex; align-items: center; gap: 16px; padding: 8px 14px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+.wordmark { font-weight: 700; font-size: 15px; background: var(--aurora); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.who { display: flex; gap: 8px; align-items: baseline; }
+.who b { font-weight: 600; }
+.spacer { flex: 1; }
+.status { display: flex; gap: 6px; align-items: center; color: var(--text-dim); font-size: 12px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); }
+.demo-badge { font-size: 10px; letter-spacing: .12em; padding: 2px 6px; border: 1px solid var(--yellow); color: var(--yellow); border-radius: 3px; }
+nav.roles { display: flex; gap: 22px; padding: 0 14px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+.rolegroup { display: flex; align-items: center; gap: 4px; }
+.rolegroup > .label { font-size: 10px; letter-spacing: .13em; text-transform: uppercase; color: var(--text-dim); margin-right: 6px; }
+.tab { border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 9px 10px 7px; color: var(--text-dim); }
+.tab.on { color: var(--text); border-bottom-color: var(--blue); }
+.tab .n { font-size: 10px; padding: 0 5px; border-radius: 8px; background: var(--bg-elevated); margin-left: 4px; }
+.tab .n.hot { background: var(--orange); color: var(--bg); }
+
+main { flex: 1; display: grid; grid-template-columns: minmax(380px, 1fr) minmax(520px, 1.5fr); gap: 10px; padding: 10px; }
+.panel { display: flex; flex-direction: column; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; position: relative; }
+.panel::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(0deg, var(--scan) 0 1px, transparent 1px 3px); }
+.panel-bar { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--border); background: var(--bg-elevated); }
+.panel-title { font-size: 10px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+.panel-body { padding: 10px 12px; }
+.panel-body + .panel-bar { border-top: 1px solid var(--border); }
+
+/* Order list (left). */
+.order { border: 1px solid var(--border); border-radius: 6px; padding: 9px 11px; margin-bottom: 8px; cursor: pointer; }
+.order.on { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue) inset; }
+.order .top { display: flex; gap: 8px; align-items: center; }
+.order .top .badge + .badge { margin-left: 0; }
+.order .top .badge { margin-left: auto; }
+.badge { white-space: nowrap; font-size: 11px; padding: 0 7px; border-radius: 10px; border: 1px solid currentColor; line-height: 18px; }
+.badge.pending { color: var(--yellow); }
+.badge.confirmed { color: var(--green); }
+.badge.transit { color: var(--cyan); }
+.badge.delayed { color: var(--orange); }
+.badge.waiting { color: var(--orange); background: color-mix(in srgb, var(--orange) 14%, transparent); }
+
+/* Order facts. */
+dl.facts { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px; margin: 0; }
+dl.facts dt { color: var(--text-dim); }
+dl.facts dd { margin: 0; }
+.private { font-size: 11px; color: var(--text-dim); border-left: 2px solid var(--purple); padding-left: 8px; margin-top: 10px; }
+
+/* The plan: one row per leg. */
+.plan { display: flex; flex-direction: column; gap: 0; }
+.leg { display: grid; grid-template-columns: 44px 170px 1fr auto; gap: 10px; align-items: center; padding: 9px 4px; border-bottom: 1px dashed var(--border); }
+.leg:last-child { border-bottom: none; }
+.mode { font-size: 10px; letter-spacing: .1em; color: var(--text-dim); text-align: center; border: 1px solid var(--border); border-radius: 3px; padding: 2px 0; }
+.leg .carrier b { font-weight: 600; }
+.leg .carrier .tag { display: inline-block; margin-top: 3px; }
+.leg .route { font-size: 12px; }
+.leg .route .hand { color: var(--text-dim); font-size: 11px; display: block; }
+.tag { white-space: nowrap; font-size: 10px; letter-spacing: .08em; padding: 1px 6px; border-radius: 3px; border: 1px solid currentColor; }
+.tag.ulp { color: var(--green); }
+.tag.edi { color: var(--yellow); }
+.legstate { font-size: 11px; text-align: right; }
+.legstate .ref { color: var(--blue); }
+.legstate .doc { color: var(--text-dim); display: block; }
+.actions { display: flex; gap: 8px; justify-content: flex-end; padding-top: 10px; }
+
+/* Proposals. */
+.proposal { border: 1px solid var(--orange); border-radius: 6px; padding: 10px 12px; background: color-mix(in srgb, var(--orange) 7%, transparent); }
+.proposal h4 { margin: 0 0 6px; font-size: 12px; color: var(--orange); letter-spacing: .06em; text-transform: uppercase; }
+.diff { display: grid; grid-template-columns: 110px 1fr 18px 1fr; gap: 3px 8px; margin: 8px 0; font-size: 12px; }
+.diff .was { color: var(--text-dim); text-decoration: line-through; }
+.diff .now { color: var(--orange); font-weight: 600; }
+
+/* Confirm dialog. */
+.scrim { position: fixed; inset: 0; background: rgb(0 0 0 / 45%); display: flex; align-items: center; justify-content: center; }
+.dialog { width: 760px; background: var(--bg-surface); border: 1px solid var(--blue); border-radius: 8px; padding: 18px 20px; box-shadow: 0 10px 40px rgb(0 0 0 / 40%); }
+.dialog h3 { margin: 0 0 4px; font-size: 13px; letter-spacing: .1em; color: var(--blue); text-transform: uppercase; }
+.send { border: 1px solid var(--border); border-radius: 6px; margin: 10px 0; }
+.send .head { display: flex; gap: 10px; align-items: center; padding: 6px 10px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); font-size: 12px; }
+.send pre { margin: 0; padding: 8px 10px; font: inherit; font-size: 11.5px; white-space: pre-wrap; color: var(--text-dim); }
+.send .head .tag { margin-left: auto; }
+
+/* The journey strip (Cymbal). */
+.journey { padding: 18px 16px 6px; }
+.stops { display: grid; grid-template-columns: repeat(4, 1fr); position: relative; }
+.stop { text-align: center; position: relative; z-index: 1; }
+.stop .pin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--green); background: var(--bg-surface); margin: 0 auto 6px; }
+.stop.done .pin { background: var(--green); }
+.stop.next .pin { border-color: var(--text-dim); }
+.stop .name { font-weight: 600; }
+.stop .when { font-size: 11px; color: var(--text-dim); }
+.stop .when s { color: var(--text-dim); }
+.stop .when b { color: var(--orange); font-weight: 600; }
+.rails { position: absolute; top: 6px; left: 12.5%; right: 12.5%; display: grid; grid-template-columns: repeat(3, 1fr); }
+.rail { height: 3px; position: relative; }
+.rail.done { background: var(--green); }
+.rail.live { background: linear-gradient(90deg, var(--green) 0 58%, var(--border) 58% 100%); }
+.rail.next { background: repeating-linear-gradient(90deg, var(--border) 0 6px, transparent 6px 10px); }
+.rail .lbl { position: absolute; top: 10px; left: 0; right: 0; text-align: center; font-size: 11px; color: var(--text-dim); }
+.rail .lbl b { color: var(--text); font-weight: 500; }
+.rail .boat { position: absolute; top: -7px; left: 58%; transform: translateX(-50%); font-size: 12px; color: var(--cyan); }
+.legend { display: flex; gap: 16px; font-size: 11px; color: var(--text-dim); padding: 30px 16px 10px; }
+
+/* Events with their provenance. */
+.ev { display: grid; grid-template-columns: 120px 1fr auto; gap: 10px; padding: 6px 12px; border-left: 3px solid var(--green); }
+.ev.unsigned { border-left-color: var(--yellow); }
+.ev.alert { border-left-color: var(--orange); }
+.ev + .ev { border-top: 1px solid var(--border); }
+.ev .t { color: var(--blue); font-size: 12px; }
+.ev .what b { font-weight: 600; }
+.ev .what .leg-of { color: var(--text-dim); font-size: 11px; display: block; }
+.prov { font-size: 11px; text-align: right; white-space: nowrap; }
+.prov.signed { color: var(--green); }
+.prov.unsigned { color: var(--yellow); }
+.prov .src { display: block; color: var(--text-dim); }
+.banner { display: flex; gap: 12px; align-items: center; padding: 6px 14px; background: color-mix(in srgb, var(--orange) 15%, var(--bg-surface)); border-bottom: 1px solid var(--orange); }
+.banner b { color: var(--orange); }
+.note { font-size: 11px; color: var(--text-dim); padding: 8px 12px; border-top: 1px dashed var(--border); }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body data-theme="grayscale-light">
+<div class="mockbar">
+  <b>MOCKUP</b> door-to-door screens · sample data
+  <label>screen <select id="screen">
+    <option value="orders">1 · Meridian · Orders (pending, the plan)</option>
+    <option value="confirm">2 · Meridian · Confirm plan (what each carrier gets)</option>
+    <option value="booked">3 · Meridian · Booked, with a proposal</option>
+    <option value="journey">4 · Cymbal · Journey (signed / unsigned)</option>
+  </select></label>
+  <label>theme <select id="theme"><option value="grayscale-light">light</option><option value="grayscale-dark">dark</option></select></label>
+</div>
+
+<!-- ═══ Meridian (screens 1-3) ═══════════════════════════════════════ -->
+<section id="meridian">
+  <header>
+    <span class="wordmark">⟨u⟩lp</span>
+    <span class="who"><b>Meridian Forwarding</b><span class="dim">meridian-forwarding.example</span> · <b>Mia</b><span class="dim">Forwarding desk (operator + shipper)</span></span>
+    <span class="spacer"></span><span class="demo-badge">DEMO MODE</span>
+    <span class="status"><span class="dot"></span>node connected</span>
+  </header>
+  <nav class="roles">
+    <span class="rolegroup"><span class="label">as forwarder</span>
+      <button class="tab on">Orders <span class="n" id="orders-n">1</span></button>
+      <button class="tab">Bookings</button><button class="tab">Assistant</button></span>
+    <span class="rolegroup"><span class="label">as shipper</span>
+      <button class="tab">Legs <span class="n">3</span></button><button class="tab">Shipments</button></span>
+  </nav>
+  <main>
+    <div class="panel">
+      <div class="panel-bar"><span class="panel-title">Orders</span><span class="dim">customers' door-to-door orders</span></div>
+      <div class="panel-body">
+        <div class="order on">
+          <div class="top"><b>MF-0007</b><span class="dim">cymbal-shoes.example</span>
+            <span class="badge pending" data-s="orders confirm">pending · plan to confirm</span>
+            <span class="badge transit" data-s="booked" hidden>in transit</span>
+            <span class="badge waiting" data-s="booked" hidden>1 proposal</span></div>
+          <div>NLTLB Tilburg → BRSAO São Paulo · 1 × 45G1 · DAP</div>
+          <div class="dim">deliver by Fri, Nov 6 · ordered Tue, Oct 13 · CY-PO-55120</div>
+        </div>
+        <div class="order"><div class="top"><b>MF-0006</b><span class="dim">cymbal-shoes.example</span><span class="badge confirmed">delivered</span></div>
+          <div>NLTLB Tilburg → USEWR Newark · 2 × 22G1 · FCA</div></div>
+      </div>
+      <div class="panel-bar"><span class="panel-title">Order MF-0007</span><span class="dim">as Cymbal signed it</span></div>
+      <div class="panel-body">
+        <dl class="facts">
+          <dt>Incoterms</dt><dd>DAP 2020 · Cymbal Calçados DC, Cajamar</dd>
+          <dt>Shipper</dt><dd>Cymbal Shoes B.V. · EORI NL123456789</dd>
+          <dt>Consignee</dt><dd>Cymbal Calçados Ltda · CNPJ 12.345.678/0001-90</dd>
+          <dt>From (door)</dt><dd>Ringbaan Oost 100, 5013 CD Tilburg, NL · ready now</dd>
+          <dt>To (door)</dt><dd>Cymbal Calçados DC, dock 2 · Rodovia Anhanguera km 33, Cajamar SP, BR</dd>
+          <dt>Deliver by</dt><dd>Fri, Nov 6, 18:00 UTC</dd>
+          <dt>Goods</dt><dd>1 × 45G1 · 12,000 kg · Footwear (sneakers) · HS 6404</dd>
+        </dl>
+        <div class="private">Only what Cymbal chose to send. Why the date matters (its launch, its slot) stayed with Cymbal.</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-bar"><span class="panel-title" data-s="orders confirm">Plan · lane NLTLB → BRSAO</span>
+        <span class="panel-title" data-s="booked" hidden>Journey · MF-0007</span>
+        <span class="dim" data-s="orders confirm">from the routing guide (forwarder.lanes) · nothing booked yet</span>
+        <span class="dim" data-s="booked" hidden>three legs booked · Cymbal has the journey</span></div>
+      <div class="panel-body">
+        <div class="plan">
+          <div class="leg"><span class="mode">ROAD</span><span class="carrier"><b>Polder Haulage</b><br><span class="tag edi">EDI · UNSIGNED</span></span>
+            <span class="route">NLTLB Tilburg → NLRTM Rotterdam<span class="hand">door → Euromax terminal · IFTMIN out, APERAK + IFTSTA in</span></span>
+            <span class="legstate" data-s="orders confirm">collect when ready<span class="doc">≈ 3 h (planned transit)</span></span>
+            <span class="legstate" data-s="booked" hidden>✓ <span class="ref">MF-0007-L1</span> · delivered<span class="doc">e-CMR ECMR-NL-2026-004471</span></span></div>
+          <div class="leg"><span class="mode">SEA</span><span class="carrier"><b>Ocean Blue</b><br><span class="tag ulp">ULP · SIGNED</span></span>
+            <span class="route">NLRTM Rotterdam → BRSSZ Santos<span class="hand">Ocean Blue Aurora 42W · hands over at Santos Brasil Tecon terminal</span></span>
+            <span class="legstate" data-s="orders confirm">departs the day after<span class="doc">voyage of ~16 days</span></span>
+            <span class="legstate" data-s="booked" hidden>✓ <span class="ref">OB-BKG-1042</span> · at sea<span class="doc">eBL OB-TD-1042 · OCBU0000004 · <b style="color:var(--orange)">+72 h</b></span></span></div>
+          <div class="leg"><span class="mode">ROAD</span><span class="carrier"><b>Serra Transportes</b><br><span class="tag ulp">ULP · SIGNED</span></span>
+            <span class="route">BRSSZ Santos → BRSAO Cajamar<span class="hand">collects OCBU0000004 30 h after the ship arrives · to the order's door</span></span>
+            <span class="legstate" data-s="orders confirm">by Fri, Nov 6<span class="doc">CT-e on confirmation</span></span>
+            <span class="legstate" data-s="booked" hidden>✓ <span class="ref">SR-BKG-0913</span> · booked<span class="doc">CT-e 3526…0486</span></span></div>
+        </div>
+        <div class="actions" data-s="orders confirm">
+          <button>Reject order…</button>
+          <button class="primary">Confirm plan &amp; book 3 legs…</button>
+        </div>
+      </div>
+
+      <div data-s="booked" hidden>
+        <div class="panel-bar"><span class="panel-title">Proposals</span><span class="dim">what a leg's delay calls for · nothing is sent until you confirm</span></div>
+        <div class="panel-body">
+          <div class="proposal">
+            <h4>Re-time leg 3 · Serra Transportes</h4>
+            <div>Leg 2 (Ocean Blue) arrives 72 h late: <span class="dim">signed alert AL-000006, "Engine repair at Las Palmas."</span></div>
+            <div class="diff">
+              <span class="dim">collect from</span><span class="was">Sun, Nov 1 20:00</span><span>→</span><span class="now">Wed, Nov 4 20:00</span>
+              <span class="dim">deliver</span><span class="was">Tue, Nov 3 02:00</span><span>→</span><span class="now">Fri, Nov 6 02:00</span>
+              <span class="dim">order's date</span><span>Fri, Nov 6 18:00</span><span></span><span style="color:var(--green)">still met</span>
+            </div>
+            <div class="dim">Sends Serra a signed <b>road.booking.amendment</b>. Cymbal already has Meridian's delay alert (MF-AL-000010).</div>
+            <div class="actions"><button>Dismiss</button><button class="primary">Confirm · send amendment to Serra</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="note" data-s="orders confirm">Each leg says how it's reached: <span class="tag ulp">ULP · SIGNED</span> a node, every message signed both ways; <span class="tag edi">EDI · UNSIGNED</span> EDIFACT files, which Meridian re-issues marked unsigned.</div>
+    </div>
+  </main>
+
+  <!-- Screen 2: the confirmation dialog. -->
+  <div class="scrim" data-s="confirm" hidden>
+    <div class="dialog">
+      <h3>Confirm plan · MF-0007</h3>
+      <div class="dim">Booking sends these, in order. Each carrier sees only its leg. Then Cymbal gets the journey.</div>
+      <div class="send"><div class="head"><b>1 · Polder Haulage</b> <span class="dim">polder-haulage.example · file drop</span><span class="tag edi">EDIFACT IFTMIN · UNSIGNED</span></div>
+        <pre>MF-0007-L1 · collect Ringbaan Oost 100, Tilburg, from Tue Oct 13 22:45 · deliver Euromax terminal, Rotterdam
+1 × 45G1 12,000 kg · Footwear (sneakers) · your ref CY-PO-55120 · waits for APERAK</pre></div>
+      <div class="send"><div class="head"><b>2 · Ocean Blue</b> <span class="dim">ocean-blue.example</span><span class="tag ulp">ocean.booking.request · SIGNED mf-1</span></div>
+        <pre>MF-0007-L2 · NLRTM → BRSSZ · from Wed Oct 14 · 1 × 45G1 · shipper Meridian Forwarding · events to meridian-forwarding.example</pre></div>
+      <div class="send"><div class="head"><b>3 · Serra Transportes</b> <span class="dim">serra-transportes.example</span><span class="tag ulp">road.booking.request · SIGNED mf-1</span></div>
+        <pre>MF-0007-L3 · collect the ship's container at Santos Brasil Tecon terminal, 30 h after arrival
+deliver Cymbal Calçados DC, dock 2, Cajamar SP by Fri Nov 6 18:00 · consignee Cymbal Calçados Ltda</pre></div>
+      <div class="private">Not sent to any carrier: Cymbal's identity beyond the consignee's name, other legs, or prices.</div>
+      <div class="actions"><button>Cancel</button><button class="primary">Book the 3 legs</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Cymbal (screen 4) ════════════════════════════════════════════ -->
+<section id="cymbal" hidden>
+  <header>
+    <span class="wordmark">⟨u⟩lp</span>
+    <span class="who"><b>Cymbal Shoes</b><span class="dim">cymbal-shoes.example</span> · <b>Alex</b><span class="dim">Logistics (shipper)</span></span>
+    <span class="spacer"></span><span class="demo-badge">DEMO MODE</span>
+    <span class="status"><span class="dot"></span>node connected</span>
+  </header>
+  <div class="banner">⚠ <b>DELAY · MF-0007</b> delivery Tue, Nov 3 → Fri, Nov 6 · <b>misses your Brazil launch (Nov 4)</b><span class="spacer"></span><button>view</button></div>
+  <nav class="roles"><span class="rolegroup"><button class="tab">Assistant</button><button class="tab on">Shipments</button></span></nav>
+  <main>
+    <div class="panel" style="grid-column: 1 / span 2">
+      <div class="panel-bar"><span class="panel-title">MF-0007 · door to door with Meridian Forwarding</span>
+        <span class="dim">Tilburg → São Paulo (Cajamar) · 1 × 45G1 · DAP</span><span class="spacer"></span><span class="badge delayed">delayed 72 h</span></div>
+      <div class="journey">
+        <div class="stops">
+          <div class="rails">
+            <div class="rail done"><div class="lbl"><b>Polder Haulage</b> · <span style="color:var(--yellow)">EDI</span></div></div>
+            <div class="rail live"><span class="boat">▶</span><div class="lbl"><b>Ocean Blue</b> · Aurora 42W</div></div>
+            <div class="rail next"><div class="lbl"><b>Serra Transportes</b></div></div>
+          </div>
+          <div class="stop done"><div class="pin"></div><div class="name">Tilburg</div><div class="when">picked up Tue, Oct 13</div></div>
+          <div class="stop done"><div class="pin"></div><div class="name">Rotterdam</div><div class="when">departed Thu, Oct 15</div></div>
+          <div class="stop next"><div class="pin"></div><div class="name">Santos</div><div class="when"><s>Sat, Oct 31</s> <b>Tue, Nov 3</b></div></div>
+          <div class="stop next"><div class="pin"></div><div class="name">Cajamar (DC dock 2)</div><div class="when"><s>Tue, Nov 3</s> <b>Fri, Nov 6</b></div></div>
+        </div>
+      </div>
+      <div class="legend"><span>━ done</span><span>┅ planned</span><span><span style="color:var(--green)">✓ signed</span>: a carrier's signed event, re-issued by Meridian</span><span><span style="color:var(--yellow)">◇ unsigned</span>: from an EDI file, Meridian's word</span></div>
+    </div>
+
+    <div class="panel" style="grid-column: 1 / span 2">
+      <div class="panel-bar"><span class="panel-title">Events · from meridian-forwarding.example</span><span class="dim">each signed by Meridian (mf-1) · and each says where it came from</span></div>
+      <div>
+        <div class="ev alert"><span class="t">Tue, Nov 3 14:00</span><span class="what"><b>Delay · delivery moves by 72 h</b> · leg 3 to be re-timed<span class="leg-of">Meridian's alert, in its words · from Ocean Blue's signed alert AL-000006</span></span>
+          <span class="prov signed">✓ signed source<span class="src">Ocean Blue · AL-000006</span></span></div>
+        <div class="ev"><span class="t">Thu, Oct 15 18:00</span><span class="what"><b>Departed Rotterdam</b> on Ocean Blue Aurora 42W<span class="leg-of">leg 2 · Ocean Blue</span></span>
+          <span class="prov signed">✓ signed source<span class="src">Ocean Blue · EV-000003</span></span></div>
+        <div class="ev"><span class="t">Wed, Oct 14 16:00</span><span class="what"><b>Gated in</b> at Port of Rotterdam · OCBU0000004<span class="leg-of">leg 2 · Ocean Blue</span></span>
+          <span class="prov signed">✓ signed source<span class="src">Ocean Blue · EV-000001</span></span></div>
+        <div class="ev unsigned"><span class="t">Wed, Oct 14 02:31</span><span class="what"><b>Delivered</b> at Euromax terminal, Rotterdam<span class="leg-of">leg 1 · Polder Haulage · reported over EDI</span></span>
+          <span class="prov unsigned">◇ unsigned source<span class="src">EDIFACT IFTSTA · PH4471</span></span></div>
+        <div class="ev unsigned"><span class="t">Tue, Oct 13 23:31</span><span class="what"><b>Picked up</b> at Ringbaan Oost 100, Tilburg<span class="leg-of">leg 1 · Polder Haulage · reported over EDI</span></span>
+          <span class="prov unsigned">◇ unsigned source<span class="src">EDIFACT IFTSTA · PH4471</span></span></div>
+      </div>
+      <div class="note">The strip is built from Cymbal's own records (Meridian's planned journey and the events since), never from a central system. Cymbal can ask Meridian about any event, signed or not.</div>
+    </div>
+  </main>
+</section>
+
+<script>
+const screen = document.getElementById('screen');
+const theme = document.getElementById('theme');
+function show() {
+  const s = screen.value;
+  document.getElementById('meridian').hidden = s === 'journey';
+  document.getElementById('cymbal').hidden = s !== 'journey';
+  for (const el of document.querySelectorAll('[data-s]')) el.hidden = !el.dataset.s.split(' ').includes(s);
+  document.getElementById('orders-n').textContent = s === 'booked' ? '1 ⚠' : '1';
+}
+screen.addEventListener('change', show);
+theme.addEventListener('change', () => { document.body.dataset.theme = theme.value; });
+show();
+</script>
+</body>
+</html>

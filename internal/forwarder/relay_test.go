@@ -260,7 +260,7 @@ func TestControlProposals(t *testing.T) {
 	_ = r.Alert(shipLeg, delay("AL-1", "EV-1", "2026-10-23T14:00:00Z", "2026-10-26T14:00:00Z"))
 	id := r.Proposals("MF-0007")[0].ID
 	mux := http.NewServeMux()
-	RegisterControl(mux, r.Orders, nil, r)
+	RegisterControl(mux, r.Orders, nil, r, nil)
 	do := func(method, path string) int {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(method, path, nil))

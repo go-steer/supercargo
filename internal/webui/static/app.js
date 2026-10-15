@@ -107,7 +107,7 @@ function jsonNode(v, indent, last, foldFrom = Infinity) {
 const jsonBlock = (v, foldFrom = Infinity) => { const d = el('div', 'json'); d.appendChild(jsonNode(v, 0, true, foldFrom)); return d; };
 
 // ── messages ─────────────────────────────────────────────────────────
-const family = (intent = '') => intent.startsWith('ulp.ocean.booking') ? 'booking' : intent === 'ulp.tnt.alert' ? 'alert'
+const family = (intent = '') => /^ulp\.(ocean\.booking|road\.booking|forwarding)\./.test(intent) ? 'booking' : intent === 'ulp.tnt.alert' ? 'alert'
   : intent.startsWith('ulp.tnt.inquiry') ? 'inquiry' : intent === 'ulp.error' || !intent.startsWith('ulp.') ? 'error' : 'tnt';
 const FAMILY_NAMES = { booking: 'booking', alert: 'alert', inquiry: 'inquiry', tnt: 'track & trace', error: 'error' };
 
@@ -133,8 +133,21 @@ function summary(m) {
       const e = b.ebl || {};
       return [b.status, b.booking_reference, e.transport_document_reference, e.vessel_name && `${e.vessel_name} ${e.voyage_number}`].filter(Boolean).join(' · ');
     }
-    case 'ulp.tnt.event':
-      return `${b.event_type} ${b.event_type_code} ${b.event_classifier_code} · ${b.un_location_code} · ${b.event_date_time}`;
+    case 'ulp.road.booking.request':
+      return `${first.count ?? '?'} × ${first.equipment_size_type ?? '?'}, ${b.pickup?.un_location_code} → ${b.delivery?.un_location_code} · ${b.pickup?.facility || ''} → ${b.delivery?.facility || ''}`;
+    case 'ulp.road.booking.amendment':
+      return `${b.carrier_booking_reference} · collect ${b.pickup?.earliest || '—'} · deliver ${b.delivery?.earliest || b.delivery?.latest || '—'}`;
+    case 'ulp.road.booking.confirmation':
+      return [b.status, b.carrier_booking_reference, ...(b.transport_documents || []).concat(b.fiscal_documents || []).map((d) => d.type)].filter(Boolean).join(' · ');
+    case 'ulp.forwarding.request':
+      return `${first.count ?? '?'} × ${first.equipment_size_type ?? '?'}, ${b.place_of_receipt?.un_location_code} → ${b.place_of_delivery?.un_location_code} · ${b.incoterms?.rule || ''} · door to door`;
+    case 'ulp.forwarding.confirmation':
+      return [b.status, b.forwarder_reference, (b.legs || []).map((l) => `${l.mode} ${l.from}→${l.to}`).join(', ')].filter(Boolean).join(' · ');
+    case 'ulp.tnt.event': {
+      const src = (b.derived_from || [])[0];
+      const from = src ? (src.signed ? ` · ✓ from ${src.id}` : ` · ◇ unsigned: ${src.source || ''}`) : '';
+      return `${b.event_type} ${b.event_type_code} ${b.event_classifier_code} · ${b.un_location_code} · ${b.event_date_time}${from}`;
+    }
     case 'ulp.tnt.alert':
       return `${b.kind}: ETA ${(b.previous_eta || '').slice(0, 10)} → ${(b.new_eta || '').slice(0, 10)} · ${b.summary}`;
     case 'ulp.tnt.inquiry': return b.question || '';
@@ -349,6 +362,8 @@ function addEntry(e) {
   if (e.kind === 'envelope') loadMessages();
   if (e.kind === 'tool') loadInbox();
   if ((e.kind === 'record' || e.kind === 'voyage') && currentTab() !== 'assistant') loadLeft();
+  // An order, its answer, a leg's message: the desk catches up.
+  if (e.kind === 'envelope' && currentTab() === 'orders') loadLeft();
 }
 
 function setStatus(sev, text) {
@@ -490,15 +505,16 @@ function renderBanner() {
 // ── left panel: what the active role tab shows ───────────────────────
 const VIEWS = {
   customer: { label: 'As shipper', tabs: [['Assistant', 'assistant'], ['Shipments', 'shipments']] },
-  operator: { label: 'As carrier', tabs: [['Bookings', 'bookings'], ['Assistant', 'assistant']] },
+  operator: { label: 'As carrier', tabs: [['Orders', 'orders'], ['Bookings', 'bookings'], ['Assistant', 'assistant']] },
 };
-const tabsFor = (side) => VIEWS[side].tabs.filter(([, k]) => k !== 'assistant' || (state.me.assistants || []).includes(side));
+const tabsFor = (side) => VIEWS[side].tabs.filter(([, k]) => (k !== 'assistant' || (state.me.assistants || []).includes(side)) && (k !== 'orders' || state.me.orders));
 const currentTab = () => state.tab[state.activeSide] || tabsFor(state.activeSide)[0][1];
 
 const loadLeft = latest(async () => {
   const view = VIEWS[state.activeSide];
   if (!view) return;
   if (currentTab() === 'assistant') { state.chats[state.activeSide] ? renderChat() : await loadChat(); return; }
+  if (currentTab() === 'orders') { await loadOrders(); return; }
   const gen = state.gen, side = state.activeSide, tab = currentTab();
   const left = $('left');
   try {
@@ -511,7 +527,8 @@ const loadLeft = latest(async () => {
     const bar = el('div', 'panel-bar');
     bar.append(el('span', 'panel-title', title), el('span', 'hint', state.activeSide === 'operator' ? 'carrier role' : 'shipper role'));
     const body = el('div', 'panel-body');
-    const list = r[key] || [];
+    // A forwarder's orders have their own tab.
+    const list = (r[key] || []).filter((s) => !(state.me.orders && side === 'operator' && s.kind === 'order'));
     state.lastList = list;
     if (!list.length) body.appendChild(el('div', 'empty', state.activeSide === 'operator' ? 'No bookings yet.' : 'No shipments yet: book one with a carrier.'));
     for (const s of list) {
@@ -528,7 +545,7 @@ const loadLeft = latest(async () => {
       }
       const facts = el('div', 'summary-line dim', [s.vessel && `${s.vessel} ${s.voyage}`, s.transportDocumentReference].filter(Boolean).join(' · '));
       if (s.eta) {
-        facts.append(' · ETA ');
+        facts.append(facts.textContent ? ' · ETA ' : 'ETA ');
         if (delayed) { facts.append(el('span', 'was', day(s.plannedArrival)), ' → '); }
         facts.append(el('b', null, day(s.eta)));
       }
@@ -536,11 +553,18 @@ const loadLeft = latest(async () => {
       const key = `${s.operator}/${s.bookingRef}`;
       if (state.alertCounts[key] !== undefined && s.alerts > state.alertCounts[key]) card.classList.add('arrived');
       state.alertCounts[key] = s.alerts;
-      const strip = el('div', 'strip');
+      const door = s.kind === 'order';
+      const strip = el('div', door ? 'strip door' : 'strip');
       card.appendChild(strip);
-      const jpath = state.activeSide === 'operator' ? `bookings/${encodeURIComponent(s.bookingRef)}/journey`
-        : `shipments/${encodeURIComponent(s.operator)}/${encodeURIComponent(s.bookingRef)}/journey`;
-      api(jpath).then((r) => { if (r.journey) renderStrip(strip, r.journey); }).catch(() => {});
+      const base = state.activeSide === 'operator' ? `bookings/${encodeURIComponent(s.bookingRef)}`
+        : `shipments/${encodeURIComponent(s.operator)}/${encodeURIComponent(s.bookingRef)}`;
+      api(base + '/journey').then((r) => { if (r.journey) (door ? renderLegs : renderStrip)(strip, r.journey); }).catch(() => {});
+      if (door) {
+        // Door to door: each event says where it came from.
+        const evs = el('div');
+        card.appendChild(evs);
+        api(base + '/events').then((r) => renderOrderEvents(evs, r.records || [])).catch(() => {});
+      }
       const counts = el('div', 'summary-line dim', `${s.events} events · ${s.alerts} alerts${s.lastEvent ? ' · last: ' + s.lastEvent : ''}`);
       if (s.alerts) counts.classList.add('has-alert');
       card.appendChild(counts);
@@ -558,6 +582,288 @@ const loadLeft = latest(async () => {
     left.replaceChildren(bar, body);
   } catch (e) { setStatus('bad', e.message); }
 });
+
+// ── the forwarder's desk: orders, their plans, legs and proposals ────
+// (docs/ui/door-to-door-mockup.html). The node plans on its lanes and
+// books; this page shows what it would send, and a person says yes.
+const dayTime = (iso) => {
+  const d = new Date(iso);
+  return isNaN(d) ? (iso || '') : d.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'UTC' });
+};
+const MODE = { road: 'ROAD', ocean: 'SEA', rail: 'RAIL' };
+const place = (p) => p ? [p.facility, p.address && [p.address.street, p.address.locality, p.address.country].filter(Boolean).join(', '), p.un_location_code].filter(Boolean).join(' · ') : '';
+const party = (p) => p ? [p.name, ...(p.identifiers || []).map((i) => `${i.scheme} ${i.value}`)].filter(Boolean).join(' · ') : '';
+const equipment = (eq) => (eq || []).map((c) => `${c.count} × ${c.equipment_size_type}`).join(', ');
+// How a leg's carrier is reached: a node, signed both ways, or EDI files.
+const reachTag = (edi) => {
+  const t = el('span', 'reach ' + (edi ? 'edi' : 'ulp'), edi ? 'EDI · UNSIGNED' : 'ULP · SIGNED');
+  t.dataset.tip = edi ? 'No node: EDIFACT files. Meridian re-issues its statuses to the customer marked unsigned.'
+    : 'A ULP node: every message signed, both ways.';
+  return t;
+};
+
+const loadOrders = latest(async () => {
+  const gen = state.gen, left = $('left');
+  try {
+    const r = await api('bookings');
+    const orders = (r.bookings || []).filter((b) => b.kind === 'order').sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    if (!orders.some((o) => o.bookingRef === state.order)) {
+      state.order = (orders.find((o) => o.status === 'pending') || orders[0] || {}).bookingRef;
+    }
+    const detail = state.order ? (await api('orders/' + encodeURIComponent(state.order))).order : null;
+    if (gen !== state.gen || currentTab() !== 'orders') return;
+    const keep = left.querySelector('.panel-body')?.scrollTop || 0;
+    const bar = el('div', 'panel-bar');
+    bar.append(el('span', 'panel-title', 'Orders'), el('span', 'hint', "customers' door-to-door orders"));
+    const body = el('div', 'panel-body desk');
+    if (!orders.length) body.appendChild(el('div', 'empty', 'No orders yet: a customer orders with ulpnode order, or its assistant.'));
+    const open = detail ? detail.proposals.filter((p) => p.status === 'proposed').length : 0;
+    for (const o of orders) {
+      const card = el('div', 'booking order' + (o.bookingRef === state.order ? ' on' : ''));
+      const top = el('div', 'booking-top');
+      top.append(el('b', null, o.bookingRef), el('span', 'dim', o.shipper));
+      if (o.bookingRef === state.order && open) top.appendChild(el('span', 'chip waiting', `${open} proposal${open === 1 ? '' : 's'}`));
+      top.appendChild(el('span', 'chip ' + (o.status === 'pending' ? 'pending' : o.status === 'rejected' ? 'fam-error' : 'fam-tnt'),
+        o.status === 'pending' ? 'pending · plan to confirm' : o.status));
+      card.appendChild(top);
+      card.appendChild(el('div', 'summary-line', `${o.origin?.unLocode || ''} ${o.origin?.name || ''} → ${o.destination?.unLocode || ''} ${o.destination?.name || ''}`));
+      if (o.eta) card.appendChild(el('div', 'summary-line dim', 'delivery ' + day(o.eta)));
+      card.onclick = () => { state.order = o.bookingRef; loadOrders(); };
+      body.appendChild(card);
+    }
+    if (detail) body.append(...orderDetail(detail));
+    left.className = 'panel tall';
+    left.replaceChildren(bar, body);
+    body.scrollTop = keep;
+  } catch (e) { setStatus('bad', e.message); }
+});
+
+// orderDetail is the selected order: what the customer signed, its plan
+// or legs, and its proposals.
+function orderDetail(v) {
+  const q = v.request, a = v.answer, out = [];
+  const section = (title, hint) => { const s = el('div', 'desk-title'); s.append(el('span', 'panel-title', title), el('span', 'hint', hint)); return s; };
+  out.push(section('Order ' + v.orderRef, 'as ' + v.shipper + ' signed it'));
+  const facts = el('dl', 'facts');
+  const fact = (k, val) => { if (val) facts.append(el('dt', null, k), el('dd', null, val)); };
+  fact('Incoterms', q.incoterms && `${q.incoterms.rule} ${q.incoterms.version} · ${q.incoterms.named_place || ''}`);
+  fact('Shipper', party(q.shipper));
+  fact('Consignee', party(q.consignee));
+  fact('From', place(q.place_of_receipt) + (q.place_of_receipt?.earliest ? ' · ready ' + dayTime(q.place_of_receipt.earliest) : ''));
+  fact('To', place(q.place_of_delivery));
+  fact('Deliver by', q.place_of_delivery?.latest && dayTime(q.place_of_delivery.latest));
+  fact('Goods', [equipment(q.containers), q.cargo && `${q.cargo.description} · HS ${q.cargo.hs_code}`].filter(Boolean).join(' · '));
+  fact('Their ref', q.shipper_reference);
+  out.push(facts);
+  out.push(el('div', 'private-note', 'Only what the customer chose to send: why the date matters stays with them.'));
+
+  const pending = a.status === 'pending';
+  if (pending) {
+    // A booking that stopped part way: the legs booked stay booked, and
+    // booking again resumes after them. Such an order can't be rejected
+    // (a carrier holds a leg of it).
+    const booked = (v.steps || []).filter((s) => s.booked).length;
+    out.push(section('Plan', v.planError ? 'no lane serves this order'
+      : booked ? `${booked} of ${v.steps.length} legs booked · booking again resumes after them` : 'from the routing guide (forwarder.lanes) · nothing booked yet'));
+    if (v.planError) out.push(el('div', 'empty', v.planError));
+    for (const s of v.steps || []) {
+      out.push(legRow(s.mode, s.name, s.carrier, s.edi, `${s.from} → ${s.to}`, `${s.fromFacility} → ${s.toFacility}`, s.booked ? { state: s.booked + ' · booked', docs: '' } : null));
+    }
+    const act = el('div', 'actions');
+    if (!booked) {
+      const reject = el('button', null, 'Reject order…');
+      reject.onclick = () => rejectDialog(v);
+      act.appendChild(reject);
+    }
+    if ((v.steps || []).length) {
+      const book = el('button', 'primary', `${booked ? 'Resume booking' : 'Confirm plan & book'} ${v.steps.length - booked} leg${v.steps.length - booked === 1 ? '' : 's'}…`);
+      book.onclick = () => bookOrderDialog(v);
+      act.appendChild(book);
+    }
+    out.push(act);
+  } else if (a.status === 'rejected') {
+    out.push(section('Rejected', (a.messages || []).map((m) => m.detail).join(' ')));
+  } else {
+    out.push(section('Journey', `${v.legs.length} legs booked · ${v.shipper} has the journey`));
+    v.legs.forEach((l, i) => {
+      const j = (v.journey.legs || [])[i] || {};
+      const st = [l.unsigned ? (l.carrierRef || l.ref) : l.ref, j.status].filter(Boolean).join(' · ');
+      const docs = [l.vessel, ...(l.documents || []), ...(l.containers || [])].filter(Boolean).join(' · ');
+      const late = j.plannedArrival && j.arrival?.at && j.arrival.at > j.plannedArrival
+        ? Math.round((new Date(j.arrival.at) - new Date(j.plannedArrival)) / 36e5) : 0;
+      out.push(legRow(l.mode, l.name, l.carrier, l.unsigned, `${l.from} → ${l.to}`,
+        `${dayTime(l.departure)} → ${dayTime(l.arrival)}`, { state: st, docs, late }));
+    });
+    if (v.proposals.length) {
+      out.push(section('Proposals', "what a leg's delay calls for · nothing is sent until you confirm"));
+      for (const p of [...v.proposals].reverse()) out.push(proposalCard(v, p));
+    }
+  }
+  return out;
+}
+
+function legRow(mode, name, carrier, edi, route, sub, booked) {
+  const row = el('div', 'leg');
+  row.appendChild(el('span', 'mode', MODE[mode] || mode.toUpperCase()));
+  const who = el('span', 'carrier');
+  const n = el('b', null, name);
+  n.dataset.tip = carrier;
+  who.append(n, el('br'), reachTag(edi));
+  const r = el('span', 'route', route);
+  r.appendChild(el('span', 'sub', sub));
+  row.append(who, r);
+  if (booked) {
+    const st = el('span', 'legstate', '✓ ' + booked.state);
+    if (booked.late) st.appendChild(el('span', 'late', ` +${booked.late} h`));
+    st.appendChild(el('span', 'sub', booked.docs));
+    row.appendChild(st);
+  }
+  return row;
+}
+
+// The orders' sends: each needs a person's yes in a dialog.
+function bookOrderDialog(v) {
+  const q = v.request, sends = el('div');
+  v.steps.forEach((s, i) => {
+    const box = el('div', 'send');
+    const head = el('div', 'send-head');
+    head.append(el('b', null, `${i + 1} · ${s.name}`), el('span', 'dim', s.carrier), s.booked
+      ? el('span', 'reach', 'booked already · ' + s.booked + ' · not sent again')
+      : el('span', 'reach ' + (s.edi ? 'edi' : 'ulp'), s.edi ? 'EDIFACT IFTMIN · UNSIGNED' : (s.mode === 'ocean' ? 'ocean.booking.request' : 'road.booking.request') + ' · SIGNED'));
+    box.append(head, el('div', 'send-body', `${MODE[s.mode] || s.mode} ${s.from} → ${s.to} · ${s.fromFacility} → ${s.toFacility} · ${equipment(q.containers)}` +
+      (i === v.steps.length - 1 && q.place_of_delivery?.latest ? ` · deliver by ${dayTime(q.place_of_delivery.latest)}` : '')));
+    sends.appendChild(box);
+  });
+  sends.appendChild(el('div', 'fineprint', 'Each carrier sees only its leg: never the other legs, the customer beyond the consignee, or what they pay. ' +
+    `Then ${v.shipper} gets the journey, signed.`));
+  const left = v.steps.filter((s) => !s.booked).length, legs = `${left} leg${left === 1 ? '' : 's'}`;
+  modal(`Confirm plan · ${v.orderRef}`, [], `Book the ${legs}, in order? Your node signs and sends each booking.`,
+    `Book ${legs}`, async () => {
+      await api(`orders/${encodeURIComponent(v.orderRef)}/book`, { method: 'POST', body: '{}' });
+      loadOrders();
+    }, [sends]);
+}
+
+function rejectDialog(v) {
+  const reason = el('input');
+  reason.maxLength = 280;
+  reason.value = "We can't take this order on these dates.";
+  const r = el('div', 'row');
+  r.append(el('span', 'k', 'Reason:'), reason);
+  modal(`Reject · ${v.orderRef}`, [['Customer:', v.shipper]], `Reject this order? ${v.shipper} gets a signed rejection with this reason.`,
+    'Reject order', async () => {
+      await api(`orders/${encodeURIComponent(v.orderRef)}/reject`, { method: 'POST', body: JSON.stringify({ reason: reason.value }) });
+      loadOrders();
+    }, [r]);
+}
+
+function proposalCard(v, p) {
+  const leg = v.legs[p.leg - 1] || {}, am = p.amendment || {};
+  const open = p.status === 'proposed';
+  const box = el('div', 'proposal' + (open ? '' : ' closed'));
+  box.appendChild(el('div', 'proposal-title', `Re-time leg ${p.leg} · ${leg.name || p.carrier}` + (open ? '' : ` · ${p.status}`)));
+  box.appendChild(el('div', null, p.why));
+  const diff = el('div', 'diff');
+  const line = (k, was, now) => { if (now) diff.append(el('span', 'dim', k), el('span', 'was', dayTime(was)), el('span', null, '→'), el('span', 'now', dayTime(now))); };
+  line('collect from', leg.departure, am.pickup?.earliest);
+  line('deliver', leg.arrival, am.delivery?.earliest || am.delivery?.latest);
+  box.appendChild(diff);
+  if (open) {
+    box.appendChild(el('div', 'fineprint', `Sends ${leg.name || p.carrier} a signed road.booking.amendment. The customer already has the delay alert.`));
+    const act = el('div', 'actions');
+    const dismiss = el('button', null, 'Dismiss');
+    dismiss.dataset.tip = 'Close it without sending anything: the leg stays as booked.';
+    dismiss.onclick = async () => {
+      try { await api(`proposals/${encodeURIComponent(p.id)}/dismiss`, { method: 'POST', body: '{}' }); } catch (e) { setStatus('bad', e.message); }
+      loadOrders();
+    };
+    const ok = el('button', 'primary', `Confirm · send amendment to ${leg.name || p.carrier}…`);
+    ok.onclick = () => modal(`Amend leg ${p.leg} · ${leg.name || p.carrier}`,
+      [['Booking:', p.legRef], ['Collect from:', dayTime(am.pickup?.earliest)], ['Deliver:', dayTime(am.delivery?.earliest || am.delivery?.latest)], ['Why:', p.why]],
+      `Send this amendment? Your node signs it and sends it to ${p.carrier}.`, 'Send amendment', async () => {
+        await api(`proposals/${encodeURIComponent(p.id)}/confirm`, { method: 'POST', body: '{}' });
+        loadOrders();
+      });
+    act.append(dismiss, ok);
+    box.appendChild(act);
+  } else if (p.outcome) {
+    box.appendChild(el('div', 'fineprint', p.outcome));
+  }
+  return box;
+}
+
+// ── a door-to-door shipment: the journey, leg by leg, and each event's
+// source (signed by a leg's carrier, or an unsigned EDI status) ──────
+function renderLegs(box, j) {
+  if (!j || !Array.isArray(j.legs) || !j.legs.length) return;
+  const n = j.legs.length;
+  const wrap = el('div', 'legs-strip');
+  wrap.style.setProperty('--n', n);
+  const rails = el('div', 'rails');
+  const atSea = j.position?.between;
+  j.legs.forEach((l) => {
+    const rail = el('div', 'rail ' + ({ done: 'done', 'in progress': 'live', delayed: l.departure?.kind === 'actual' ? 'live late' : 'late' }[l.status] || 'next'));
+    if (atSea && atSea[0] === l.from.unLocode && atSea[1] === l.to.unLocode) {
+      const m = el('span', 'mover', '▶');
+      m.dataset.tip = l.mode === 'ocean' ? 'At sea (estimated: no message says exactly where)' : 'On the road (estimated)';
+      rail.appendChild(m);
+    }
+    const lbl = el('div', 'lbl');
+    lbl.append(el('span', 'mode-tag', MODE[l.mode] || l.mode), ' ', el('b', null, l.carrier || ''));
+    lbl.dataset.tip = [l.carrier, l.vessel, `${l.from.unLocode} → ${l.to.unLocode}`, l.status].filter(Boolean).join(' · ');
+    rail.appendChild(lbl);
+    rails.appendChild(rail);
+  });
+  const stops = el('div', 'stops');
+  const stop = (p, m, planned, reached) => {
+    const s = el('div', 'stop' + (reached ? ' done' : ''));
+    s.append(el('div', 'pin'), el('div', 'name', p.name || p.unLocode));
+    const w = el('div', 'when');
+    // Moved to another day: the plan's struck through. (Hours early or late
+    // on the same day aren't news on a journey of weeks.)
+    if (planned && m?.at && day(m.at) !== day(planned)) { w.append(el('span', 'was', day(planned)), ' ', el('b', null, day(m.at))); } else if (m?.at) w.textContent = momentText(m);
+    s.appendChild(w);
+    s.dataset.tip = p.unLocode;
+    return s;
+  };
+  stops.appendChild(stop(j.legs[0].from, j.legs[0].departure, null, j.legs[0].departure?.kind === 'actual'));
+  j.legs.forEach((l) => stops.appendChild(stop(l.to, l.arrival, l.plannedArrival, l.status === 'done')));
+  wrap.append(rails, stops);
+  box.replaceChildren(wrap);
+}
+
+// provenance is an event's source, as its re-issuer says.
+function provenance(body) {
+  const src = (body.derived_from || [])[0];
+  if (!src) return null;
+  const p = el('span', 'prov ' + (src.signed ? 'signed' : 'unsigned'), src.signed ? '✓ signed source' : '◇ unsigned source');
+  p.appendChild(el('span', 'src', src.signed ? src.id : [src.source, src.reference].filter(Boolean).join(' · ')));
+  p.dataset.tip = src.signed ? "Re-issued from a leg carrier's signed message, which the forwarder holds."
+    : 'From a message nobody signed (an EDI file): the forwarder vouches for it. Ask it for the source if it matters.';
+  return p;
+}
+
+function renderOrderEvents(box, recs) {
+  const list = el('div', 'evlist');
+  for (const r of [...recs].reverse().slice(0, 12)) {
+    const b = r.body || {};
+    const alert = r.intent === 'ulp.tnt.alert';
+    const src = (b.derived_from || [])[0];
+    const row = el('div', 'ev' + (alert ? ' alert' : src && !src.signed ? ' unsigned' : ''));
+    // An alert has no event time of its own (when it was sent is the
+    // forwarder's clock, not the journey's): it says what it moved.
+    row.appendChild(el('span', 't', alert ? 'ALERT' : dayTime(b.event_date_time)));
+    const what = el('span', 'what');
+    what.appendChild(el('b', null, alert ? `${b.kind}: delivery ${day(b.previous_eta)} → ${day(b.new_eta)}` : `${b.event_type_code} ${b.event_classifier_code} · ${b.un_location_code}`));
+    what.appendChild(el('span', 'sub', alert ? b.summary : (b.description || b.facility_name || '')));
+    row.appendChild(what);
+    const p = provenance(b);
+    if (p) row.appendChild(p);
+    row.onclick = () => openMessageFor(b.event_id || b.alert_id);
+    list.appendChild(row);
+  }
+  box.replaceChildren(list);
+}
 
 function renderLeftNow() {
   if (currentTab() === 'assistant') { state.chats[state.activeSide] ? renderChat() : loadChat(); } else { loadLeft(); }

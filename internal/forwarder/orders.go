@@ -127,6 +127,10 @@ var (
 	ErrUnknownOrder = errors.New("forwarder: no such order")
 	// ErrAnswered is an answer to an order already confirmed or rejected.
 	ErrAnswered = errors.New("forwarder: the order is answered already")
+	// ErrLegsBooked is a rejection of an order some of whose legs are
+	// booked with their carriers already (a booking stopped part way):
+	// those legs are taken up with their carriers first.
+	ErrLegsBooked = errors.New("forwarder: the order has legs booked with carriers")
 	// ErrInvalidAnswer is an answer that isn't a valid final answer.
 	ErrInvalidAnswer = errors.New("forwarder: not a valid answer")
 )
@@ -158,6 +162,11 @@ func (o *Orders) answer(ctx context.Context, ref string, conf *intents.Forwardin
 	}
 	if b.Order.Confirmation.Status != intents.StatusPending {
 		return fmt.Errorf("%w: %s is %s", ErrAnswered, ref, b.Order.Confirmation.Status)
+	}
+	if conf.Status == intents.StatusRejected && len(b.Order.Legs) > 0 {
+		// Rejecting would leave carriers holding legs of an order the
+		// shipper was told is off; ULP can't cancel a leg yet.
+		return fmt.Errorf("%w: %s has %d", ErrLegsBooked, ref, len(b.Order.Legs))
 	}
 	conf.OrderRef = ref
 	if conf.Status == intents.StatusConfirmed {

@@ -117,7 +117,10 @@ type Config struct {
 	// Inbox, if set, holds the drafts the company's outside agents made
 	// over MCP; the shipper role's personas confirm them here.
 	Inbox *assistant.Assistant
-	Now   func() time.Time
+	// Orders says the node is a forwarder: it takes door-to-door orders,
+	// which its operator-role personas plan and answer here.
+	Orders bool
+	Now    func() time.Time
 }
 
 // Panel is one UI on the presenter page.
@@ -218,6 +221,15 @@ func Handler(cfg Config) http.Handler {
 	mux.HandleFunc("POST /ui/api/inbox/send", s.authed(s.role(asShipper, s.inboxSend)))
 	mux.HandleFunc("POST /ui/api/inbox/discard", s.authed(s.role(asShipper, s.inboxDiscard)))
 	mux.HandleFunc("POST /ui/api/disrupt", s.authed(s.role([]string{RoleOperator}, s.disrupt)))
+	if cfg.Orders {
+		// The forwarder's desk: its orders are the carrier side's.
+		desk := []string{RoleOperator}
+		mux.HandleFunc("GET /ui/api/orders/{ref}", s.authed(s.forward("/orders/{ref}", desk)))
+		mux.HandleFunc("POST /ui/api/orders/{ref}/book", s.authed(s.role(desk, s.deskPost("/orders/{ref}/book", "ref", nil))))
+		mux.HandleFunc("POST /ui/api/orders/{ref}/reject", s.authed(s.role(desk, s.deskPost("/orders/answer", "ref", rejection))))
+		mux.HandleFunc("POST /ui/api/proposals/{id}/confirm", s.authed(s.role(desk, s.deskPost("/proposals/{id}/confirm", "id", nil))))
+		mux.HandleFunc("POST /ui/api/proposals/{id}/dismiss", s.authed(s.role(desk, s.deskPost("/proposals/{id}/dismiss", "id", nil))))
+	}
 	return s.hostCheck(s.headers(mux))
 }
 
@@ -535,12 +547,14 @@ type MeResponse struct {
 	Assistant bool     `json:"assistant"` // the persona has the shipper's assistant
 	// Assistants are the sides the persona has an assistant on.
 	Assistants []string `json:"assistants"`
+	// Orders: the persona works the forwarder's desk (its orders).
+	Orders bool `json:"orders"`
 }
 
 func (s *server) me(w http.ResponseWriter, _ *http.Request, p Persona) {
 	sides := s.assistantSides(p)
 	control.Answer(w, http.StatusOK, MeResponse{Company: s.cfg.Company, Domain: s.cfg.Domain, Persona: p, Sides: p.Sides(), Demo: s.cfg.Google == nil,
-		Assistant: slices.Contains(sides, SideCustomer), Assistants: sides})
+		Assistant: slices.Contains(sides, SideCustomer), Assistants: sides, Orders: s.cfg.Orders && slices.Contains(p.Roles, RoleOperator)})
 }
 
 // assistantSides are the sides p has an assistant on: the customer side's

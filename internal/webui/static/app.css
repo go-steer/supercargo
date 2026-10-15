@@ -298,3 +298,75 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
 .inbox { border: 1px solid var(--orange); border-radius: 6px; padding: 6px 10px; margin: 6px 0 10px; }
 .inbox-title { color: var(--orange); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 4px; }
 .inbox-row { display: flex; gap: 12px; align-items: center; margin: 3px 0; }
+
+/* ── the forwarder's desk (docs/ui/door-to-door-mockup.html) ─────── */
+.desk { padding: 6px 0 12px; }
+.booking.order { cursor: pointer; }
+.booking.order.on { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue) inset; }
+.booking-top .chip + .chip { margin-left: 0; }
+.chip.pending { color: var(--yellow); }
+.chip.waiting { color: var(--orange); background: color-mix(in srgb, var(--orange) 14%, transparent); }
+.desk-title { display: flex; gap: 8px; align-items: baseline; padding: 6px 12px; margin-top: 10px;
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--bg-elevated); }
+dl.facts { display: grid; grid-template-columns: 110px 1fr; gap: 3px 12px; margin: 8px 12px 0; font-size: 12px; }
+dl.facts dt { color: var(--text-dim); }
+dl.facts dd { margin: 0; }
+.private-note { font-size: 11px; color: var(--text-dim); border-left: 2px solid var(--purple); padding-left: 8px; margin: 8px 12px 0; }
+.leg { display: grid; grid-template-columns: 42px 150px 1fr auto; gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px dashed var(--border); }
+.leg .mode { font-size: 10px; letter-spacing: .1em; color: var(--text-dim); text-align: center; border: 1px solid var(--border); border-radius: 3px; padding: 2px 0; }
+.leg .carrier b { font-weight: 600; }
+.reach { display: inline-block; white-space: nowrap; font-size: 10px; letter-spacing: .08em; padding: 0 6px; margin-top: 3px; border-radius: 3px; border: 1px solid currentColor; }
+.reach.ulp { color: var(--green); }
+.reach.edi { color: var(--yellow); }
+.leg .route { font-size: 12px; }
+.leg .sub, .legstate .sub, .ev .sub { display: block; color: var(--text-dim); font-size: 11px; }
+.legstate { font-size: 11px; text-align: right; }
+.late, .legstate .late { color: var(--orange); font-weight: 700; }
+.desk .actions { display: flex; gap: 8px; justify-content: flex-end; padding: 10px 12px 0; }
+.desk button.primary { border-color: var(--blue); color: var(--blue); }
+.proposal { margin: 8px 12px; border: 1px solid var(--orange); border-radius: 6px; padding: 9px 12px; background: color-mix(in srgb, var(--orange) 7%, transparent); }
+.proposal.closed { border-color: var(--border); background: none; color: var(--text-dim); }
+.proposal-title { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--orange); margin-bottom: 4px; }
+.proposal.closed .proposal-title { color: var(--text-dim); }
+.proposal .fineprint { color: var(--text-dim); font-size: 11px; margin-top: 4px; }
+.proposal .actions { padding: 8px 0 0; }
+.diff { display: grid; grid-template-columns: 100px auto 16px auto; justify-content: start; gap: 2px 8px; margin: 6px 0; font-size: 12px; }
+.diff .now { color: var(--orange); font-weight: 600; }
+.send { border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; }
+.send-head { display: flex; gap: 10px; align-items: center; padding: 5px 10px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); font-size: 12px; }
+.send-head .reach { margin: 0 0 0 auto; }
+.send-body { padding: 6px 10px; font-size: 12px; color: var(--text-dim); }
+
+/* A door-to-door journey: a rail per leg, each with its mode and carrier. */
+.legs-strip { position: relative; padding-top: 20px; margin: 4px 0 2px; }
+.legs-strip .rails { position: absolute; top: 25px; left: calc(50% / (var(--n) + 1)); right: calc(50% / (var(--n) + 1));
+  display: grid; grid-template-columns: repeat(var(--n), 1fr); }
+.legs-strip .rail { height: 3px; position: relative; background: repeating-linear-gradient(90deg, var(--border-soft) 0 6px, transparent 6px 10px); }
+.legs-strip .rail.done { background: var(--cyan); }
+.legs-strip .rail.live { background: linear-gradient(90deg, var(--cyan) 0 50%, var(--border-soft) 50%); }
+.legs-strip .rail.late { background: repeating-linear-gradient(90deg, var(--orange) 0 6px, transparent 6px 10px); }
+.legs-strip .rail.live.late { background: linear-gradient(90deg, var(--cyan) 0 50%, var(--orange) 50%); }
+.legs-strip .lbl { position: absolute; bottom: 8px; left: 0; right: 0; text-align: center; font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.legs-strip .lbl b { color: var(--text); font-weight: 500; }
+.mode-tag { font-size: 9px; letter-spacing: .1em; border: 1px solid var(--border-soft); border-radius: 3px; padding: 0 3px; }
+.legs-strip .mover { position: absolute; top: -7px; left: 50%; transform: translateX(-50%); font-size: 12px; color: var(--cyan); }
+.legs-strip .stops { display: grid; grid-template-columns: repeat(calc(var(--n) + 1), 1fr); }
+.legs-strip .stop { text-align: center; position: relative; z-index: 1; font-size: 11px; }
+.legs-strip .pin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--border-soft); background: var(--bg-surface); margin: 0 auto 4px; }
+.legs-strip .stop.done .pin { background: var(--cyan); border-color: var(--cyan); }
+.legs-strip .name { font-weight: 600; font-size: 12px; }
+.legs-strip .when { color: var(--text-dim); }
+.legs-strip .when b { color: var(--orange); }
+.evlist { margin-top: 8px; border-top: 1px solid var(--border); }
+.ev { display: grid; grid-template-columns: 120px 1fr auto; gap: 10px; padding: 4px 6px; border-left: 3px solid var(--green); cursor: pointer; font-size: 12px; }
+.ev:hover { background: var(--bg-elevated); }
+.ev.unsigned { border-left-color: var(--yellow); }
+.ev.alert { border-left-color: var(--orange); }
+.ev + .ev { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.ev .t { color: var(--blue); }
+.ev.alert .t { color: var(--orange); font-weight: 700; letter-spacing: .08em; }
+.prov { font-size: 11px; text-align: right; max-width: 210px; }
+.prov .src { overflow-wrap: anywhere; }
+.prov.signed { color: var(--green); }
+.prov.unsigned { color: var(--yellow); }
+.prov .src { display: block; color: var(--text-dim); }

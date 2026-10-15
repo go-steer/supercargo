@@ -191,9 +191,12 @@ are in:
     the relay (`derived_from`) with the delay cascade's proposals, and
     the EDI gateway (`internal/edi`, `ulpmock edifact`).
   - `dev/smoke/door-to-door` runs the whole journey as real processes.
+  - The door-to-door UI (`docs/ui/door-to-door-mockup.html`): the
+    forwarder's Orders tab (plan, confirm dialogs, legs, proposals) and
+    the shipper's multi-leg journey with signed and unsigned sources.
 
-Next: the door-to-door UI (Meridian's orders, legs and proposals; the
-multi-leg journey; unsigned marks), then the six-company deployment.
+Next: the six-company deployment (Meridian, Serra and the Polder mock on
+Cloud Run).
 Cited cause IDs in alerts are always checked against the shipper's log
 before a model. `derived_from`'s text never reaches one: an inquiry
 model learns only whether a re-issued record's source was signed, as the
