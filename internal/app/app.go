@@ -274,6 +274,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	}
 	if a.Orders != nil {
 		a.Orders.Node = n
+		a.Shipper.InOrder = a.Orders.HoldsLeg
 		// The legs are booked through the shipper side, which a forwarder
 		// has (config requires it).
 		a.Orchestrator = &forwarder.Orchestrator{Orders: a.Orders, Legs: a.Shipper, Lanes: cfg.Forwarder.Lanes,
@@ -354,7 +355,8 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 // the business context's guard checks, and what puts a conversation on the
 // customer side.
 var customerSends = map[string]bool{intents.BookingRequest: true, intents.TnTInquiry: true, intents.OceanTnTRequest: true,
-	intents.RoadBookingRequest: true, intents.RoadBookingAmendment: true, intents.ForwardingRequest: true, intents.ForwardingStatusRequest: true}
+	intents.RoadBookingRequest: true, intents.RoadBookingAmendment: true, intents.ForwardingRequest: true, intents.ForwardingStatusRequest: true,
+	intents.BookingCancellation: true}
 
 // customerGuard applies the business context's guard to what the customer
 // side sends, and only that. Applied to a carrier role's replies, which
@@ -651,7 +653,8 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 			a.Activity.Publish(activity.Entry{Side: activity.SideOperator, Kind: activity.KindPush,
 				Push: &activity.Push{Booking: ref, ID: id, Problem: "dropped", Error: err.Error()}})
 		},
-		OnRetry: func(string, string) { a.metrics.Retry() },
+		OnRetry:  func(string, string) { a.metrics.Retry() },
+		Bookings: a.Carrier.Bookings,
 	}
 	a.Simulator = &operator.Simulator{Publisher: a.Publisher, HoursPerSecond: cfg.Simulator.HoursPerSecond, Shared: cfg.Simulator.Clock == config.ClockShared,
 		OnError: func(ref string, err error) {
@@ -715,6 +718,12 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	if o == nil {
 		return nil // a forwarder only: it carries nothing itself
 	}
+	handlers[intents.BookingCancellation] = &operator.CancellationService{Bookings: a.Carrier.Bookings, Log: a.Carrier.Events, Now: time.Now,
+		Stop: a.Simulator.Cancel, Exclusive: a.Publisher.Exclusive,
+		OnCancelled: func(b store.Booking) {
+			a.Activity.Publish(activity.Entry{Side: activity.SideOperator, Kind: activity.KindVoyage,
+				Voyage: &activity.Voyage{Booking: b.Ref, Cancelled: true}})
+		}}
 	if r := o.Road; r != nil {
 		// A road carrier: its booking system plans each leg (in memory
 		// until a backend adapter is configured).

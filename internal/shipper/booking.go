@@ -40,6 +40,9 @@ type Shipper struct {
 	// NoBooking is a receiver without the shipper role: it follows others'
 	// bookings and asks about them, and Book refuses.
 	NoBooking bool
+	// InOrder, if set, reports whether a booking is a leg of one of our
+	// forwarding orders (a forwarder's): Cancel leaves those to the order.
+	InOrder func(carrier, ref string) bool
 
 	mu        sync.Mutex
 	sent      map[string]sentOrder // orders sent, awaiting a recorded first answer

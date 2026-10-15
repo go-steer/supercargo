@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Smoke: a shipper cancels a booking before its cargo moves
+# (docs/DESIGN.md, A.5 "Booking cancellation"). Both sides keep it as
+# cancelled, and cancelling again is refused before anything is sent.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+work="$(mktemp -d)"
+trap 'smoke_stop; rm -rf "$work"' EXIT
+
+demo_build "$work"
+demo_ports
+demo_setup "$work" 0.01 # slow: nothing moves for minutes
+smoke_start "$work"
+
+out="$("$work/bin/ulpnode" book --config "$work/shipper.yaml" --operator ocean-blue.example --request "$work/booking.json" --yes 2>"$work/book.log")" ||
+  smoke_fail "$work" "booking failed"
+ref="$(sed -n 's/.*"carrier_booking_reference": "\([^"]*\)".*/\1/p' <<<"$out" | head -1)"
+[[ -n "$ref" ]] || smoke_fail "$work" "no booking reference: $out"
+
+post() { curl -sS --max-time 30 -o "$work/out.json" -w '%{http_code}' --unix-socket "$work/$1.sock" -X POST "http://control$2"; }
+code="$(post cy "/shipments/ocean-blue.example/$ref/cancel")"
+[[ $code == 200 ]] && grep -q '"status":"cancelled"' "$work/out.json" || smoke_fail "$work" "cancelling: HTTP $code $(cat "$work/out.json")"
+echo "cancelled $ref"
+
+curl -fsS --unix-socket "$work/cy.sock" http://control/shipments | grep -q "\"bookingRef\":\"$ref\",[^}]*\"status\":\"cancelled\"" ||
+  smoke_fail "$work" "Cymbal doesn't hold $ref as cancelled"
+curl -fsS --unix-socket "$work/ob.sock" http://control/bookings | grep -q "\"bookingRef\":\"$ref\",[^}]*\"status\":\"cancelled\"" ||
+  smoke_fail "$work" "Ocean Blue doesn't hold $ref as cancelled"
+grep -q '"msg":"booking cancelled"' "$work/operator.log" || smoke_fail "$work" "Ocean Blue logged no cancellation"
+
+code="$(post cy "/shipments/ocean-blue.example/$ref/cancel")"
+[[ $code == 409 ]] || smoke_fail "$work" "cancelling twice: HTTP $code"
+sent="$(grep -c '"intent":"ulp.booking.cancellation".*"outcome":"accepted"' "$work/operator.log" || true)"
+[[ $sent == 1 ]] || smoke_fail "$work" "Ocean Blue took $sent cancellations, want 1"
+
+echo "✓ smoke/cancel: a booking cancelled before its cargo moved, on both sides"

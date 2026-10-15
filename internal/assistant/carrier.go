@@ -242,7 +242,7 @@ func (a *Assistant) draftDisruption(ctx context.Context, raw json.RawMessage) (a
 	d := Disruption{BookingRef: in.BookingRef, Vessel: in.Vessel, Voyage: in.Voyage, Delay: delay.String(), Reason: fold(in.Reason), Bookings: []string{}}
 	for _, s := range all {
 		switch {
-		case in.BookingRef != "" && s.Ref == in.BookingRef:
+		case in.BookingRef != "" && s.Ref == in.BookingRef && s.Status != store.StatusCancelled:
 			d.Bookings = append(d.Bookings, s.Ref)
 		case in.Voyage != "" && strings.EqualFold(s.Voyage, in.Voyage) && (in.Vessel == "" || strings.EqualFold(s.Vessel, in.Vessel)) && !arrived(s):
 			// As list_bookings matches; the node matches the stored spelling.
@@ -267,8 +267,9 @@ func (a *Assistant) draftDisruption(ctx context.Context, raw json.RawMessage) (a
 	return dr.Result(), nil
 }
 
-// arrived: an actual arrival (or a later step) is on record; the node
-// leaves such bookings out of a voyage's delay.
+// arrived: an actual arrival (or a later step) is on record, or the
+// booking was cancelled; the node leaves such bookings out of a voyage's
+// delay.
 func arrived(s store.Summary) bool {
-	return s.Status == "arrived" || s.Status == "discharged" || s.Status == "gated out"
+	return s.Status == "arrived" || s.Status == "discharged" || s.Status == "gated out" || s.Status == store.StatusCancelled
 }

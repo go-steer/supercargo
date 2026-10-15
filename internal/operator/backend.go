@@ -80,6 +80,10 @@ func RegisterBackend(mux *http.ServeMux, pub Publishing, bookings *store.Booking
 			control.Answer(w, http.StatusNotFound, EventResponse{Error: "no booking " + req.BookingRef})
 			return
 		}
+		if b.Cancelled() {
+			control.Answer(w, http.StatusConflict, EventResponse{Error: b.Ref + " was cancelled"})
+			return
+		}
 		body, err := intents.DecodeBody(req.Intent, req.Body)
 		if err != nil {
 			control.Answer(w, http.StatusBadRequest, EventResponse{Error: err.Error()})
@@ -116,6 +120,9 @@ func RegisterBackend(mux *http.ServeMux, pub Publishing, bookings *store.Booking
 			return
 		case errors.Is(err, ErrClosed):
 			control.Answer(w, http.StatusServiceUnavailable, EventResponse{Error: err.Error()})
+			return
+		case errors.Is(err, ErrCancelled):
+			control.Answer(w, http.StatusConflict, EventResponse{Error: err.Error()})
 			return
 		case errors.Is(err, ErrNotQueued):
 			// Recorded: not a refusal, which a client may retry.

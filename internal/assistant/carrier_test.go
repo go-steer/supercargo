@@ -38,7 +38,8 @@ import (
 type carrierNode struct {
 	mu        sync.Mutex
 	disrupted []operator.DisruptRequest
-	fail      error // Disrupt fails with it, if set
+	fail      error           // Disrupt fails with it, if set
+	extra     []store.Summary // more bookings, after carrierBookings
 }
 
 var carrierBookings = []store.Summary{
@@ -52,7 +53,9 @@ var carrierBookings = []store.Summary{
 		Origin: intents.Location{UNLocode: "USEWR"}, Destination: intents.Location{UNLocode: "NLRTM"}},
 }
 
-func (n *carrierNode) Bookings(context.Context) ([]store.Summary, error) { return carrierBookings, nil }
+func (n *carrierNode) Bookings(context.Context) ([]store.Summary, error) {
+	return append(append([]store.Summary(nil), carrierBookings...), n.extra...), nil
+}
 
 func (n *carrierNode) BookingRecords(_ context.Context, ref string) (*operator.BookingRecordsResponse, error) {
 	for _, s := range carrierBookings {
@@ -352,5 +355,20 @@ func TestFakeCarrierScenes(t *testing.T) {
 	}
 	if len(n.disrupted) != 0 {
 		t.Error("a scene published a delay")
+	}
+}
+
+// TestCarrierDisruptionCancelled: a cancelled booking has no voyage to
+// delay, named or on its voyage.
+func TestCarrierDisruptionCancelled(t *testing.T) {
+	n := &carrierNode{extra: []store.Summary{{Ref: "OB-BKG-1041", Shipper: "north-shoes.example", Vessel: "Ocean Blue Aurora", Voyage: "42W",
+		Status: store.StatusCancelled, Origin: intents.Location{UNLocode: "NLRTM"}, Destination: intents.Location{UNLocode: "USEWR"}}}}
+	a, tools := carrierAssistant(nil, n)
+	if ev, _ := carrierCall(t, a, tools, fake.Call("1", ToolDraftDisruption, `{"voyage":"42W","delayHours":72,"reason":"Engine repair."}`)); ev.Draft == nil ||
+		strings.Join(ev.Draft.Disruption.Bookings, ",") != "OB-BKG-1044,OB-BKG-1045" {
+		t.Errorf("voyage: %+v", ev)
+	}
+	if ev, _ := carrierCall(t, a, tools, fake.Call("1", ToolDraftDisruption, `{"bookingRef":"OB-BKG-1041","delayHours":1,"reason":"x."}`)); ev.Error == "" || ev.Draft != nil {
+		t.Errorf("named: %+v", ev)
 	}
 }

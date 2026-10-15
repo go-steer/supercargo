@@ -70,6 +70,10 @@ type Publisher struct {
 	// OnRetry learns about every push about to be tried again, for the
 	// node's metrics. Optional; the same rules as OnDrop.
 	OnRetry func(booking, id string)
+	// Bookings, if set, is where a booking's cancellation is read: a
+	// booking cancelled there is refused (ErrCancelled), under the lock
+	// that records, so nothing is recorded on it once it's cancelled.
+	Bookings *store.Bookings
 
 	once   sync.Once
 	ctx    context.Context
@@ -90,6 +94,8 @@ type push struct {
 var defaultBackoff = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second}
 
 var (
+	// ErrCancelled reports a Publish on a cancelled booking.
+	ErrCancelled = errors.New("operator: the booking was cancelled")
 	// ErrClosed reports a Publish after Close.
 	ErrClosed = errors.New("operator: publisher closed")
 	// ErrDuplicate reports an event or alert ID already published for the
@@ -147,6 +153,12 @@ func (p *Publisher) Publish(b store.Booking, body intents.Body) error {
 		p.mu.Unlock()
 		return ErrClosed
 	}
+	if p.Bookings != nil {
+		if cur, err := p.Bookings.Get(b.Operator, b.Ref); err == nil && cur.Cancelled() {
+			p.mu.Unlock()
+			return fmt.Errorf("%w: %s", ErrCancelled, b.Ref)
+		}
+	}
 	added, err := p.Log.Add(b.Operator, b.Ref, store.Record{ID: id, Intent: body.Intent(), Body: raw, At: p.Now()})
 	switch {
 	case err != nil:
@@ -181,6 +193,16 @@ func (p *Publisher) Publish(b store.Booking, body intents.Body) error {
 		p.mu.Unlock()
 		return p.dropped(b.Ref, id, errors.New("subscription queue full"))
 	}
+}
+
+// Exclusive runs fn with nothing published meanwhile: a cancellation
+// checks that nothing has moved and stores itself in one step. fn must
+// not publish.
+func (p *Publisher) Exclusive(fn func() error) error {
+	p.init()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return fn()
 }
 
 // dropped reports a push not queued and returns the error for Publish.

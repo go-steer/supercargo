@@ -74,6 +74,22 @@ func (o *Orders) claim(ref string) (func(), error) {
 	}, nil
 }
 
+// HoldsLeg reports whether an order of ours holds carrier's booking ref
+// as one of its legs.
+func (o *Orders) HoldsLeg(carrier, ref string) bool {
+	for _, b := range o.Bookings.List() {
+		if b.Order == nil || b.Operator != o.Node.Domain() {
+			continue
+		}
+		for _, l := range b.Order.Legs {
+			if l.Carrier == carrier && l.Ref == ref {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Authorize implements node.Handler: the sender is not denied, and a
 // subscription points at its own domain (A.6).
 func (o *Orders) Authorize(_ context.Context, req *node.Request) error {

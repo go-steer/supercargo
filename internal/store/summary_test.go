@@ -70,6 +70,11 @@ func TestSummarize(t *testing.T) {
 	if s := Summarize(Booking{Ref: "x"}, nil); s.Containers == nil || s.Vessel != "" {
 		t.Errorf("empty booking: %+v", s)
 	}
+	// Cancelled: whatever happened before.
+	b.CancelledAt = time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
+	if s := Summarize(b, recs[:1]); s.Status != StatusCancelled || !b.Cancelled() {
+		t.Errorf("cancelled: %+v", s)
+	}
 }
 
 func TestViewRecordsAndList(t *testing.T) {

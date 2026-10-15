@@ -112,6 +112,10 @@ func sourceOf(body json.RawMessage) string {
 	return SourceSigned
 }
 
+// StatusCancelled is a cancelled booking's status, whatever happened on it
+// before.
+const StatusCancelled = "cancelled"
+
 // Statuses a summary reports, from the latest actual event.
 var statuses = map[string]string{
 	"GTIN": "at origin terminal",
@@ -188,6 +192,9 @@ func Summarize(b Booking, recs []Record) Summary {
 	// it, over any estimate, until it arrives: as its journey's last leg.
 	if moved != nil && !arrived {
 		s.ETA, s.ETASource = moved.NewETA, moved.AlertID
+	}
+	if b.Cancelled() {
+		s.Status = StatusCancelled
 	}
 	return s
 }
