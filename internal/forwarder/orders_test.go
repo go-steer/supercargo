@@ -306,3 +306,20 @@ func TestControlAnswer(t *testing.T) {
 		}
 	}
 }
+
+// TestHoldsLeg: a leg is an order's only if one of our orders lists it.
+func TestHoldsLeg(t *testing.T) {
+	o, _ := desk(t)
+	self := o.Node.Domain()
+	_ = o.Bookings.Add(store.Booking{Ref: "MF-0007", Operator: self, Order: &store.OrderBooking{Legs: []store.LegRef{{Carrier: "serra.example", Ref: "SR-1"}}}})
+	_ = o.Bookings.Add(store.Booking{Ref: "XX-0001", Operator: "other.example", Order: &store.OrderBooking{Legs: []store.LegRef{{Carrier: "serra.example", Ref: "SR-2"}}}})
+	_ = o.Bookings.Add(store.Booking{Ref: "SR-3", Operator: self})
+	for ref, want := range map[string]bool{"SR-1": true, "SR-2": false, "SR-3": false} {
+		if got := o.HoldsLeg("serra.example", ref); got != want {
+			t.Errorf("%s: %v, want %v", ref, got, want)
+		}
+	}
+	if o.HoldsLeg("other.example", "SR-1") {
+		t.Error("another carrier's reference")
+	}
+}

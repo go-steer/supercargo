@@ -145,6 +145,8 @@ type Voyage struct {
 	Arrival        string  `json:"arrival,omitempty"`
 	HoursPerSecond float64 `json:"hoursPerSecond,omitempty"`
 	Error          string  `json:"error,omitempty"`
+	// Cancelled marks a booking its shipper cancelled: its voyage ends.
+	Cancelled bool `json:"cancelled,omitempty"`
 }
 
 // Push is a push the operator gave up on, or couldn't publish.

@@ -402,6 +402,23 @@ func (s *Simulator) Replan(b store.Booking) error {
 	return nil
 }
 
+// Cancel ends ref's shipment before it has begun: ErrUnderWay once a
+// step has fired. A booking with nothing playing has nothing to end.
+func (s *Simulator) Cancel(ref string) error {
+	s.init()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tl, ok := s.lines[ref]
+	if !ok {
+		return nil
+	}
+	if tl.begun {
+		return ErrUnderWay
+	}
+	delete(s.lines, ref)
+	return nil
+}
+
 // estimate is the ARRI EST event for tl's current arrival estimate; why,
 // if set, says what moved it. It is called with s.mu held.
 func (s *Simulator) estimate(id string, tl *timeline, why string) intents.Body {
@@ -629,6 +646,9 @@ func severity(d time.Duration) string {
 func (s *Simulator) publish(tl *timeline, body intents.Body) error {
 	err := s.Publisher.Publish(tl.booking, body)
 	switch {
+	case errors.Is(err, ErrCancelled):
+		// Cancelled before its voyage was started: it ends here.
+		tl.steps = nil
 	case err != nil && s.OnError != nil:
 		s.OnError(tl.booking.Ref, err)
 	case err == nil && s.OnPublish != nil:

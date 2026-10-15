@@ -79,6 +79,9 @@ func (s *Shipper) AmendRoad(ctx context.Context, carrier, ref string, a *intents
 	if err != nil || b.Road == nil {
 		return nil, fmt.Errorf("%w: truck leg %s with %s", ErrNotOurBooking, ref, carrier)
 	}
+	if b.Cancelled() {
+		return nil, fmt.Errorf("%w: %s with %s", ErrCancelled, ref, carrier)
+	}
 	a.BookingRef = ref
 	h := envelope.NewHeader(intents.RoadBookingAmendment, s.Node.Domain(), carrier, s.Now())
 	h.BookingRef = &ref
@@ -112,7 +115,7 @@ func (s *Shipper) AmendRoad(ctx context.Context, carrier, ref string, a *intents
 		// Only over the leg this amendment was made from: if another
 		// amendment was recorded meanwhile, which plan the carrier holds
 		// now depends on the order it took them in, which we don't know.
-		if !reflect.DeepEqual(b.Road, snapshot) {
+		if b.Cancelled() || !reflect.DeepEqual(b.Road, snapshot) {
 			return ErrLegChanged
 		}
 		b.Road.Request, b.Road.Confirmation = amended, *conf

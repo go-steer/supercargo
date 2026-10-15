@@ -93,6 +93,8 @@ func SlogSink(l *slog.Logger) func(Entry) {
 			l.LogAttrs(ctx, slog.LevelInfo, "voyage started", slog.String("booking", v.Booking),
 				slog.String("departure", v.Departure), slog.String("arrival", v.Arrival),
 				slog.Float64("hoursPerSecond", v.HoursPerSecond))
+		case e.Voyage != nil && e.Voyage.Cancelled:
+			l.LogAttrs(ctx, slog.LevelInfo, "booking cancelled", slog.String("booking", e.Voyage.Booking))
 		case e.Voyage != nil:
 			l.LogAttrs(ctx, slog.LevelWarn, "no voyage for booking", slog.String("booking", e.Voyage.Booking),
 				slog.String("err", e.Voyage.Error))

@@ -62,6 +62,10 @@ func (in *Inbound) Authorize(_ context.Context, req *node.Request) error {
 	if sub == nil || !slices.Contains(sub.Intents, h.Intent) {
 		return &node.Rejection{Code: forbidden.Code, Detail: forbidden.Detail, Reason: "booking " + b.Ref + " has no subscription to " + h.Intent}
 	}
+	if b.Cancelled() {
+		// Its subscription ended with it.
+		return &node.Rejection{Code: forbidden.Code, Detail: forbidden.Detail, Reason: "booking " + b.Ref + " was cancelled"}
+	}
 	return nil
 }
 

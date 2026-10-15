@@ -46,7 +46,13 @@ type Booking struct {
 	Road         *RoadBooking
 	Order        *OrderBooking
 	CreatedAt    time.Time
+	// CancelledAt is when the booking was cancelled (its carrier answered
+	// a cancellation so), zero while it stands.
+	CancelledAt time.Time
 }
+
+// Cancelled reports whether the booking was cancelled.
+func (b *Booking) Cancelled() bool { return !b.CancelledAt.IsZero() }
 
 // OrderBooking is a forwarding order: the shipper's request, the ID of
 // the message it came in (the forwarder's answers reply to it), and the

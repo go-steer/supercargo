@@ -115,6 +115,10 @@ var specs = map[string]spec{
 	RoadBookingRequest:      {bookingRef: forbidden, inReplyTo: forbidden, delegation: forbidden, dialect: &DialectULPRoad, newBody: func() Body { return &RoadBookingRequestBody{} }},
 	RoadBookingConfirmation: {bookingRef: required, inReplyTo: required, delegation: forbidden, dialect: &DialectULPRoad, newBody: func() Body { return &RoadBookingConfirmationBody{} }},
 	RoadBookingAmendment:    {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, dialect: &DialectULPRoad, newBody: func() Body { return &RoadBookingAmendmentBody{} }},
+	// A booking (an ocean booking or a truck leg) withdrawn by its shipper,
+	// and the carrier's answer.
+	BookingCancellation:         {bookingRef: required, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &BookingCancellationBody{} }},
+	BookingCancellationResponse: {bookingRef: required, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &BookingCancellationResponseBody{} }},
 	// A door-to-door order to a forwarder: requested (no order yet), and
 	// confirmed with the forwarder's reference and the planned journey.
 	ForwardingRequest:      {bookingRef: forbidden, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &ForwardingRequestBody{} }},
@@ -252,6 +256,12 @@ func crossCheck(h *envelope.Header, b Body) error {
 	}
 	if c, ok := b.(*ForwardingConfirmationBody); ok && c.OrderRef != *h.BookingRef {
 		return fmt.Errorf("body.forwarder_reference %s is not header.bookingRef %s", logsafe.Quote(c.OrderRef), logsafe.Quote(*h.BookingRef))
+	}
+	if c, ok := b.(*BookingCancellationBody); ok && c.BookingRef != *h.BookingRef {
+		return fmt.Errorf("body.carrier_booking_reference %s is not header.bookingRef %s", logsafe.Quote(c.BookingRef), logsafe.Quote(*h.BookingRef))
+	}
+	if c, ok := b.(*BookingCancellationResponseBody); ok && c.BookingRef != *h.BookingRef {
+		return fmt.Errorf("body.carrier_booking_reference %s is not header.bookingRef %s", logsafe.Quote(c.BookingRef), logsafe.Quote(*h.BookingRef))
 	}
 	if r, ok := b.(*ForwardingStatusResponseBody); ok {
 		// The header names the order found, and nothing when none was.

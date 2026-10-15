@@ -180,6 +180,12 @@ func (s *RoadAmendmentService) Handle(ctx context.Context, req *node.Request) (*
 	if err != nil {
 		return nil, err // authorized a moment ago; gone only on a reset
 	}
+	if b.Cancelled() {
+		return &node.Reply{BookingRef: a.BookingRef, Body: &intents.RoadBookingConfirmationBody{
+			BookingRef: a.BookingRef, Status: intents.StatusRejected,
+			Messages: []intents.Message{{Code: "cancelled", Detail: "The leg was cancelled."}},
+		}}, nil
+	}
 	amended := b.Road.Request
 	amendWindow(&amended.Pickup, a.Pickup)
 	amendWindow(&amended.Delivery, a.Delivery)
@@ -213,7 +219,7 @@ func (s *RoadAmendmentService) Handle(ctx context.Context, req *node.Request) (*
 		// Only over the leg this plan was made from: another amendment
 		// stored meanwhile would otherwise be lost, and its shipper told a
 		// plan that no longer holds.
-		if b.Road == nil || b.Shipper != h.Sender || !reflect.DeepEqual(b.Road, snapshot) {
+		if b.Road == nil || b.Shipper != h.Sender || b.Cancelled() || !reflect.DeepEqual(b.Road, snapshot) {
 			return errLegChanged
 		}
 		b.Road.Request, b.Road.Confirmation = amended, *conf

@@ -62,6 +62,13 @@ type OrderStatusResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
+// CancelResponse answers POST /shipments/{operator}/{ref}/cancel: the
+// carrier's answer (cancelled, or refused with why), or why there is none.
+type CancelResponse struct {
+	Answer *intents.BookingCancellationResponseBody `json:"answer,omitempty"`
+	Error  string                                   `json:"error,omitempty"`
+}
+
 // OrderResponse is its answer: the forwarder's (pending, confirmed or
 // rejected), or why there is none.
 type OrderResponse struct {
@@ -115,6 +122,20 @@ func RegisterControl(mux *http.ServeMux, s *Shipper, profiles rest.Profiles) {
 		}
 		j := store.BuildJourney(b, s.records(op, ref))
 		control.Answer(w, http.StatusOK, JourneyResponse{Journey: &j})
+	})
+	// Cancelling a booking, after a person confirmed (Cancel).
+	mux.HandleFunc("POST /shipments/{operator}/{ref}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		a, err := s.Cancel(r.Context(), r.PathValue("operator"), r.PathValue("ref"))
+		switch {
+		case errors.Is(err, ErrNotOurBooking):
+			control.Answer(w, http.StatusNotFound, CancelResponse{Error: err.Error()})
+		case errors.Is(err, ErrCancelled), errors.Is(err, ErrLegOfOrder):
+			control.Answer(w, http.StatusConflict, CancelResponse{Error: err.Error()})
+		case err != nil:
+			control.Answer(w, http.StatusBadGateway, CancelResponse{Error: err.Error()})
+		default:
+			control.Answer(w, http.StatusOK, CancelResponse{Answer: a})
+		}
 	})
 	mux.HandleFunc("GET /profile/{domain}", func(w http.ResponseWriter, r *http.Request) {
 		domain := r.PathValue("domain")
