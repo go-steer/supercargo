@@ -429,9 +429,34 @@ func TestDirLinksAndOwners(t *testing.T) {
 	if err := os.Link(secret, filepath.Join(path, "a.edi")); err != nil {
 		t.Skip("no hard links here:", err)
 	}
+	// A second link: left for a pass (a peer's Put may be between its link
+	// and its unlink), then refused if it's still there.
+	if err := receive(t, d, func(string, []byte) error { t.Error("handed over"); return nil }); err != nil {
+		t.Errorf("first pass: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(path, "a.edi")); err != nil {
+		t.Errorf("first pass moved it: %v", err)
+	}
 	err = receive(t, d, func(string, []byte) error { t.Error("handed over"); return nil })
 	if err == nil || !strings.Contains(err.Error(), "has 2 links") {
 		t.Errorf("Receive: %v", err)
+	}
+	// A Put caught between its link and its unlink: taken on the next pass,
+	// once the temporary name is gone.
+	tmp := filepath.Join(path, ".edi-tmp")
+	if err := os.WriteFile(tmp, []byte("UNA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(tmp, filepath.Join(path, "b.edi")); err != nil {
+		t.Fatal(err)
+	}
+	got := 0
+	if err := receive(t, d, func(string, []byte) error { got++; return nil }); err != nil || got != 0 {
+		t.Errorf("mid-Put: %v, handed over %d", err, got)
+	}
+	_ = os.Remove(tmp)
+	if err := receive(t, d, func(string, []byte) error { got++; return nil }); err != nil || got != 1 {
+		t.Errorf("after the Put: %v, handed over %d", err, got)
 	}
 
 	path = t.TempDir()

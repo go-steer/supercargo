@@ -183,6 +183,8 @@ func TestParseRejects(t *testing.T) {
 		"lowercase container prefix":  {"containerPrefix: OCBU", "containerPrefix: ocbu"},
 		"bad departure hour":          {"departureHour: 18", "departureHour: 24"},
 		"no transit":                  {"transit: 134h", "transit: 0s"},
+		"transits port not a locode":  {"transit: 134h", "transit: 134h\n  transits: { santos: 380h }"},
+		"transits not positive":       {"transit: 134h", "transit: 134h\n  transits: { BRSSZ: 0s }"},
 		"deny entry not a domain":     {"deny: [mallory.example]", "deny: [\"*\"]"},
 		"negative clock":              {"hoursPerSecond: 1", "hoursPerSecond: -1"},
 		"clock over the cap":          {"hoursPerSecond: 1", "hoursPerSecond: 3601"},
@@ -296,6 +298,11 @@ func TestRoadCarrier(t *testing.T) {
 	if _, err := Parse([]byte(strings.Replace(operatorYAML, ocean, "", 1))); err == nil {
 		t.Error("an operator with neither ocean fields nor a road section")
 	}
+	// Transits are a vessel's: on a road carrier only, they're an ocean
+	// operator's half-written fields, refused.
+	if _, err := Parse([]byte(strings.Replace(operatorYAML, ocean, road+"  transits: { BRSSZ: 380h }\n", 1))); err == nil {
+		t.Error("transits on a road carrier only")
+	}
 	for name, edit := range map[string][2]string{
 		"no transit":          {"transit: 30h, ", ""},
 		"a negative lead":     {"transit: 30h", "transit: 30h, lead: -1h"},
@@ -341,6 +348,7 @@ forwarder: { refPrefix: MF, deny: [mallory.example] }
 		"a dotted prefix":        {"refPrefix: MF", "refPrefix: M.F"},
 		"no prefix":              {"refPrefix: MF, ", ""},
 		"denying itself":         {"deny: [mallory.example]", "deny: [meridian-forwarding.example]"},
+		"a malformed ediId":      {"refPrefix: MF,", "refPrefix: MF, ediId: \"not an id\","},
 		"the operator's prefix":  {"forwarder:", "operator: { refPrefix: MF, road: { transit: 30h } }\nforwarder:"},
 		"the truck legs' prefix": {"forwarder: { refPrefix: MF,", "operator: { refPrefix: OB, road: { transit: 30h } }\nforwarder: { refPrefix: OB-R,"},
 		"an unknown key":         {"refPrefix: MF", "refPrefix: MF, trucks: 4"},
@@ -408,6 +416,9 @@ forwarder:
 		"an unknown zone":             {"zone: Europe/Amsterdam", "zone: Mars/Olympus"},
 		"a facility at the end":       {"name: Serra Transportes, to: BRSAO", "name: Serra Transportes, to: BRSAO, facility: DC"},
 		"a second lane, same ends":    {"  lanes:\n", "  lanes:\n    - { from: NLTLB, to: BRSAO, legs: [{ mode: road, carrier: t.example, name: T, to: BRSAO }] }\n"},
+		"a domain too long for EDI":   {"domain: meridian-forwarding.example", "domain: meridian-forwarding-123456789012.us-central1.run.app"},
+		"an ediId with a space":       {"refPrefix: MF\n", "refPrefix: MF\n  ediId: \"meridian fwd\"\n"},
+		"an ediId a partner's":        {"refPrefix: MF\n", "refPrefix: MF\n  ediId: polder-haulage.example\n"},
 	} {
 		in := strings.Replace(base, edit[0], edit[1], 1)
 		if in == base {
@@ -416,6 +427,15 @@ forwarder:
 		if _, err := Parse([]byte(in)); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	// A long domain with its own EDI identity: fine, and used.
+	long := strings.Replace(strings.Replace(base, "domain: meridian-forwarding.example", "domain: meridian-forwarding-123456789012.us-central1.run.app", 1),
+		"refPrefix: MF\n", "refPrefix: MF\n  ediId: meridian-forwarding\n", 1)
+	if c, err := Parse([]byte(long)); err != nil || c.SelfEDIID() != "meridian-forwarding" {
+		t.Errorf("a long domain with an ediId: %v", err)
+	}
+	if c.SelfEDIID() != "meridian-forwarding.example" {
+		t.Errorf("the default EDI identity: %q", c.SelfEDIID())
 	}
 	noLegs := strings.SplitN(base, "      legs:\n", 2)[0] + "      legs: []\n"
 	if _, err := Parse([]byte(noLegs)); err == nil || !strings.Contains(err.Error(), "0 legs") {

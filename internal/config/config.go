@@ -242,7 +242,11 @@ type Operator struct {
 	Voyage          string        `yaml:"voyage"`
 	DepartureHour   int           `yaml:"departureHour"`
 	Transit         time.Duration `yaml:"transit"`
-	Deny            []string      `yaml:"deny"`
+	// Transits are how long the vessel sails to a port of discharge
+	// (UN/LOCODE) other than transit's: one service calling at ports far
+	// apart (Newark, Santos).
+	Transits map[string]time.Duration `yaml:"transits"`
+	Deny     []string                 `yaml:"deny"`
 	// Road makes this operator a road carrier too (or only one, without
 	// the ocean fields above): it takes road bookings and amendments.
 	Road *Road `yaml:"road"`
@@ -262,6 +266,17 @@ type Forwarder struct {
 	// EDI are the carriers it books over EDIFACT file drops (a lane leg
 	// with edi: true names one of them).
 	EDI []EDIPartner `yaml:"edi"`
+	// EDIID is its own EDI identity (the UNB sender, an..35): by default
+	// its domain, which may be too long (a Cloud Run address).
+	EDIID string `yaml:"ediId"`
+}
+
+// SelfEDIID is the forwarder's own EDI identity: EDIID, else the domain.
+func (c *Config) SelfEDIID() string {
+	if c.Forwarder != nil && c.Forwarder.EDIID != "" {
+		return c.Forwarder.EDIID
+	}
+	return c.Domain
 }
 
 // EDIPartner is a carrier booked over EDIFACT: its EDI identity, the file
@@ -373,7 +388,7 @@ func textOK(s string, max int) bool {
 // Ocean reports whether the operator takes ocean bookings: it has the
 // ocean fields, or no road section (and the ocean fields are required).
 func (o *Operator) Ocean() bool {
-	return o.Road == nil || o.Vessel != "" || o.Voyage != "" || o.ContainerPrefix != "" || o.Transit != 0 || o.DepartureHour != 0
+	return o.Road == nil || o.Vessel != "" || o.Voyage != "" || o.ContainerPrefix != "" || o.Transit != 0 || o.DepartureHour != 0 || len(o.Transits) > 0
 }
 
 // Road configures a road carrier's in-memory booking system
@@ -667,8 +682,14 @@ func (c *Config) validate() error {
 				return fmt.Errorf("forwarder: deny entry %q is not a lowercase domain", d)
 			}
 		}
+		if (len(f.EDI) > 0 || f.EDIID != "") && !ediID.MatchString(c.SelfEDIID()) {
+			return fmt.Errorf("forwarder: ediId %q is not an EDI identity (1-35 of [A-Za-z0-9.:_-]; set forwarder.ediId if the domain is longer)", c.SelfEDIID())
+		}
 		ediCarriers := map[string]bool{}
 		for i, p := range f.EDI {
+			if p.ID == c.SelfEDIID() {
+				return fmt.Errorf("forwarder: edi[%d]: id %q is the forwarder's own EDI identity", i, p.ID)
+			}
 			if err := p.validate(c.Domain); err != nil {
 				return fmt.Errorf("forwarder: edi[%d]: %w", i, err)
 			}
@@ -709,6 +730,11 @@ func (c *Config) validate() error {
 			}
 			if !voyageNumber.MatchString(o.Voyage) {
 				return fmt.Errorf("operator: voyage %q must be 1-64 of [A-Za-z0-9_-], starting with a letter or digit", o.Voyage)
+			}
+			for port, d := range o.Transits {
+				if !locode.MatchString(port) || d <= 0 {
+					return fmt.Errorf("operator: transits: %q: %v must be a UN/LOCODE and a positive duration", port, d)
+				}
 			}
 			for _, r := range o.ContainerPrefix {
 				if r < 'A' || r > 'Z' {

@@ -39,6 +39,16 @@ type Voyage struct {
 	// the earliest departure requested; Transit is how long it sails.
 	DepartureHour int
 	Transit       time.Duration
+	// Transits override Transit for a port of discharge (UN/LOCODE).
+	Transits map[string]time.Duration
+}
+
+// transitTo is how long the vessel sails to port.
+func (v Voyage) transitTo(port string) time.Duration {
+	if d, ok := v.Transits[port]; ok {
+		return d
+	}
+	return v.Transit
 }
 
 // MaxContainers is the most containers one request may book. A larger
@@ -240,7 +250,7 @@ func (s *VoyageBookings) Decide(_ context.Context, r backend.BookingRequest) (*i
 		BookingRef:       ref,
 		Status:           intents.StatusConfirmed,
 		PlannedDeparture: departure.UTC().Format(envelope.TimeLayout),
-		PlannedArrival:   departure.Add(s.Voyage.Transit).UTC().Format(envelope.TimeLayout),
+		PlannedArrival:   departure.Add(s.Voyage.transitTo(b.PortOfDischarge)).UTC().Format(envelope.TimeLayout),
 		EBL:              ebl,
 	}
 	if b.Subscription != nil {

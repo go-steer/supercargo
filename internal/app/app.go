@@ -747,7 +747,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	}
 	handlers[intents.BookingRequest] = &operator.BookingService{
 		Bookings: a.Carrier.Bookings, Deny: deny, RefPrefix: o.RefPrefix, ContainerPrefix: o.ContainerPrefix, Now: time.Now,
-		Voyage: operator.Voyage{Vessel: o.Vessel, Number: o.Voyage, DepartureHour: o.DepartureHour, Transit: o.Transit},
+		Voyage: operator.Voyage{Vessel: o.Vessel, Number: o.Voyage, DepartureHour: o.DepartureHour, Transit: o.Transit, Transits: o.Transits},
 		OnBooked: func(b store.Booking) {
 			v := &activity.Voyage{Booking: b.Ref, Started: true, Departure: b.Confirmation.PlannedDeparture,
 				Arrival: b.Confirmation.PlannedArrival, HoursPerSecond: cfg.Simulator.HoursPerSecond}
@@ -811,7 +811,7 @@ func (a *App) ediGateway() error {
 	if cfg.Forwarder == nil || len(cfg.Forwarder.EDI) == 0 {
 		return nil
 	}
-	g := &forwarder.Gateway{Self: cfg.Domain, Partners: map[string]*forwarder.EDIPartner{}, Status: a.Relay.Unsigned,
+	g := &forwarder.Gateway{Self: cfg.SelfEDIID(), Partners: map[string]*forwarder.EDIPartner{}, Status: a.Relay.Unsigned,
 		Now: time.Now, Log: a.Logger.With("component", "edi")}
 	for _, p := range cfg.Forwarder.EDI {
 		zone, err := time.LoadLocation(p.Zone) // validated with the config

@@ -13,17 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Deploys the two-company demo to Cloud Run (#38): Ocean Blue (carrier)
-# and Cymbal Shoes (shipper), each its own service at its own run.app
-# address, which is its ULP domain. docs/guides/runbook-cloudrun.md walks through
-# it, including what to do by hand first (the OAuth client).
+# Deploys the demo to Cloud Run (#38): Ocean Blue (ocean carrier), Cymbal
+# Shoes (shipper), Meridian Forwarding (forwarder, with Polder Haulage, a
+# road carrier without a node, as its EDI sidecar) and Serra Transportes
+# (road carrier), each its own service at its own run.app address, which
+# is its ULP domain. docs/guides/runbook-cloudrun.md walks through it,
+# including what to do by hand first (the OAuth client).
 #
 #   PROJECT=my-project GOOGLE_CLIENT_ID=123-abc.apps.googleusercontent.com \
 #   MEMBERS=you@example.com deploy/cloudrun/deploy.sh
 #
 # Settings (environment):
 #   PROJECT           the Google Cloud project (required)
-#   GOOGLE_CLIENT_ID  the OAuth client both UIs and Cymbal's MCP sign in with (required)
+#   GOOGLE_CLIENT_ID  the OAuth client the UIs and Cymbal's MCP sign in with (required)
 #   MEMBERS           who may sign in, comma-separated: emails, or @domain for
 #                     every account of that Google Workspace domain (required)
 #   REGION            Cloud Run region (default us-central1)
@@ -34,9 +36,10 @@
 #   RENDER_ONLY=DIR   only render and check the configs into DIR (no gcloud
 #                     needed; with PROJECT_NUMBER set)
 #
-# Re-running is safe: it creates what's missing, adds a secret version
-# only when a file changed, never replaces a signing key, and deploys a
-# new revision of each service.
+# The scenarios' dates (Cymbal's deadlines) are set from today: re-run it
+# before a demo. Re-running is safe: it creates what's missing, adds a
+# secret version only when a file changed, never replaces a signing key,
+# and deploys a new revision of each service.
 set -euo pipefail
 
 : "${PROJECT:?set PROJECT}" "${GOOGLE_CLIENT_ID:?set GOOGLE_CLIENT_ID}" "${MEMBERS:?set MEMBERS (emails or @domain, comma-separated)}"
@@ -82,7 +85,14 @@ number="${PROJECT_NUMBER:-}"
 [[ $number =~ ^[0-9]+$ ]] || { echo "project number $number is not a number" >&2; exit 1; }
 OB="ocean-blue-$number.$REGION.run.app"
 CY="cymbal-shoes-$number.$REGION.run.app"
+MF="meridian-forwarding-$number.$REGION.run.app"
+SR="serra-transportes-$number.$REGION.run.app"
 image="$REGION-docker.pkg.dev/$PROJECT/supercargo/ulpnode:$TAG"
+# Cymbal's deadlines, from today (UTC): Newark's spring stock (the ship takes
+# about 6 days; 72 hours late misses it) and the Brazil launch (door to
+# door takes about 21 days; 72 hours late misses it).
+newark="$(date -u -d '+10 days' +%F)"
+launch="$(date -u -d '+23 days' +%F)"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -90,64 +100,89 @@ chmod 700 "$work"
 out="${RENDER_ONLY:-$work/config}"
 mkdir -p "$out" "$work/image"
 
-step "Binary"
+step "Binaries"
 (cd "$root" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "$work/image/ulpnode" ./cmd/ulpnode)
+(cd "$root" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o "$work/image/ulpmock" ./cmd/ulpmock)
 (cd "$root" && go build -o "$work/ulpnode-local" ./cmd/ulpnode)
 
-step "Configs (Ocean Blue at $OB, Cymbal Shoes at $CY)"
+step "Configs (Ocean Blue at $OB, Cymbal Shoes at $CY, Meridian at $MF, Serra at $SR)"
 llm="{ provider: gemini, backend: vertex, model: $LLM_MODEL }   # Vertex AI, as the service account"
-cat >"$out/ob.yaml" <<EOF
-domain: $OB
-name: Ocean Blue
-role: operator
+# node FILE DOMAIN NAME KID PARTNERS PERSONA BODY: a node's config.
+node() {
+  cat >"$out/$1" <<EOF
+domain: $2
+name: $3
 listen: ":8080"
 tls: { mode: proxy }   # Cloud Run serves https at the domain
-keys: [{ kid: ob-1, privateKeyEnv: ULP_SIGNING_KEY }]
-partners: [$CY]
-operator: { refPrefix: OB-BKG, containerPrefix: OCBU, vessel: Ocean Blue Aurora, voyage: 42W, departureHour: 18, transit: 134h }
-simulator: { hoursPerSecond: $HPS }
+keys: [{ kid: $4-1, privateKeyEnv: ULP_SIGNING_KEY }]
+partners: [$5]
 llm: $llm
-skills: { dir: /etc/ulp/skills/ocean-blue }
-google: { clientID: $GOOGLE_CLIENT_ID, clientSecretEnv: GOOGLE_CLIENT_SECRET, publicURL: "https://$OB" }
+google: { clientID: $GOOGLE_CLIENT_ID, clientSecretEnv: GOOGLE_CLIENT_SECRET, publicURL: "https://$2" }
 web:
   auth: google
   personas:
-    - { id: sam, name: Sam, title: "Ops desk", roles: [operator], members: [$members] }
+    - $6
+$7
 EOF
-cat >"$out/cy.yaml" <<EOF
-domain: $CY
-name: Cymbal Shoes
-role: shipper
-listen: ":8080"
-tls: { mode: proxy }
-keys: [{ kid: cy-1, privateKeyEnv: ULP_SIGNING_KEY }]
-partners: [$OB]
+}
+node ob.yaml "$OB" "Ocean Blue" ob "$CY, $MF" "{ id: sam, name: Sam, title: \"Ops desk\", roles: [operator], members: [$members] }" "role: operator
+operator: { refPrefix: OB-BKG, containerPrefix: OCBU, vessel: Ocean Blue Aurora, voyage: 42W, departureHour: 18, transit: 134h, transits: { BRSSZ: 380h } }
+simulator: { hoursPerSecond: $HPS, clock: shared }
+skills: { dir: /etc/ulp/skills/ocean-blue }"
+node cy.yaml "$CY" "Cymbal Shoes" cy "$OB, $MF" "{ id: alex, name: Alex, title: \"Logistics\", roles: [shipper], members: [$members] }" "role: shipper
 business: { file: /etc/ulp/business/business.yaml }   # private: never in an envelope
 addressBook: { file: /etc/ulp/address-book/address-book.yaml }
 directory: { file: /etc/ulp/directory/directory.yaml }
-mcp: { server: { auth: google } }   # Gemini Enterprise, as the signed-in person
-llm: $llm
-google: { clientID: $GOOGLE_CLIENT_ID, clientSecretEnv: GOOGLE_CLIENT_SECRET, publicURL: "https://$CY" }
-web:
-  auth: google
-  personas:
-    - { id: alex, name: Alex, title: "Logistics", roles: [shipper], members: [$members] }
-EOF
-cat >"$out/business.yaml" <<'EOF'
+mcp: { server: { auth: google } }   # Gemini Enterprise, as the signed-in person"
+node mf.yaml "$MF" "Meridian Forwarding" mf "$CY, $OB, $SR" "{ id: mia, name: Mia, title: \"Forwarding desk\", roles: [operator, shipper], members: [$members] }" "roles: [operator, shipper]
+forwarder:
+  refPrefix: MF
+  ediId: meridian-forwarding          # its EDI identity: the run.app domain is too long for one
+  edi:                                # Polder Haulage has no node: EDIFACT files, with the sidecar
+    - { carrier: polder-haulage.example, id: polder-haulage, outbox: /edi/to-polder, inbox: /edi/from-polder, zone: Europe/Amsterdam, transit: 3h }
+  lanes:                              # the routing guide
+    - from: NLTLB
+      to: BRSAO
+      legs:
+        - { mode: road, carrier: polder-haulage.example, name: Polder Haulage, to: NLRTM, facility: Euromax terminal, edi: true }
+        - { mode: ocean, carrier: $OB, name: Ocean Blue, to: BRSSZ, facility: Santos Brasil Tecon terminal }
+        - { mode: road, carrier: $SR, name: Serra Transportes, to: BRSAO }"
+node sr.yaml "$SR" "Serra Transportes" sr "$MF" "{ id: rita, name: Rita, title: \"Dispatch\", roles: [operator], members: [$members] }" "role: operator
+operator: { refPrefix: SR-BKG, road: { transit: 30h, cte: { cnpj: \"12345678000190\", state: 35 } } }
+simulator: { hoursPerSecond: $HPS, clock: shared }"
+cat >"$out/business.yaml" <<EOF
 shipments:
   - shipperRef: CY-PO-55120
-    requiredBy: 2026-10-15
-    receivingSlot: { date: 2026-10-15, window: "08:00-12:00", warehouse: "Cymbal Newark DC, dock 4" }
-    notes: "Spring launch stock: shelves must be full by Friday the 16th"
+    requiredBy: $newark
+    receivingSlot: { date: $newark, window: "08:00-12:00", warehouse: "Cymbal Newark DC, dock 4" }
+    notes: "Spring stock for the Newark stores"
+  - shipperRef: CY-PO-55210
+    requiredBy: $launch
+    receivingSlot: { date: $launch, window: "08:00-12:00", warehouse: "Cajamar DC, Brazil launch stock" }
+    notes: "Brazil launch: the São Paulo stores open with this stock"
 notes:
-  - "Tell the launch team about any delay that puts the receiving slot at risk"
+  - "Tell the launch team about any delay that puts a launch at risk"
+  - "1,200 pairs of the launch line are already in the São Paulo store room: enough for a partial launch"
 EOF
-cat >"$out/address-book.yaml" <<'EOF'
+cat >"$out/address-book.yaml" <<EOF
 entries:
   - domain: cymbal-footwear.example
     name: Cymbal Footwear
     roles: [consignee]
     description: Our US retail arm; receives at the Newark DC.
+  - domain: $MF
+    name: Meridian Forwarding
+    roles: [forwarder]
+    description: Our forwarder, door to door to Brazil.
+places:
+  - id: tilburg-warehouse
+    name: Tilburg warehouse
+    party: { name: Cymbal Shoes B.V., domain: $CY, identifiers: [{ scheme: EORI, value: NL123456789 }] }
+    place: { type: door, un_location_code: NLTLB, address: { street: Ringbaan Oost 100, postal_code: "5013 CD", locality: Tilburg, country: NL } }
+  - id: cajamar-dc
+    name: Cajamar DC
+    party: { name: Cymbal Calçados Ltda, identifiers: [{ scheme: "BR:CNPJ", value: 12.345.678/0001-90 }] }
+    place: { type: door, facility: "Cymbal Calçados DC, dock 2", un_location_code: BRSAO, address: { street: "Rodovia Anhanguera, km 33", locality: Cajamar, region: SP, country: BR } }
 EOF
 cat >"$out/directory.yaml" <<EOF
 entries:
@@ -155,8 +190,8 @@ entries:
     name: Ocean Blue
     roles: [carrier]
     modes: [OCEAN]
-    lanes: [{ from: NLRTM, to: USEWR }, { from: USEWR, to: NLRTM }]
-    description: Transatlantic container service, weekly departures from Rotterdam.
+    lanes: [{ from: NLRTM, to: USEWR }, { from: USEWR, to: NLRTM }, { from: NLRTM, to: BRSSZ }]
+    description: Container services from Rotterdam to Newark and to Santos.
   - domain: north-star.example
     name: North Star Lines
     roles: [carrier]
@@ -164,12 +199,14 @@ entries:
     lanes: [{ from: NLRTM, to: USEWR }, { from: DEHAM, to: USNYC }]
     description: North Atlantic container lines.
 EOF
-"$work/ulpnode-local" check --config "$out/ob.yaml"
-"$work/ulpnode-local" check --config "$out/cy.yaml"
+for f in ob mf sr; do "$work/ulpnode-local" check --config "$out/$f.yaml"; done
+"$work/ulpnode-local" check --config "$out/cy.yaml" --business "$out/business.yaml" --address-book "$out/address-book.yaml" --directory "$out/directory.yaml"
 if [[ -n "${RENDER_ONLY:-}" ]]; then
   echo "Rendered into $out; nothing deployed."
   exit 0
 fi
+
+services="ocean-blue cymbal-shoes meridian-forwarding serra-transportes"
 
 step "APIs"
 gc services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
@@ -180,7 +217,7 @@ gc artifacts repositories describe supercargo --location "$REGION" >/dev/null 2>
   gc artifacts repositories create supercargo --location "$REGION" --repository-format docker
 
 step "Service accounts (one per company: Vertex AI, and its own secrets)"
-for svc in ocean-blue cymbal-shoes; do
+for svc in $services; do
   sa="ulp-$svc@$PROJECT.iam.gserviceaccount.com"
   gc iam service-accounts describe "$sa" >/dev/null 2>&1 ||
     gc iam service-accounts create "ulp-$svc" --display-name "supercargo $svc node"
@@ -221,7 +258,7 @@ secret() {
 }
 
 step "Signing keys (made once, here, straight into Secret Manager)"
-for k in ob:ocean-blue cy:cymbal-shoes; do
+for k in ob:ocean-blue cy:cymbal-shoes mf:meridian-forwarding sr:serra-transportes; do
   short=${k%%:*} svc=${k#*:}
   if ! gc secrets describe "ulp-$short-signing-key" >/dev/null 2>&1; then
     "$work/ulpnode-local" keygen --kid "$short-1" --out "$work/$short.pem" >/dev/null
@@ -243,11 +280,14 @@ if ! gc secrets describe ulp-google-client-secret >/dev/null 2>&1; then
   gc secrets create ulp-google-client-secret --replication-policy automatic --data-file "$work/client-secret" >/dev/null
   rm -f "$work/client-secret"
 fi
-grant ulp-google-client-secret ocean-blue cymbal-shoes
+# shellcheck disable=SC2086 # the service names, split
+grant ulp-google-client-secret $services
 
 step "Configs into Secret Manager"
 secret ulp-ob-config "$out/ob.yaml" ocean-blue
 secret ulp-cy-config "$out/cy.yaml" cymbal-shoes
+secret ulp-mf-config "$out/mf.yaml" meridian-forwarding
+secret ulp-sr-config "$out/sr.yaml" serra-transportes
 secret ulp-cy-business "$out/business.yaml" cymbal-shoes
 secret ulp-cy-address-book "$out/address-book.yaml" cymbal-shoes
 secret ulp-cy-directory "$out/directory.yaml" cymbal-shoes
@@ -258,39 +298,60 @@ cp -R "$root/dev/demo/skills/." "$work/image/skills/"
 cat >"$work/image/Dockerfile" <<'EOF'
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY ulpnode /usr/local/bin/ulpnode
+COPY ulpmock /usr/local/bin/ulpmock
 COPY skills /etc/ulp/skills
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/ulpnode"]
 EOF
 gc builds submit "$work/image" --tag "$image" --region "$REGION"
 
-# deploy SVC SECRETS: one instance, always on (the simulator runs between
+# Every service: one instance, always on (the simulators run between
 # requests, and the stores and sessions are in memory), reachable without
 # IAM: people sign in with Google, partners send signed envelopes.
-deploy() {
-  local svc=$1 secrets=$2
-  step "Cloud Run service $svc"
-  gc run deploy "$svc" --image "$image" --region "$REGION" \
-    --service-account "ulp-$svc@$PROJECT.iam.gserviceaccount.com" \
-    --no-invoker-iam-check --min-instances 1 --max-instances 1 --no-cpu-throttling \
-    --cpu 1 --memory 512Mi --timeout 3600 --port 8080 --concurrency 80 \
-    --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$LLM_LOCATION" \
-    --set-secrets "$secrets" \
-    --args serve,--config,/etc/ulp/config/node.yaml,--log-format,json
-}
+service_flags=(--region "$REGION" --execution-environment gen2 --no-invoker-iam-check --min-instances 1 --max-instances 1 --no-cpu-throttling
+  --timeout 3600 --concurrency 80)
+node_args="serve,--config,/etc/ulp/config/node.yaml,--log-format,json"
+env="GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$LLM_LOCATION"
 common="ULP_SIGNING_KEY=ulp-SHORT-signing-key:latest,GOOGLE_CLIENT_SECRET=ulp-google-client-secret:latest,/etc/ulp/config/node.yaml=ulp-SHORT-config:latest"
-deploy ocean-blue "${common//SHORT/ob}"
-deploy cymbal-shoes "${common//SHORT/cy},/etc/ulp/business/business.yaml=ulp-cy-business:latest,/etc/ulp/address-book/address-book.yaml=ulp-cy-address-book:latest,/etc/ulp/directory/directory.yaml=ulp-cy-directory:latest"
+
+# deploy SVC SHORT [EXTRA_SECRETS]: one node, one container.
+deploy() {
+  local svc=$1 secrets="${common//SHORT/$2}${3:+,$3}"
+  step "Cloud Run service $svc"
+  gc run deploy "$svc" "${service_flags[@]}" --service-account "ulp-$svc@$PROJECT.iam.gserviceaccount.com" \
+    --image "$image" --cpu 1 --memory 512Mi --port 8080 \
+    --set-env-vars "$env" --set-secrets "$secrets" --args "$node_args"
+}
+deploy ocean-blue ob
+deploy cymbal-shoes cy "/etc/ulp/business/business.yaml=ulp-cy-business:latest,/etc/ulp/address-book/address-book.yaml=ulp-cy-address-book:latest,/etc/ulp/directory/directory.yaml=ulp-cy-directory:latest"
+deploy serra-transportes sr
+
+# Meridian, with Polder Haulage beside it: Polder has no node, only the
+# EDIFACT file drops the two share, each an in-memory volume. Both run as
+# the image's nonroot user, as the drops' ownership checks require.
+step "Cloud Run service meridian-forwarding (with Polder Haulage's EDI sidecar)"
+gc run deploy meridian-forwarding "${service_flags[@]}" --service-account "ulp-meridian-forwarding@$PROJECT.iam.gserviceaccount.com" \
+  --add-volume name=to-polder,type=in-memory,size-limit=32Mi --add-volume name=from-polder,type=in-memory,size-limit=32Mi \
+  --container node --image "$image" --cpu 1 --memory 512Mi --port 8080 \
+  --set-env-vars "$env" --set-secrets "${common//SHORT/mf}" --args "$node_args" \
+  --add-volume-mount volume=to-polder,mount-path=/edi/to-polder --add-volume-mount volume=from-polder,mount-path=/edi/from-polder \
+  --container polder --image "$image" --cpu 1 --memory 256Mi --command /usr/local/bin/ulpmock \
+  --args "edifact,--id,polder-haulage,--partner,meridian-forwarding,--in,/edi/to-polder,--out,/edi/from-polder,--ecmr-prefix,ECMR-NL-2026,--zone,Europe/Amsterdam,--hours-per-second,$HPS,--clock,shared" \
+  --add-volume-mount volume=to-polder,mount-path=/edi/to-polder --add-volume-mount volume=from-polder,mount-path=/edi/from-polder
 
 cat <<EOF
 
 Done.
-  Ocean Blue    https://$OB/ui/
-  Cymbal Shoes  https://$CY/ui/
-  Cymbal's MCP  https://$CY/mcp   (Gemini Enterprise: docs/guides/runbook-cloudrun.md, step 6)
+  Ocean Blue           https://$OB/ui/
+  Cymbal Shoes         https://$CY/ui/
+  Meridian Forwarding  https://$MF/ui/
+  Serra Transportes    https://$SR/ui/
+  Cymbal's MCP         https://$CY/mcp   (Gemini Enterprise: docs/guides/runbook-cloudrun.md, step 6)
 
 The OAuth client needs these authorized redirect URIs (runbook, step 2):
   https://$OB/ui/auth/callback
   https://$CY/ui/auth/callback
+  https://$MF/ui/auth/callback
+  https://$SR/ui/auth/callback
   https://vertexaisearch.cloud.google.com/oauth-redirect
 EOF
