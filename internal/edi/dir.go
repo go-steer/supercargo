@@ -89,6 +89,9 @@ type Dir struct {
 	mu   sync.Mutex             // guards seq and closed
 	seq  int
 	rmu  sync.Mutex // one Receive at a time; Close takes it too
+	// linked are the files the last Receive found with a second link and
+	// left for one more pass (guarded by rmu).
+	linked map[string]bool
 	// closed is set by Close, under both locks: the raw descriptors of
 	// dirs are never used after it.
 	closed bool
@@ -240,9 +243,17 @@ func (d *Dir) Receive(fn func(name string, data []byte) error) error {
 	}
 	slices.SortFunc(entries, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 	var errs []error
+	linked := map[string]bool{}
 	for _, e := range entries {
 		name := e.Name()
 		if strings.HasPrefix(name, ".") || slices.Contains(subdirs, name) {
+			continue
+		}
+		// A file with a second link may be a peer's Put between its link
+		// and its unlink: left for the next pass. Still linked then, it is
+		// refused as before (read).
+		if fi, err := d.root.Lstat(name); err == nil && fi.Mode().IsRegular() && links(fi) > 1 && !d.linked[name] {
+			linked[name] = true
 			continue
 		}
 		claimed, err := d.move(".", name, processingDir)
@@ -271,6 +282,7 @@ func (d *Dir) Receive(fn func(name string, data []byte) error) error {
 			}
 		}
 	}
+	d.linked = linked // only the files this pass left
 	return errors.Join(errs...)
 }
 

@@ -49,8 +49,10 @@ import (
 
 	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/app"
+	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/directory"
 	"github.com/go-steer/supercargo/internal/ports"
 	"github.com/go-steer/supercargo/internal/prettylog"
 	"github.com/go-steer/supercargo/internal/shipper"
@@ -107,6 +109,11 @@ func check(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("check", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	path := fs.String("config", "", "node config file")
+	// The files the config names live where the node runs; a deployment
+	// checks its local copies of them here.
+	biz := fs.String("business", "", "a business context file to check, as the config's business.file")
+	book := fs.String("address-book", "", "an address book to check, as the config's addressBook.file")
+	dir := fs.String("directory", "", "a directory to check, as the config's directory.file")
 	if err := fs.Parse(args); err != nil || *path == "" || fs.NArg() != 0 {
 		return errors.New("check: --config FILE is required")
 	}
@@ -115,6 +122,23 @@ func check(args []string, stdout io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(stdout, "%s: %s (%s), roles %s, tls %s\n", *path, cfg.Domain, cfg.Name, strings.Join(cfg.Roles, "+"), cfg.TLS.Mode)
+	if *biz != "" {
+		c, err := business.Load(*biz)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "%s: %d shipments, %d notes\n", *biz, len(c.Shipments), len(c.Notes))
+	}
+	for _, f := range []string{*book, *dir} {
+		if f == "" {
+			continue
+		}
+		d, err := directory.Load(f)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "%s: %d entries, %d places\n", f, len(d.Entries()), len(d.Places()))
+	}
 	return nil
 }
 

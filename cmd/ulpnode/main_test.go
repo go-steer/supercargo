@@ -495,4 +495,31 @@ func TestCheck(t *testing.T) {
 			t.Errorf("%s: succeeded", name)
 		}
 	}
+	// The files a config names, as a deployment's local copies.
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	biz := write("business.yaml", "shipments:\n  - { shipperRef: CY-PO-1, requiredBy: 2026-11-07 }\n")
+	book := write("book.yaml", "places:\n  - id: tilburg\n    name: Tilburg\n    party: { name: Cymbal }\n    place: { type: door, un_location_code: NLTLB, address: { street: S 1, locality: Tilburg, country: NL } }\n")
+	out, err = runCmd(t, "", "check", "--config", cfg, "--business", biz, "--address-book", book, "--directory", book)
+	if err != nil || !strings.Contains(out, "1 shipments") || !strings.Contains(out, "0 entries, 1 places") {
+		t.Errorf("check with files: %q, %v", out, err)
+	}
+	badBook := write("bad-book.yaml", "places: [{ id: Bad Id }]\n")
+	badBiz := write("bad-business.yaml", "shipments: [{ shipperRef: 'a/b' }]\n")
+	for name, args := range map[string][]string{
+		"a broken address book": {"check", "--config", cfg, "--address-book", badBook},
+		"a broken directory":    {"check", "--config", cfg, "--directory", badBook},
+		"a broken business":     {"check", "--config", cfg, "--business", badBiz},
+		"a missing business":    {"check", "--config", cfg, "--business", filepath.Join(dir, "none.yaml")},
+	} {
+		if _, err := runCmd(t, "", args...); err == nil {
+			t.Errorf("%s: succeeded", name)
+		}
+	}
 }

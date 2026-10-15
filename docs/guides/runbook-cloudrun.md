@@ -1,11 +1,20 @@
 # Runbook: the demo on Cloud Run, driven from Gemini Enterprise
 
-This takes you from an empty Google Cloud project to this outcome: someone
-asks Gemini Enterprise to book a container with Cymbal Shoes' node, the
-agent drafts the booking over MCP, a person confirms it in Cymbal's
-browser UI, and Ocean Blue confirms it over ULP. Both companies run on
-Cloud Run, each at its own `run.app` address, which is its ULP domain
-(#38, #39, #42).
+This takes you from an empty Google Cloud project to two outcomes:
+
+- **The booking:** someone asks Gemini Enterprise to book a container with
+  Cymbal Shoes' node. The agent drafts the booking over MCP, a person
+  confirms it in Cymbal's browser UI, and Ocean Blue confirms it over ULP
+  (#38, #39, #42).
+- **Door to door:** Cymbal's assistant orders a container from Tilburg to
+  Cajamar from Meridian Forwarding, which books three legs. Polder
+  Haulage's truck goes over EDIFACT, Ocean Blue's ship and Serra
+  Transportes' truck over ULP. Cymbal follows one journey, and sees which
+  facts are signed.
+
+Each company runs on Cloud Run at its own `run.app` address, which is its
+ULP domain. Polder Haulage has no node: it runs beside Meridian, as the
+EDI sidecar in Meridian's service.
 
 Allow about an hour the first time. Most of it is console clicks in steps
 2 and 6.
@@ -14,19 +23,21 @@ Allow about an hour the first time. Most of it is console clicks in steps
 
 | | |
 |---|---|
-| Ocean Blue (carrier) | `https://ocean-blue-<project number>.<region>.run.app/ui/` |
+| Ocean Blue (ocean carrier) | `https://ocean-blue-<project number>.<region>.run.app/ui/` |
 | Cymbal Shoes (shipper) | `https://cymbal-shoes-<project number>.<region>.run.app/ui/` |
+| Meridian Forwarding (forwarder), with Polder Haulage (EDI) | `https://meridian-forwarding-<project number>.<region>.run.app/ui/` |
+| Serra Transportes (road carrier) | `https://serra-transportes-<project number>.<region>.run.app/ui/` |
 | Cymbal's MCP endpoint | `https://cymbal-shoes-<project number>.<region>.run.app/mcp` |
 
-- **Sign-in:** people sign in to both UIs with Google. Only the emails or
+- **Sign-in:** people sign in to every UI with Google. Only the emails or
   domains you list in `MEMBERS` get in.
 - **MCP calls:** Gemini Enterprise calls Cymbal's tools as the signed-in
   person, with that person's own Google token. Every call is in Cymbal's
   activity log with the caller's email.
 - **What an agent can do:** tools read and draft only. Nothing is sent
   until a person confirms it in the UI.
-- **Models:** both nodes use Gemini on Vertex AI through their own
-  service accounts. There are no API keys.
+- **Models:** every node uses Gemini on Vertex AI through its own
+  service account. There are no API keys.
 
 ## 0. What you need
 
@@ -45,12 +56,14 @@ gcloud config set project "$PROJECT"
 gcloud projects describe "$PROJECT" --format='value(projectNumber)'   # note it: <project number>
 ```
 
-The two nodes' addresses follow from these values, so you can write them
+The nodes' addresses follow from these values, so you can write them
 down now:
 
 ```
 OB=ocean-blue-<project number>.$REGION.run.app
 CY=cymbal-shoes-<project number>.$REGION.run.app
+MF=meridian-forwarding-<project number>.$REGION.run.app
+SR=serra-transportes-<project number>.$REGION.run.app
 ```
 
 ## 1. The OAuth consent screen
@@ -69,23 +82,25 @@ CY=cymbal-shoes-<project number>.$REGION.run.app
 
 ## 2. The OAuth client
 
-One client serves all three sign-ins: Ocean Blue's UI, Cymbal's UI, and
-Gemini Enterprise calling Cymbal's MCP. In a real deployment each company
-has its own client.
+One client serves every sign-in: the four UIs, and Gemini Enterprise
+calling Cymbal's MCP. In a real deployment each company has its own
+client.
 
 1. **Clients → Create client**, type **Web application**, name
    `supercargo`.
-2. **Authorized redirect URIs:** add all three.
+2. **Authorized redirect URIs:** add all five.
    ```
    https://ocean-blue-<project number>.<region>.run.app/ui/auth/callback
    https://cymbal-shoes-<project number>.<region>.run.app/ui/auth/callback
+   https://meridian-forwarding-<project number>.<region>.run.app/ui/auth/callback
+   https://serra-transportes-<project number>.<region>.run.app/ui/auth/callback
    https://vertexaisearch.cloud.google.com/oauth-redirect
    ```
 3. **Create**, then copy the **client ID** (`…apps.googleusercontent.com`)
    and the **client secret**. The secret goes into Secret Manager in the
    next step. Don't save it anywhere else.
 
-## 3. Deploy both nodes
+## 3. Deploy the nodes
 
 ```bash
 export GOOGLE_CLIENT_ID=123-abc.apps.googleusercontent.com
@@ -100,7 +115,13 @@ personal account, list the exact address.
 
 To see the configs without touching the project, run
 `PROJECT_NUMBER=<project number> RENDER_ONLY=/tmp/render deploy/cloudrun/deploy.sh`.
-It writes them to `/tmp/render` and checks them.
+It writes them to `/tmp/render` and checks them, Cymbal's business context
+and address book included.
+
+**Dates:** Cymbal's deadlines are set from the day you deploy (in UTC). The
+Newark stock is due in 10 days, and the Brazil launch is 23 days out.
+Re-run the script on the day of a demo, so a delay misses the launch as
+the scene expects.
 
 On its first run the script asks for the client secret (it isn't echoed)
 and stores it in Secret Manager. Here is what it does, so you know what's
@@ -108,8 +129,10 @@ in your project:
 
 - **APIs:** enables Cloud Run, Cloud Build, Artifact Registry, Secret
   Manager and Vertex AI.
-- **Service accounts:** creates `ulp-ocean-blue@…` and `ulp-cymbal-shoes@…`.
-  Each gets `roles/aiplatform.user`, and can read only its own secrets.
+- **Service accounts:** creates one per company: `ulp-ocean-blue@…`,
+  `ulp-cymbal-shoes@…`, `ulp-meridian-forwarding@…` and
+  `ulp-serra-transportes@…`. Each gets `roles/aiplatform.user`, and can
+  read only its own secrets.
   A new account takes up to a couple of minutes to be usable in IAM, so
   the script retries those bindings.
 - **Cloud Build:** grants Cloud Build's account
@@ -118,16 +141,27 @@ in your project:
   account Editor.
 - **Signing keys:** makes each company's Ed25519 signing key locally, puts
   it straight into Secret Manager (`ulp-ob-signing-key`,
-  `ulp-cy-signing-key`), and deletes the local copy. A re-run never
-  replaces a key.
-- **Configs:** renders each node's config, plus Cymbal's private business
-  context, address book and directory, into secrets (`ulp-ob-config`,
-  `ulp-cy-*`). These are mounted as files, and a re-run adds a new version
-  only when something changed.
-- **Image:** builds the node and uploads a small image (the binary and
-  Ocean Blue's agent skills) with Cloud Build. No source and no secret go
-  into it.
-- **Services:** deploys `ocean-blue` and `cymbal-shoes` with:
+  `ulp-cy-signing-key`, `ulp-mf-signing-key`, `ulp-sr-signing-key`), and
+  deletes the local copy. A re-run never replaces a key.
+- **Configs:** renders each node's config into secrets (`ulp-ob-config`,
+  `ulp-cy-config`, `ulp-mf-config`, `ulp-sr-config`). It also stores
+  Cymbal's private business context, its address book (with Meridian as
+  its forwarder, and its two doors) and its directory (`ulp-cy-*`). These
+  are mounted as files, and a re-run adds a new version only when
+  something changed.
+- **Image:** builds the node and the mock EDI carrier, and uploads a small
+  image (the two binaries and Ocean Blue's agent skills) with Cloud
+  Build. No source and no secret go into it.
+- **Meridian's EDI sidecar:** `meridian-forwarding` runs two containers.
+  One is the node; the other, `polder`, is Polder Haulage's mock EDIFACT
+  carrier. They share two in-memory volumes, the file drops, and talk only
+  through files there, as a forwarder and a trucker without a node would.
+  This is a demo arrangement, not a trust boundary: the two containers run
+  as the same user, with Meridian's service account.
+  Meridian's EDI identity is `meridian-forwarding` (`forwarder.ediId`),
+  because an EDI identity is at most 35 characters.
+- **Services:** deploys `ocean-blue`, `cymbal-shoes`,
+  `meridian-forwarding` and `serra-transportes` with:
   - exactly one instance each, with the CPU always on (the stores are in
     memory, and the voyage simulator runs between requests);
   - `--no-invoker-iam-check`, so anyone can reach them, and nobody needs
@@ -138,6 +172,8 @@ It prints the addresses when done. Then check that each node is up:
 
 ```bash
 curl -s "https://$OB/.well-known/ulp" | head -c 300; echo
+curl -s "https://$MF/.well-known/ulp" | head -c 300; echo
+curl -s "https://$SR/.well-known/ulp" | head -c 300; echo
 curl -s "https://$CY/.well-known/oauth-protected-resource/mcp"; echo
 ```
 
@@ -152,13 +188,13 @@ If `gcloud run deploy` fails on `--no-invoker-iam-check`, update gcloud
 2. In a **second tab**, open Ocean Blue's UI the same way. You land as
    Sam (Ops desk).
 
-   The presenter page, which frames both UIs side by side, doesn't work
-   on `run.app`. The two addresses are different sites, so browsers don't
+   The presenter page, which frames the UIs side by side, doesn't work
+   on `run.app`. The addresses are different sites, so browsers don't
    send the session cookies inside frames, and Google's sign-in page
-   won't load in a frame. Use two tabs.
+   won't load in a frame. Use a tab per company.
 3. In Cymbal's Assistant tab, ask *"Find a carrier from Rotterdam to
    Newark and draft a booking for one 40' container of sneakers, 12 t,
-   ready October 6."*
+   ready tomorrow."*
 4. Confirm the draft in its dialog. Ocean Blue confirms the booking, and
    the voyage starts on both sides.
 
@@ -264,6 +300,45 @@ web search instead of calling Cymbal's tools, and Cymbal's node sees no
 5. Disrupt the voyage from Ocean Blue's view. Then ask Gemini Enterprise
    *"What's the status of CY-PO-55120?"*
 
+## 8. The door-to-door scene
+
+Four tabs: Cymbal (Alex), Meridian (Mia), Ocean Blue (Sam), Serra (Rita).
+
+1. **Cymbal orders.** In Cymbal's Assistant, type *"Ask Meridian
+   Forwarding to ship one 45-footer of the Brazil launch sneakers from our
+   Tilburg warehouse to the Cajamar DC, door to door."*
+   - The assistant reads Cymbal's private context and drafts the order
+     with a deliver-by date two days before the launch.
+   - The dialog lists everything Meridian gets, and lists the launch date,
+     the receiving slot and the note as **Not sent**.
+   - Click **Send order**. Meridian takes it as pending.
+2. **Meridian books.** In Meridian's **Orders** tab, open the order, then
+   **Confirm plan & book 3 legs…**. The dialog shows what each carrier
+   gets:
+   - Polder: an EDIFACT IFTMIN, unsigned;
+   - Ocean Blue and Serra: signed bookings.
+
+   Book. The journey starts. Polder's statuses reach Cymbal marked
+   **◇ unsigned**, and Ocean Blue's events marked **✓ signed**.
+3. **The ship is late.** In Ocean Blue's Bookings, **Disrupt…** the
+   booking by 72 hours.
+   - Cymbal's banner says **misses your deadline**.
+   - Meridian's order shows a proposal to re-time Serra's truck.
+4. **Meridian's desk.** In Meridian's operator-side Assistant, ask *"What
+   should we do about MF-0007?"* (the order's reference, as the Orders tab shows it). It says what
+   happened and the options, and drafts confirming the proposal. Its
+   dialog sends the amendment to Serra.
+5. **Cymbal reacts.** On Cymbal's banner, click **✦ What can we do?**.
+   - The assistant weighs the delay against the private launch date and
+     notes, and drafts a question to Meridian.
+   - Its dialog shows the exact text, with nothing private in it.
+     **Ask** sends it, and Meridian's agent answers leg by leg, saying
+     which facts are unsigned.
+
+The journey takes about 21 simulated days: at the default
+`HOURS_PER_SECOND=1`, about 8 minutes, with the ship at sea for about 6 of
+them. Disrupt while it's at sea.
+
 ## When something fails
 
 | Symptom | Cause and fix |
@@ -276,6 +351,10 @@ web search instead of calling Cymbal's tools, and Cymbal's node sees no
 | Reload custom actions shows nothing; Cymbal's log has no `/mcp` request | The MCP Server URL is wrong, or `allowedEgressFqdns` blocks the run.app host (step 5). |
 | The assistant answers from templates | Vertex AI isn't enabled, or the model isn't available in `LLM_LOCATION`. Set `LLM_MODEL` or `LLM_LOCATION` and re-run. |
 | Nodes reject each other's messages | Read each node's log: `gcloud run services logs read cymbal-shoes --region "$REGION"`. |
+| `meridian-forwarding` doesn't start; its log says `edi: drop directory: … permission denied` | The node can't write to the in-memory volumes. The services run in the second-generation environment (`--execution-environment gen2`), which in-memory volumes need. If the error persists, mount the drops on a directory the nonroot user owns, or file an issue with the log. |
+| Meridian's booking stops at Polder's leg ("no acknowledgement") | The `polder` sidecar isn't running, or can't use the file drops. Read its log: Console → Cloud Run → meridian-forwarding → **Logs**, container `polder`. |
+| Meridian refuses to book: a leg ends after the order's date | The dates are stale: Cymbal's deadlines were set when you deployed. Re-run the script, then order again. |
+| "What can we do?" says the deadline is still met | The same: re-run the script on the day, so the 72-hour delay misses the launch. |
 
 Logs: Console → Cloud Run → the service → **Logs**, or `gcloud run
 services logs read <service> --region "$REGION"`.
@@ -283,12 +362,14 @@ services logs read <service> --region "$REGION"`.
 ## Tearing it down
 
 ```bash
-gcloud run services delete ocean-blue cymbal-shoes --region "$REGION"
-for s in ulp-ob-signing-key ulp-cy-signing-key ulp-google-client-secret ulp-ob-config ulp-cy-config \
+gcloud run services delete ocean-blue cymbal-shoes meridian-forwarding serra-transportes --region "$REGION"
+for s in ulp-ob-signing-key ulp-cy-signing-key ulp-mf-signing-key ulp-sr-signing-key ulp-google-client-secret \
+         ulp-ob-config ulp-cy-config ulp-mf-config ulp-sr-config \
          ulp-cy-business ulp-cy-address-book ulp-cy-directory; do gcloud secrets delete "$s" --quiet; done
 gcloud artifacts repositories delete supercargo --location "$REGION"
-gcloud iam service-accounts delete "ulp-ocean-blue@$PROJECT.iam.gserviceaccount.com"
-gcloud iam service-accounts delete "ulp-cymbal-shoes@$PROJECT.iam.gserviceaccount.com"
+for a in ocean-blue cymbal-shoes meridian-forwarding serra-transportes; do
+  gcloud iam service-accounts delete "ulp-$a@$PROJECT.iam.gserviceaccount.com"
+done
 ```
 
 Then delete the OAuth client and the Gemini Enterprise data store in the

@@ -194,9 +194,14 @@ are in:
   - The door-to-door UI (`docs/ui/door-to-door-mockup.html`): the
     forwarder's Orders tab (plan, confirm dialogs, legs, proposals) and
     the shipper's multi-leg journey with signed and unsigned sources.
+  - Agents in door-to-door (`docs/ui/agents-mockup.html`): the order
+    inquiry, the shipper's assistant ordering from a sentence, the
+    forwarder's desk assistant, and "What can we do?" on a delay.
+  - The demo on Cloud Run (`deploy/cloudrun`): four services, with Polder
+    Haulage as Meridian's EDI sidecar.
 
-Next: the six-company deployment (Meridian, Serra and the Polder mock on
-Cloud Run).
+Next: phase 3, the receiver (delegation, milestone 7), and the known gaps
+(an order status request, leg cancel, persistence).
 Cited cause IDs in alerts are always checked against the shipper's log
 before a model. `derived_from`'s text never reaches one: an inquiry
 model learns only whether a re-issued record's source was signed, as the
