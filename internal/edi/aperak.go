@@ -23,7 +23,10 @@ type Ack struct {
 	Accepted           bool     // BGM message function 29 (accepted) or 27 (not accepted)
 	TransportDocuments []string // documents the carrier issued (RFF+AAS), an e-CMR's number
 	Errors             []string // ERC codes, each with its FTX text if any; partner text, checked but untrusted
-	Sender, ControlRef string   // provenance: the UNB sender, and the control/message references
+	// Answers is the control reference of the interchange it answers
+	// (RFF+AGO): an instruction's, or its cancellation's. Optional.
+	Answers            string
+	Sender, ControlRef string // provenance: the UNB sender, and the control/message references
 }
 
 // Limits on an acknowledgement.
@@ -37,6 +40,7 @@ const (
 //
 //	BGM+<doc name>+<carrier ref>+<29|27>   accepted, or not accepted
 //	RFF+ACW:<reference>                    the instruction it answers
+//	RFF+AGO:<control reference>            optional: the interchange it answers (the instruction's or its cancellation's)
 //	RFF+AAS:<document number>              documents issued (at most 8)
 //	ERC+<code>  FTX+AAO+++<text>           errors (at most 20); only when not accepted
 //
@@ -55,7 +59,7 @@ func ParseAPERAK(data []byte) (Ack, error) {
 	}
 	m := ic.Messages[0]
 	ack := Ack{Sender: ic.Sender, ControlRef: controlRef(ic, m)}
-	sawBGM, sawACW, explained := false, false, false
+	sawBGM, sawACW, sawAGO, explained := false, false, false, false
 	for _, s := range m.Segments {
 		switch s.Tag {
 		case "BGM":
@@ -78,6 +82,14 @@ func ParseAPERAK(data []byte) (Ack, error) {
 					return Ack{}, contentErr("APERAK names two instructions")
 				}
 				sawACW, ack.Reference = true, v
+			case "AGO":
+				if sawAGO {
+					return Ack{}, contentErr("APERAK names two interchanges it answers")
+				}
+				if !controlPattern.MatchString(v) {
+					return Ack{}, contentErr("the interchange answered, %q (RFF+AGO), is not a control reference", v)
+				}
+				sawAGO, ack.Answers = true, v
 			case "AAS":
 				if !docPattern.MatchString(v) {
 					return Ack{}, contentErr("transport document %q is malformed", v)

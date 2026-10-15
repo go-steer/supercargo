@@ -77,12 +77,27 @@ const (
 	MaxHeld = 1000
 )
 
-// instructed is an instruction sent: to whom, what, and the answer once
-// it came.
+// instructed is an instruction sent: to whom, what, in which interchange,
+// and the answer once it came; and its cancellation, once sent.
 type instructed struct {
 	carrier     string
 	instruction edi.Instruction
+	control     string
 	ack         *edi.Ack
+	cancel      *cancelling
+}
+
+// cancelling is an instruction's cancellation sent: in which interchange,
+// and the answer once it came.
+type cancelling struct {
+	control string
+	ack     *edi.Ack
+}
+
+// cancelled reports whether the carrier accepted the instruction's
+// cancellation.
+func (in instructed) cancelled() bool {
+	return in.cancel != nil && in.cancel.ack != nil && in.cancel.ack.Accepted
 }
 
 var (
@@ -91,6 +106,13 @@ var (
 	ErrNoAck = errors.New("forwarder: no acknowledgement from the carrier yet")
 	// ErrNoPartner is a carrier the gateway has no file drop for.
 	ErrNoPartner = errors.New("forwarder: no EDI partner for the carrier")
+	// ErrCancelledLeg is an instruction its carrier accepted a cancellation
+	// of: booking the leg again is a new instruction, under a new
+	// reference.
+	ErrCancelledLeg = errors.New("forwarder: that instruction was cancelled")
+	// ErrNotTaken is a cancellation of an instruction its carrier hasn't
+	// taken: there is nothing to cancel.
+	ErrNotTaken = errors.New("forwarder: the carrier hasn't taken that instruction")
 )
 
 // Instruct sends an instruction to carrier and waits for its
@@ -102,6 +124,9 @@ func (g *Gateway) Instruct(ctx context.Context, carrier string, i edi.Instructio
 	if !ok {
 		return edi.Ack{}, fmt.Errorf("%w: %s", ErrNoPartner, carrier)
 	}
+	if i.Cancel {
+		return edi.Ack{}, errors.New("forwarder: a cancellation goes through Cancel")
+	}
 	g.mu.Lock()
 	prev, sent := g.instructed[i.Reference]
 	var control string
@@ -109,14 +134,8 @@ func (g *Gateway) Instruct(ctx context.Context, carrier string, i edi.Instructio
 		if g.instructed == nil {
 			g.instructed = map[string]instructed{}
 		}
-		if g.base == 0 {
-			// Control references stay unique across restarts: they count
-			// from the clock, not from 1.
-			g.base = g.Now().UnixMilli() % 1e13
-		}
-		g.seq++
-		control = fmt.Sprintf("G%013d", (g.base+int64(g.seq))%1e13)
-		prev = instructed{carrier: carrier, instruction: i}
+		control = g.nextControl()
+		prev = instructed{carrier: carrier, instruction: i, control: control}
 		g.instructed[i.Reference] = prev // claimed before it's written: the order's claim keeps out a second Book
 	}
 	g.mu.Unlock()
@@ -133,9 +152,76 @@ func (g *Gateway) Instruct(ctx context.Context, carrier string, i edi.Instructio
 		}
 		g.Log.Info("instruction sent", "carrier", carrier, "reference", i.Reference)
 	}
+	if sent && prev.cancelled() {
+		return edi.Ack{}, fmt.Errorf("%w: %s", ErrCancelledLeg, i.Reference)
+	}
 	if sent && (prev.carrier != carrier || !reflect.DeepEqual(prev.instruction, i)) {
 		return edi.Ack{}, fmt.Errorf("forwarder: %s was instructed already, differently (to %s): a change is a new instruction", i.Reference, prev.carrier)
 	}
+	return g.await(ctx, carrier, i.Reference, func(in instructed) *edi.Ack { return in.ack })
+}
+
+// nextControl is a fresh interchange control reference. It is called with
+// g.mu held.
+func (g *Gateway) nextControl() string {
+	if g.base == 0 {
+		// Control references stay unique across restarts: they count from
+		// the clock, not from 1.
+		g.base = g.Now().UnixMilli() % 1e13
+	}
+	g.seq++
+	return fmt.Sprintf("G%013d", (g.base+int64(g.seq))%1e13)
+}
+
+// Cancel withdraws the instruction sent to carrier under ref (an IFTMIN
+// cancellation) and waits for the answer: accepted (the leg is off) or
+// not, with the carrier's reasons. Only an instruction the carrier took
+// can be cancelled. Cancelling again sends nothing new and returns the
+// same answer once it's there.
+func (g *Gateway) Cancel(ctx context.Context, carrier, ref string) (edi.Ack, error) {
+	p, ok := g.Partners[carrier]
+	if !ok {
+		return edi.Ack{}, fmt.Errorf("%w: %s", ErrNoPartner, carrier)
+	}
+	g.mu.Lock()
+	in, ok := g.instructed[ref]
+	if !ok || in.carrier != carrier || in.ack == nil || !in.ack.Accepted {
+		g.mu.Unlock()
+		return edi.Ack{}, fmt.Errorf("%w: %s, with %s", ErrNotTaken, ref, carrier)
+	}
+	send := in.cancel == nil
+	if send {
+		in.cancel = &cancelling{control: g.nextControl()}
+		g.instructed[ref] = in
+	}
+	control := in.cancel.control
+	g.mu.Unlock()
+	if send {
+		data, err := edi.WriteIFTMIN(edi.Instruction{Reference: ref, Cancel: true}, edi.Envelope{Sender: g.Self, Recipient: p.ID, Control: control, At: g.Now(), Location: p.Zone})
+		if err == nil {
+			_, err = p.Out.Put(control, data)
+		}
+		if err != nil {
+			g.mu.Lock()
+			in := g.instructed[ref]
+			in.cancel = nil
+			g.instructed[ref] = in
+			g.mu.Unlock()
+			return edi.Ack{}, fmt.Errorf("forwarder: sending the cancellation of %s: %w", ref, err)
+		}
+		g.Log.Info("cancellation sent", "carrier", carrier, "reference", ref)
+	}
+	return g.await(ctx, carrier, ref, func(in instructed) *edi.Ack {
+		if in.cancel == nil {
+			return nil
+		}
+		return in.cancel.ack
+	})
+}
+
+// await takes replies until pick finds the answer it waits for in ref's
+// record, or AckTimeout passes.
+func (g *Gateway) await(ctx context.Context, carrier, ref string, pick func(instructed) *edi.Ack) (edi.Ack, error) {
 	timeout, every := g.AckTimeout, g.PollEvery
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -147,13 +233,13 @@ func (g *Gateway) Instruct(ctx context.Context, carrier string, i edi.Instructio
 	for {
 		g.Step()
 		g.mu.Lock()
-		got := g.instructed[i.Reference].ack
+		got := pick(g.instructed[ref])
 		g.mu.Unlock()
 		if got != nil {
 			return *got, nil
 		}
 		if time.Now().After(deadline) {
-			return edi.Ack{}, fmt.Errorf("%w: %s, from %s", ErrNoAck, i.Reference, carrier)
+			return edi.Ack{}, fmt.Errorf("%w: %s, from %s", ErrNoAck, ref, carrier)
 		}
 		select {
 		case <-ctx.Done():
@@ -171,6 +257,14 @@ func (g *Gateway) Instructed(ref string) (edi.Instruction, *edi.Ack, bool) {
 	defer g.mu.Unlock()
 	in, ok := g.instructed[ref]
 	return in.instruction, in.ack, ok
+}
+
+// Withdrawn reports whether the carrier accepted the cancellation of the
+// instruction sent under ref.
+func (g *Gateway) Withdrawn(ref string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.instructed[ref].cancelled()
 }
 
 // Step takes the replies that arrived from each partner. A reply that
@@ -223,9 +317,24 @@ func (g *Gateway) ack(carrier string, p *EDIPartner, data []byte) error {
 	if !ok || in.carrier != carrier {
 		return fmt.Errorf("forwarder: an APERAK for %s, which %s wasn't instructed with", a.Reference, carrier)
 	}
-	if in.ack == nil {
-		in.ack = &a
-		g.instructed[a.Reference] = in
+	switch {
+	case a.Answers != "" && in.cancel != nil && a.Answers == in.cancel.control:
+		if in.cancel.ack == nil {
+			in.cancel.ack = &a
+		}
+	case a.Answers == "" && in.ack != nil && in.cancel != nil && in.cancel.ack == nil:
+		// Most likely the cancellation's, from a partner that doesn't say
+		// what it answers: not taken as such, but a person sees it.
+		return fmt.Errorf("forwarder: an APERAK for %s that doesn't say whether it answers the cancellation (no RFF+AGO)", a.Reference)
+	case a.Answers == "" || a.Answers == in.control:
+		// Without RFF+AGO, an answer is the instruction's: a cancellation's
+		// must say it answers the cancellation.
+		if in.ack == nil {
+			in.ack = &a
+			g.instructed[a.Reference] = in
+		}
+	default:
+		return fmt.Errorf("forwarder: an APERAK for %s answering %q, which we didn't send", a.Reference, a.Answers)
 	}
 	return nil
 }
@@ -244,6 +353,10 @@ func (g *Gateway) statuses(carrier string, p *EDIPartner, data []byte) error {
 		if s.Sender != p.ID || !ok || in.carrier != carrier || in.ack == nil || !in.ack.Accepted {
 			g.mu.Unlock()
 			return fmt.Errorf("forwarder: a status from %q for %s, which %s hasn't taken", s.Sender, s.Reference, carrier)
+		}
+		if in.cancelled() {
+			g.mu.Unlock()
+			return fmt.Errorf("forwarder: a status from %q for %s, which %s cancelled", s.Sender, s.Reference, carrier)
 		}
 	}
 	g.mu.Unlock()
@@ -280,6 +393,13 @@ func (g *Gateway) retryHeld() {
 	g.mu.Unlock()
 	var keep []heldStatus
 	for _, h := range held {
+		g.mu.Lock()
+		withdrawn := g.instructed[h.status.Reference].cancelled()
+		g.mu.Unlock()
+		if withdrawn {
+			g.Log.Warn("edi status dropped: its leg was cancelled", "carrier", h.carrier, "reference", h.status.Reference)
+			continue
+		}
 		err := g.Status(h.carrier, h.status)
 		switch {
 		case errors.Is(err, ErrNoLeg) && g.Now().Sub(h.since) < HoldFor:

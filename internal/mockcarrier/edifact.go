@@ -35,7 +35,9 @@ import (
 // an e-CMR number), then reports the trip as statuses (IFTSTA) on an
 // accelerated clock: picked up at the pickup window's start, departed,
 // gated in at the delivery place, delivered. It sends the same
-// acknowledgement again for an instruction it already took.
+// acknowledgement again for an instruction it already took. A
+// cancellation is accepted until the truck has picked up (and again once
+// accepted), and refused after (error UWY, under way).
 type EDIFACT struct {
 	ID      string   // its own UNB identity, e.g. polder-haulage.example
 	Partner string   // the forwarder's, whose instructions it takes
@@ -58,9 +60,10 @@ type EDIFACT struct {
 	anchor time.Time
 	Log    *slog.Logger
 
-	seq   int
-	acked map[string]taken // by instruction reference
-	trips []*trip
+	seq       int
+	acked     map[string]taken // by instruction reference
+	cancelled map[string]bool  // instructions withdrawn, by reference
+	trips     []*trip
 }
 
 // taken is an instruction acknowledged, and what it said.
@@ -74,9 +77,15 @@ const MaxTaken = 10_000
 
 // trip is one instruction's statuses still to send, on its own clock.
 type trip struct {
+	ref                 string // the instruction's reference
 	realStart, simStart time.Time
 	statuses            []edi.Status
+	begun               bool // a status was sent: the truck picked up
 }
+
+// UnderWay is the error code of a cancellation refused because the truck
+// has picked up.
+const UnderWay = "UWY"
 
 // Step takes the instructions that arrived and sends the replies and
 // statuses due. Run calls it on a ticker; tests call it directly.
@@ -91,7 +100,8 @@ func (c *EDIFACT) Step() error {
 		c.Log = slog.New(slog.DiscardHandler)
 	}
 	err := c.In.Receive(func(name string, data []byte) error {
-		if err := c.addressed(data); err != nil {
+		control, err := c.addressed(data)
+		if err != nil {
 			return err // to failed/: a person looks at it
 		}
 		i, sender, err := edi.ParseIFTMIN(data, c.Zone)
@@ -101,12 +111,16 @@ func (c *EDIFACT) Step() error {
 		if sender != c.Partner {
 			return fmt.Errorf("mockcarrier: an instruction from %q, not %q", sender, c.Partner)
 		}
+		if i.Cancel {
+			return c.cancel(i.Reference, control)
+		}
 		if prev, ok := c.acked[i.Reference]; ok {
 			ack := prev.ack
+			ack.Answers = control // the same answer, to this interchange
 			if !reflect.DeepEqual(prev.instruction, i) {
 				// The same reference for a different trip: not taken. A
 				// change is a new instruction, under a new reference.
-				ack = edi.Ack{Reference: i.Reference, CarrierRef: prev.ack.CarrierRef, Errors: []string{"DUP"}}
+				ack = edi.Ack{Reference: i.Reference, CarrierRef: prev.ack.CarrierRef, Errors: []string{"DUP"}, Answers: control}
 			}
 			return c.send("APERAK", func(env edi.Envelope) ([]byte, error) { return edi.WriteAPERAK(ack, env) })
 		}
@@ -114,7 +128,7 @@ func (c *EDIFACT) Step() error {
 			return fmt.Errorf("mockcarrier: %d instructions taken; no more", MaxTaken)
 		}
 		c.seq++
-		ack := edi.Ack{Reference: i.Reference, CarrierRef: fmt.Sprintf("PH%04d", 4470+c.seq), Accepted: true}
+		ack := edi.Ack{Reference: i.Reference, CarrierRef: fmt.Sprintf("PH%04d", 4470+c.seq), Accepted: true, Answers: control}
 		if c.ECMRPrefix != "" {
 			ack.TransportDocuments = []string{fmt.Sprintf("%s-%06d", c.ECMRPrefix, 4470+c.seq)}
 		}
@@ -130,6 +144,40 @@ func (c *EDIFACT) Step() error {
 		c.Log.Warn("instructions", "error", err)
 	}
 	return c.report()
+}
+
+// cancel answers a cancellation of the instruction under ref, sent in
+// interchange control: accepted if its truck hasn't picked up (its trip
+// ends), or if it was cancelled already; refused once under way.
+func (c *EDIFACT) cancel(ref, control string) error {
+	prev, ok := c.acked[ref]
+	if !ok {
+		return fmt.Errorf("mockcarrier: a cancellation of %s, which we never took", ref)
+	}
+	if c.cancelled == nil {
+		c.cancelled = map[string]bool{}
+	}
+	ack := edi.Ack{Reference: ref, CarrierRef: prev.ack.CarrierRef, Answers: control, Accepted: c.cancelled[ref]}
+	if !ack.Accepted {
+		ack.Errors = []string{UnderWay}
+		for n, t := range c.trips {
+			if t.ref == ref && !t.begun {
+				c.trips = append(c.trips[:n], c.trips[n+1:]...)
+				ack.Accepted, ack.Errors = true, nil
+				c.cancelled[ref] = true // off, whether or not this answer gets out
+				break
+			}
+		}
+	}
+	if err := c.send("APERAK", func(env edi.Envelope) ([]byte, error) { return edi.WriteAPERAK(ack, env) }); err != nil {
+		return err
+	}
+	if ack.Accepted {
+		c.Log.Info("instruction cancelled", "reference", ref)
+	} else {
+		c.Log.Info("cancellation refused: under way", "reference", ref)
+	}
+	return nil
 }
 
 // plan schedules a trip's statuses.
@@ -165,7 +213,7 @@ func (c *EDIFACT) plan(i edi.Instruction, ack edi.Ack) *trip {
 		}
 		start, simStart = c.anchor, c.anchor
 	}
-	return &trip{realStart: start, simStart: simStart, statuses: []edi.Status{
+	return &trip{ref: i.Reference, realStart: start, simStart: simStart, statuses: []edi.Status{
 		st("12", pickup, i.Pickup),                        // picked up
 		st("13", pickup.Add(15*time.Minute), i.Pickup),    // departed
 		st("54", arrival, i.Delivery),                     // gated in
@@ -189,7 +237,7 @@ func (c *EDIFACT) report() error {
 			if err := c.send("IFTSTA", func(env edi.Envelope) ([]byte, error) { return edi.WriteIFTSTA([]edi.Status{s}, env) }); err != nil {
 				return err
 			}
-			t.statuses = t.statuses[1:]
+			t.statuses, t.begun = t.statuses[1:], true
 			c.Log.Info("status sent", "reference", s.Reference, "code", s.Code)
 		}
 		if len(t.statuses) > 0 {
@@ -231,14 +279,15 @@ func (c *EDIFACT) Run(ctx context.Context, tick time.Duration) error {
 	}
 }
 
-// addressed refuses an interchange addressed to anyone but this carrier.
-func (c *EDIFACT) addressed(data []byte) error {
+// addressed refuses an interchange addressed to anyone but this carrier,
+// and returns its control reference.
+func (c *EDIFACT) addressed(data []byte) (string, error) {
 	ic, err := edi.Parse(data)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if ic.Recipient != c.ID {
-		return fmt.Errorf("mockcarrier: an instruction for %q, not us (%q)", ic.Recipient, c.ID)
+		return "", fmt.Errorf("mockcarrier: an instruction for %q, not us (%q)", ic.Recipient, c.ID)
 	}
-	return nil
+	return ic.Control, nil
 }

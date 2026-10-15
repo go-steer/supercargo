@@ -347,14 +347,15 @@ func (o *Orchestrator) bookEDI(ctx context.Context, b store.Booking, i int, s St
 		CargoDescription: clip(req.Cargo.Description, 70), HSCode: req.Cargo.HSCode}
 	// A retried booking: the instruction already sent goes again, so the
 	// carrier sees one instruction, not two (its pickup time was the ready
-	// time then). One the carrier refused is sent anew under the next
-	// attempt's reference, MF-0007-L1-2.
+	// time then). One the carrier refused, or whose cancellation it
+	// accepted, is sent anew under the next attempt's reference,
+	// MF-0007-L1-2.
 	for attempt := 2; ; attempt++ {
 		sent, ack, ok := o.EDI.Instructed(instruction.Reference)
 		if !ok {
 			break
 		}
-		if ack == nil || ack.Accepted {
+		if ack == nil || ack.Accepted && !o.EDI.Withdrawn(instruction.Reference) {
 			instruction = sent
 			break
 		}

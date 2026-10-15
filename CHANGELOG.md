@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- Cancelling an EDI leg (`forwarder.Gateway.Cancel`): an IFTMIN cancellation (BGM message function 1), answered by APERAK. Each APERAK now names the interchange it answers (RFF+AGO), so a cancellation's answer is never mistaken for the instruction's. Statuses for a cancelled leg are refused. The mock carrier (`ulpmock edifact`) accepts a cancellation until its truck has picked up, and refuses after (`UWY`).
+
 - Booking cancellation, a protocol addition: `ulp.booking.cancellation` and `.cancellation.response`, ULP's own, with one intent for any mode. The shipper of an ocean booking or a truck leg withdraws it, without saying why, and the carrier answers `cancelled` or `refused`.
   - **When it's refused:** once the cargo has moved, meaning the carrier has recorded an actual event or its simulator has begun the shipment.
   - **Asking again:** a booking already cancelled answers `cancelled` again, so a lost reply is resent.
