@@ -297,7 +297,7 @@ func (r *recordingPublisher) list() []store.Booking {
 // so: when the booking has no subscription for the intent, and when the
 // subscriber's queue is full.
 func TestBackendEventNotQueued(t *testing.T) {
-	f := &fakePusher{}
+	f := &fakePusher{entered: make(chan struct{}, 8)}
 	p := publisher(f, &drops{})
 	p.QueueLen, p.MaxWorkers = 1, 1
 	f.block = make(chan struct{})
@@ -315,9 +315,16 @@ func TestBackendEventNotQueued(t *testing.T) {
 		t.Errorf("an unsubscribed alert: %d %+v, want 200 not queued", code, resp)
 	}
 	// Fill the queue (one in flight, one waiting), then one more: recorded,
-	// not queued.
-	waitFor(t, func() bool { return true })
-	_, _ = postEvent(t, mux, `{"bookingRef":"OB-BKG-1","intent":"ulp.tnt.event","body":`+eventJSON(t, "EV-2")+`}`)
+	// not queued. The worker must hold EV-1 first, or EV-1 still fills the
+	// queue and EV-3 finds room once the worker takes it.
+	select {
+	case <-f.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the worker never took EV-1")
+	}
+	if code, resp := postEvent(t, mux, `{"bookingRef":"OB-BKG-1","intent":"ulp.tnt.event","body":`+eventJSON(t, "EV-2")+`}`); code != http.StatusOK || !resp.Queued {
+		t.Fatalf("EV-2, waiting behind EV-1: %d %+v", code, resp)
+	}
 	code, resp := postEvent(t, mux, `{"bookingRef":"OB-BKG-1","intent":"ulp.tnt.event","body":`+eventJSON(t, "EV-3")+`}`)
 	if code != http.StatusOK || resp.Queued || resp.ID != "EV-3" {
 		t.Errorf("a full queue: %d %+v, want 200 not queued", code, resp)
