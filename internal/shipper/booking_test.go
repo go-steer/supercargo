@@ -81,6 +81,9 @@ func shipperWith(t *testing.T, answer func(req envelope.Header) (string, any), o
 			if c, ok := body.(*intents.ForwardingConfirmationBody); ok {
 				h.BookingRef = &c.OrderRef
 			}
+			if c, ok := body.(*intents.ForwardingStatusResponseBody); ok && c.OrderRef != "" {
+				h.BookingRef = &c.OrderRef
+			}
 			b, _ := json.Marshal(body)
 			return envelope.Seal(&envelope.Envelope{Header: h, Body: b}, "ob-1", obSigner)
 		}),

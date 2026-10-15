@@ -354,7 +354,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 // the business context's guard checks, and what puts a conversation on the
 // customer side.
 var customerSends = map[string]bool{intents.BookingRequest: true, intents.TnTInquiry: true, intents.OceanTnTRequest: true,
-	intents.RoadBookingRequest: true, intents.RoadBookingAmendment: true, intents.ForwardingRequest: true}
+	intents.RoadBookingRequest: true, intents.RoadBookingAmendment: true, intents.ForwardingRequest: true, intents.ForwardingStatusRequest: true}
 
 // customerGuard applies the business context's guard to what the customer
 // side sends, and only that. Applied to a carrier role's replies, which
@@ -710,6 +710,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 			OnAnswer: func(b store.Booking) { a.orderEntry(b, "answered") },
 		}
 		handlers[intents.ForwardingRequest] = a.Orders
+		handlers[intents.ForwardingStatusRequest] = &forwarder.Status{Orders: a.Orders, Log: a.Carrier.Events}
 	}
 	if o == nil {
 		return nil // a forwarder only: it carries nothing itself

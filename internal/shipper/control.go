@@ -49,6 +49,19 @@ type OrderRequest struct {
 	Order     intents.ForwardingRequestBody `json:"order"`
 }
 
+// OrderStatusRequest is the body of the control API's POST /orders/status:
+// the order under our own reference, with its forwarder.
+type OrderStatusRequest struct {
+	Forwarder  string `json:"forwarder"`
+	ShipperRef string `json:"shipperRef"`
+}
+
+// OrderStatusResponse is its answer, or why there is none.
+type OrderStatusResponse struct {
+	*OrderStatus
+	Error string `json:"error,omitempty"`
+}
+
 // OrderResponse is its answer: the forwarder's (pending, confirmed or
 // rejected), or why there is none.
 type OrderResponse struct {
@@ -146,6 +159,32 @@ func RegisterControl(mux *http.ServeMux, s *Shipper, profiles rest.Profiles) {
 			return
 		}
 		control.Answer(w, http.StatusOK, BookResponse{Confirmation: conf})
+	})
+	// Where an order stands, as its forwarder says; an order whose first
+	// answer was lost is taken up (OrderStatus).
+	mux.HandleFunc("POST /orders/status", func(w http.ResponseWriter, r *http.Request) {
+		var req OrderStatusRequest
+		if err := control.Decode(r, &req); err != nil {
+			control.Answer(w, http.StatusBadRequest, OrderStatusResponse{Error: err.Error()})
+			return
+		}
+		if !envelope.ValidDomain(req.Forwarder) || req.Forwarder == s.Node.Domain() {
+			control.Answer(w, http.StatusBadRequest, OrderStatusResponse{Error: "forwarder must be another party's lowercase domain"})
+			return
+		}
+		if err := (&intents.ForwardingStatusRequestBody{ShipperRef: req.ShipperRef}).Validate(); err != nil {
+			control.Answer(w, http.StatusBadRequest, OrderStatusResponse{Error: err.Error()})
+			return
+		}
+		st, err := s.OrderStatus(r.Context(), req.Forwarder, req.ShipperRef)
+		switch {
+		case errors.Is(err, business.ErrLeak):
+			control.Answer(w, http.StatusUnprocessableEntity, OrderStatusResponse{Error: leakMessage})
+		case err != nil:
+			control.Answer(w, http.StatusBadGateway, OrderStatusResponse{Error: err.Error()})
+		default:
+			control.Answer(w, http.StatusOK, OrderStatusResponse{OrderStatus: st})
+		}
 	})
 	mux.HandleFunc("POST /orders", func(w http.ResponseWriter, r *http.Request) {
 		var req OrderRequest

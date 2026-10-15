@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/go-steer/supercargo/internal/node"
@@ -39,6 +40,10 @@ type Shipper struct {
 	// NoBooking is a receiver without the shipper role: it follows others'
 	// bookings and asks about them, and Book refuses.
 	NoBooking bool
+
+	mu        sync.Mutex
+	sent      map[string]sentOrder // orders sent, awaiting a recorded first answer
+	sentOrder []string             // sent's keys, oldest first
 }
 
 // ErrNoShipperRole is a booking on a node without the shipper role.
