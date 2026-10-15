@@ -90,6 +90,9 @@ type Assistant struct {
 	// Places are the company's doors and ports from its address book,
 	// which an order goes between (draft_order).
 	Places []directory.Place
+	// Desk, on a forwarder, is its orders, for the operator side's
+	// assistant (list_orders, get_order, draft_proposal).
+	Desk Desk
 	// Carrier, if set, makes this the carrier's assistant (the operator
 	// role's): its tools read the carrier's bookings and draft
 	// disruptions, which a person confirms; Node and the partner fields
@@ -406,6 +409,9 @@ func (a *Assistant) system() string {
 		prompt = carrierPrompt
 	}
 	s := fmt.Sprintf(prompt, name, a.Self.Domain, a.now().UTC().Format(time.DateOnly))
+	if a.Carrier != nil && a.Desk != nil {
+		s += deskPrompt
+	}
 	if len(a.Skills) == 0 {
 		return s
 	}

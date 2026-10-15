@@ -133,6 +133,9 @@ Rules:
 // tools are this assistant's tools: the carrier's or the shipper's.
 func (a *Assistant) tools() []llm.Tool {
 	if a.Carrier != nil {
+		if a.Desk != nil {
+			return append(slices.Clone(CarrierTools), DeskTools...)
+		}
 		return CarrierTools
 	}
 	// The company's own assistant reads its private context, and orders
@@ -190,6 +193,11 @@ func (a *Assistant) runCarrier(ctx context.Context, call llm.ToolCall) (any, err
 		if err != nil {
 			return nil, err
 		}
+		// An order's records are its legs' carriers' events, re-issued with
+		// their own words: get_order tells its story without them.
+		if r.Summary != nil && r.Summary.Kind == store.KindOrder {
+			return nil, refuse("%s is a door-to-door order: use get_order", in.BookingRef)
+		}
 		if len(r.Records) > maxRecords {
 			r.Records = r.Records[len(r.Records)-maxRecords:]
 		}
@@ -197,6 +205,10 @@ func (a *Assistant) runCarrier(ctx context.Context, call llm.ToolCall) (any, err
 		return r, nil
 	case ToolDraftDisruption:
 		return a.draftDisruption(ctx, call.Input)
+	case ToolListOrders, ToolGetOrder, ToolDraftProposal:
+		if a.Desk != nil {
+			return a.runDesk(ctx, call)
+		}
 	}
 	return nil, fmt.Errorf("%w: %s", llm.ErrUnknownTool, call.Name)
 }

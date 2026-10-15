@@ -58,8 +58,12 @@ func carrierStep(msgs []llm.Message, user string, done []step) llm.GenerateRespo
 	}
 	ref := refPattern.FindString(user)
 	switch {
+	case strings.HasPrefix(user, notePrefix) && strings.Contains(user, `"proposal"`):
+		return proposalReport(resultOf(user))
 	case strings.HasPrefix(user, notePrefix):
-		return disruptionReport(block(user, "result"))
+		return disruptionReport(resultOf(user))
+	case ref != "" && advicePattern.MatchString(user):
+		return deskStep(id, ref, done)
 	case delayWord.MatchString(user) && (ref != "" || voyagePattern.MatchString(user)):
 		if last != nil {
 			return disruptionDraftReply(last.result.Content)

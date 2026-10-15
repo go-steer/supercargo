@@ -28,6 +28,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/go-steer/supercargo/internal/forwarder"
 	"github.com/go-steer/supercargo/internal/operator"
 	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -42,6 +43,10 @@ type Sent struct {
 	// Ordered is the forwarder's answer to a door-to-door order (pending,
 	// at first: the plan follows).
 	Ordered *intents.ForwardingConfirmationBody
+	// Proposed is a confirmed proposal as the forwarder holds it after
+	// the send: confirmed (the carrier took the amendment), refused, or
+	// failed.
+	Proposed *forwarder.Proposal
 }
 
 // ErrOutcomeUnknown reports a send that may or may not have reached the
@@ -76,6 +81,9 @@ func (a *Assistant) Send(ctx context.Context, id string) (sent *Sent, err error)
 	}
 	if d.Order != nil {
 		return a.sendOrder(ctx, d)
+	}
+	if d.Proposal != nil {
+		return a.sendProposal(ctx, d)
 	}
 	if a.Node == nil {
 		a.Drafts.Put(d)
@@ -148,6 +156,10 @@ func (a *Assistant) Report(ctx context.Context, c *Conversation, s *Sent) (Reply
 		note = notePrefix + "The user confirmed delay " + s.Draft.ID + " in the dialog, and our node published it. " +
 			"The outcome is below: tell the user which bookings got their signed alert and the new ETAs, in a sentence or two. " +
 			"Name any booking that got no alert; one marked applied was delayed anyway, so say not to publish the delay again.\n"
+	} else if p := s.Proposed; p != nil {
+		result, err = json.Marshal(map[string]any{"draftId": s.Draft.ID, "proposal": p.ID, "order": p.OrderRef, "leg": p.Leg, "status": p.Status})
+		note = notePrefix + "The user confirmed proposal " + p.ID + " (draft " + s.Draft.ID + ") in the dialog, and our node sent the amendment, signed. " +
+			"The outcome is below: tell the user in a sentence whether the carrier took the new plan (confirmed), kept its own (refused), or it failed.\n"
 	} else if s.Ordered != nil {
 		// The answer's facts, not its messages: the forwarder's free text.
 		result, err = json.Marshal(map[string]any{"draftId": s.Draft.ID, "forwarder": s.Draft.Order.Forwarder, "answer": map[string]string{

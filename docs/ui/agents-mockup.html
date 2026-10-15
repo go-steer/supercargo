@@ -214,14 +214,14 @@ main { flex: 1; display: grid; grid-template-columns: minmax(420px, 1.1fr) minma
         <div class="turn you"><div class="who">YOU · 14:05</div><div>What should we do about MF-0007?</div></div>
         <div class="turn ai"><div class="who">ASSISTANT · 14:05</div>
           <div class="toolcall">▸ get_order <span class="dim">MF-0007</span> <span class="okk">✓</span></div>
-          <div class="toolcall">▸ find_partners <span class="dim">ROAD BRSSZ → BRSAO</span> <span class="okk">✓</span></div>
+          <div class="toolcall">▸ draft_proposal <span class="dim">MF-0007, MF-PR-000008</span> <span class="okk">✓</span></div>
           <div class="md"><p><b>Ocean Blue's ship is 72 h late</b> (its signed alert AL-000006: engine repair at Las Palmas); it now reaches Santos Wed, Nov 4 14:00. Serra's truck is booked to collect Mon, Nov 2: before the container is there.</p>
             <p>Cymbal already has our delay alert (MF-AL-000010): delivery Sat, Nov 7, still well before the order's date (Mon, Dec 14).</p></div>
-          <div class="option rec"><div class="h">1 · Re-time Serra's truck <span class="tag ulp">PROPOSAL MF-PR-000011</span></div>
+          <div class="option rec"><div class="h">1 · Re-time Serra's truck <span class="tag ulp">PROPOSAL MF-PR-000008</span></div>
             <div class="dim">Collect Thu, Nov 5 20:00 (30 h after the ship, for discharge and release), deliver Sat, Nov 7 02:00. Serra keeps the leg; no new partner.</div>
-            <button class="primary draftlink">Review proposal MF-PR-000011…</button></div>
-          <div class="option"><div class="h">2 · Another trucker from Santos</div>
-            <div class="dim">The directory has <b>TransVale Logística</b> (transvale.example, verified) on BRSSZ → BRSAO. Never booked with; we'd still hold Serra's booking, which ULP can't cancel yet. Not worth it for a delay the date absorbs.</div></div>
+            <button class="primary draftlink">Review draft PD-0001…</button></div>
+          <div class="option"><div class="h">2 · Leave leg 3 as booked</div>
+            <div class="dim">The truck would arrive before the cargo is there. Changing carrier means a second booking: ULP can't cancel a leg yet.</div></div>
           <div class="md"><p>I'd confirm 1. If Cymbal asks, the delay is Ocean Blue's signed alert; Polder's leg was unaffected (its statuses are EDI, unsigned, all on time).</p></div></div>
       </div>
       <div class="composer"><textarea>Ask about orders, legs and proposals…</textarea><button>Send</button></div>

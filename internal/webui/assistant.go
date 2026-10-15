@@ -395,6 +395,9 @@ func (s *server) assistantSend(w http.ResponseWriter, r *http.Request, _ Persona
 			if strings.HasPrefix(req.DraftID, "DD-") {
 				_ = c.conv.Note("Publishing delay " + req.DraftID + " failed with an unknown outcome: it may have been published. " +
 					"The draft is gone; tell the user to check the bookings, and not to publish the same delay again, which would delay them twice.")
+			} else if strings.HasPrefix(req.DraftID, "PD-") {
+				_ = c.conv.Note("Confirming " + req.DraftID + " failed with an unknown outcome: the amendment may have reached the carrier. " +
+					"The draft is gone; tell the user to check the order's proposals before confirming again.")
 			} else if strings.HasPrefix(req.DraftID, "OD-") {
 				_ = c.conv.Note("Sending order " + req.DraftID + " failed with an unknown outcome: it may have reached the forwarder. " +
 					"The draft is gone; tell the user to check the shipments before ordering again.")
@@ -509,6 +512,9 @@ func sentOutcome(sent *assistant.Sent) string {
 			out += " " + strings.Join(failed, "; ") + "."
 		}
 		return out
+	}
+	if p := sent.Proposed; p != nil {
+		return "Confirmed proposal " + p.ID + " (" + id + "): the amendment went to " + p.Carrier + ", signed. Outcome: " + p.Status + "."
 	}
 	if o := sent.Ordered; o != nil {
 		return strings.TrimSpace("Sent order " + id + " to " + sent.Draft.Order.Forwarder + ", signed. Answer: " + o.Status + " " + o.OrderRef)

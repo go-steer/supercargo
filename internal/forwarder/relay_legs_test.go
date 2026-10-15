@@ -15,6 +15,7 @@
 package forwarder
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -62,5 +63,27 @@ func TestRelayLegOf(t *testing.T) {
 	}
 	if _, ok := r.LegOf("MF-EV-999999"); ok {
 		t.Error("a leg for a record the relay never re-issued")
+	}
+}
+
+// TestRelayNoProposalForEDI: a ship's delay that moves a truck booked
+// over EDI makes the order's alert, saying the truck is to be re-timed
+// with its carrier, and no proposal: there's no node to amend.
+func TestRelayNoProposalForEDI(t *testing.T) {
+	r, pub, _ := relayed(t)
+	_, _ = r.Orders.Bookings.Update(meridian, "MF-0007", func(b *store.Booking) error {
+		b.Order.Legs[1].Unsigned = true
+		return nil
+	})
+	_ = r.Event(shipLeg, event("EV-1", "est"))
+	if err := r.Alert(shipLeg, delay("AL-1", "EV-1", "2026-10-23T14:00:00Z", "2026-10-26T14:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	if ps := r.Proposals("MF-0007"); len(ps) != 0 {
+		t.Errorf("proposals for an EDI leg: %+v", ps)
+	}
+	a, ok := pub.bodies[len(pub.bodies)-1].(*intents.TnTAlertBody)
+	if !ok || a.Kind != intents.AlertDelay || !strings.Contains(a.Summary, "booked over EDI") {
+		t.Errorf("alert %+v", pub.bodies[len(pub.bodies)-1])
 	}
 }

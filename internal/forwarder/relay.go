@@ -397,6 +397,13 @@ func (r *Relay) Alert(leg store.Booking, a *intents.TnTAlertBody) error {
 		// Otherwise the last truck keeps the order's deadline as it is.
 		proposal = &Proposal{OrderRef: order.Ref, Leg: i + 2, Carrier: next.Carrier, LegRef: next.Ref, Status: ProposalOpen,
 			Amendment: amendment, Why: clip(why, 280)}
+		if next.Unsigned {
+			// A truck booked over EDI has no node to amend over ULP: the
+			// alert says so, and a person takes it up with the carrier.
+			proposal = nil
+			out.Summary = clip(fmt.Sprintf("Leg %d (%s) is delayed; the delivery moves by %s, and leg %d (booked over EDI) is to be re-timed with its carrier.",
+				i+1, l.Name, hours(shift), i+2), 280)
+		}
 	}
 	out.AlertID = r.nextID("AL")
 	if err := r.Publish.Publish(order, out); err != nil {

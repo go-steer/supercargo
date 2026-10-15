@@ -333,6 +333,8 @@ type DraftResult struct {
 	Request *intents.BookingRequestBody `json:"request,omitempty"` // a booking's
 	// Order is a door-to-door order's, to the forwarder To.
 	Order *intents.ForwardingRequestBody `json:"order,omitempty"`
+	// Proposal is a forwarder's confirmation of a delay's proposal.
+	Proposal *ProposalDraft `json:"proposal,omitempty"`
 	// Disruption is a carrier's drafted delay, instead of a booking.
 	Disruption *Disruption `json:"disruption,omitempty"`
 	// NotSent is the private part of the draft, which stays here.
@@ -420,6 +422,11 @@ func (d Draft) Result() DraftResult {
 		dis.Bookings = slices.Clone(dis.Bookings)
 		return DraftResult{DraftID: d.ID, Disruption: &dis,
 			Next: "Nothing has been published. Tell the user the delay is ready for them to review and confirm; only they can publish it."}
+	}
+	if p := d.Proposal; p != nil {
+		pd := *p
+		return DraftResult{DraftID: d.ID, To: p.Carrier, Proposal: &pd,
+			Next: "Nothing has been sent. Tell the user the proposal's confirmation is ready for them to review; only they can send the amendment."}
 	}
 	if o := d.Order; o != nil {
 		req := o.Request
