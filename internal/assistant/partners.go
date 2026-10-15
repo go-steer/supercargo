@@ -79,6 +79,21 @@ func (a *Assistant) listPartners(ctx context.Context, c *Conversation, input jso
 		}
 	}
 	out := map[string]any{"addressBook": book}
+	if in.Role == "" && len(a.Places) > 0 {
+		// Our doors and ports, for an order: by ID, with what's there.
+		type place struct {
+			ID       string `json:"id"`
+			Name     string `json:"name"`
+			Type     string `json:"type"`
+			UNLocode string `json:"unLocode"`
+			Party    string `json:"party"`
+		}
+		places := make([]place, len(a.Places))
+		for i, p := range a.Places {
+			places[i] = place{p.ID, p.Name, p.Place.Type, p.Place.UNLocationCode, p.Party.Name}
+		}
+		out["ourPlaces"] = places
+	}
 	if in.Role == "" || in.Role == directory.RoleCarrier {
 		// The carriers we've booked with, from our own records.
 		s, err := a.Node.Shipments(ctx)

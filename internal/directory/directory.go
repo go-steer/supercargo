@@ -52,6 +52,8 @@ const (
 	RoleCarrier   = "carrier"
 	RoleShipper   = "shipper"
 	RoleConsignee = "consignee"
+	// RoleForwarder takes door-to-door orders and books their legs.
+	RoleForwarder = "forwarder"
 )
 
 // Limits.
@@ -107,6 +109,7 @@ type Directory interface {
 // static directory for local runs and tests.
 type File struct {
 	entries []Entry
+	places  []Place
 }
 
 // Entries are the file's entries, in the file's order.
@@ -171,6 +174,8 @@ func Parse(data []byte) (*File, error) {
 	dec.KnownFields(true)
 	var doc struct {
 		Entries []Entry `yaml:"entries"`
+		// Places are an address book's doors and ports (Place).
+		Places []map[string]any `yaml:"places"`
 	}
 	if err := dec.Decode(&doc); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("directory: %w", err)
@@ -193,7 +198,11 @@ func Parse(data []byte) (*File, error) {
 		}
 		seen[e.Domain] = true
 	}
-	return &File{entries: doc.Entries}, nil
+	places, err := parsePlaces(doc.Places)
+	if err != nil {
+		return nil, fmt.Errorf("directory: %w", err)
+	}
+	return &File{entries: doc.Entries, places: places}, nil
 }
 
 var unLocode = regexp.MustCompile(`^[A-Z]{2}[A-Z2-9]{3}$`)
@@ -219,8 +228,8 @@ func (e *Entry) Validate() error {
 		return errors.New("no roles")
 	}
 	for _, r := range e.Roles {
-		if r != RoleCarrier && r != RoleShipper && r != RoleConsignee {
-			return fmt.Errorf("role %q is not %s, %s or %s", r, RoleCarrier, RoleShipper, RoleConsignee)
+		if r != RoleCarrier && r != RoleShipper && r != RoleConsignee && r != RoleForwarder {
+			return fmt.Errorf("role %q is not %s, %s, %s or %s", r, RoleCarrier, RoleShipper, RoleConsignee, RoleForwarder)
 		}
 	}
 	for _, m := range e.Modes {

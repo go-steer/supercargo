@@ -40,6 +40,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/go-steer/supercargo/internal/activity"
+	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/directory"
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/internal/skills"
@@ -82,6 +83,13 @@ type Assistant struct {
 	// shipper's business-context dates and notes, if the caller has them.
 	// Open drafts' required-by dates are always private.
 	Private []string
+	// Business is the company's private business context, for the
+	// company's own assistant (get_business_context); nil for an outside
+	// agent's.
+	Business *business.Context
+	// Places are the company's doors and ports from its address book,
+	// which an order goes between (draft_order).
+	Places []directory.Place
 	// Carrier, if set, makes this the carrier's assistant (the operator
 	// role's): its tools read the carrier's bookings and draft
 	// disruptions, which a person confirms; Node and the partner fields

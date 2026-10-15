@@ -100,11 +100,13 @@ web:
 $7
 EOF
   }
-  # Cymbal's private context: the Brazil launch, three weeks out. The
-  # journey makes it; 72 hours late, it doesn't. Never in an envelope (and
-  # nothing here may appear in the order, or the guard refuses to send it).
+  # Cymbal's private context: the Brazil launch, 23 days out. The journey
+  # (cargo ready tomorrow) takes 21 days, so it makes it, and an order its
+  # assistant drafts two days before it fits; 72 hours late, it doesn't.
+  # Never in an envelope (and nothing here may appear in the order, or the
+  # guard refuses to send it).
   local launch
-  launch="$(date -u -d '+21 days' +%F)"
+  launch="$(date -u -d '+23 days' +%F)"
   cat >"$dir/business.yaml" <<EOF
 shipments:
   - shipperRef: CY-PO-55120
@@ -114,7 +116,26 @@ shipments:
 notes:
   - "Tell the launch team about any delay that puts the launch at risk"
 EOF
+  # Cymbal's address book: its forwarder, and its doors (what an order its
+  # assistant drafts goes between).
+  cat >"$dir/address-book.yaml" <<'EOF'
+entries:
+  - domain: meridian-forwarding.example
+    name: Meridian Forwarding
+    roles: [forwarder]
+    description: Our forwarder, door to door to Brazil.
+places:
+  - id: tilburg-warehouse
+    name: Tilburg warehouse
+    party: { name: Cymbal Shoes B.V., domain: cymbal-shoes.example, identifiers: [{ scheme: EORI, value: NL123456789 }] }
+    place: { type: door, un_location_code: NLTLB, address: { street: Ringbaan Oost 100, postal_code: 5013 CD, locality: Tilburg, country: NL } }
+  - id: cajamar-dc
+    name: Cajamar DC
+    party: { name: Cymbal Calçados Ltda, identifiers: [{ scheme: "BR:CNPJ", value: 12.345.678/0001-90 }] }
+    place: { type: door, facility: "Cymbal Calçados DC, dock 2", un_location_code: BRSAO, address: { street: "Rodovia Anhanguera, km 33", locality: Cajamar, region: SP, country: BR } }
+EOF
   node cymbal cymbal-shoes.example "Cymbal Shoes" "$CY" cy '{ id: alex, name: Alex, title: "Logistics", roles: [shipper] }' "role: shipper
+addressBook: { file: $dir/address-book.yaml }
 business: { file: $dir/business.yaml }   # private: never in an envelope"
   node meridian meridian-forwarding.example "Meridian Forwarding" "$MF" mf '{ id: mia, name: Mia, title: "Forwarding desk", roles: [operator, shipper] }' "  presenter:
     panels:
@@ -197,14 +218,15 @@ down() {
 }
 
 order() {
-  local latest out ref
+  local latest ready out ref
   latest="$(date -u -d '+60 days' +%Y-%m-%dT12:00:00Z)"
+  ready="$(date -u -d '+1 day' +%Y-%m-%dT06:00:00Z)"   # as Cymbal's assistant would put it
   out="$(post cy /orders '{"forwarder": "meridian-forwarding.example", "order": {
     "shipper_reference": "CY-PO-55120",
     "incoterms": {"rule": "DAP", "version": "2020", "named_place": "Cymbal Calçados DC, Cajamar"},
     "shipper": {"name": "Cymbal Shoes B.V.", "domain": "cymbal-shoes.example", "identifiers": [{"scheme": "EORI", "value": "NL123456789"}]},
     "consignee": {"name": "Cymbal Calçados Ltda", "identifiers": [{"scheme": "BR:CNPJ", "value": "12.345.678/0001-90"}]},
-    "place_of_receipt": {"type": "door", "un_location_code": "NLTLB",
+    "place_of_receipt": {"type": "door", "un_location_code": "NLTLB", "earliest": "'"$ready"'",
       "address": {"street": "Ringbaan Oost 100", "postal_code": "5013 CD", "locality": "Tilburg", "country": "NL"}},
     "place_of_delivery": {"type": "door", "facility": "Cymbal Calçados DC, dock 2", "un_location_code": "BRSAO", "latest": "'"$latest"'",
       "address": {"street": "Rodovia Anhanguera, km 33", "locality": "Cajamar", "region": "SP", "country": "BR"}},

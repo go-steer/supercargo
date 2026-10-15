@@ -108,8 +108,13 @@ func (m *Model) sent(msg sentMsg) tea.Cmd {
 		m.add(Row{Role: RoleSystem, At: m.now(), Text: "Draft " + msg.id + ": " + assistant.OneLine(msg.err.Error(), 300)})
 		if errors.Is(msg.err, assistant.ErrOutcomeUnknown) {
 			// The assistant must not think the draft is still unsent.
-			_ = m.conv.Note("Sending draft " + msg.id + " failed with an unknown outcome: it may have reached the carrier. " +
-				"The draft is gone; tell the user to check the shipments before booking again.")
+			if strings.HasPrefix(msg.id, "OD-") {
+				_ = m.conv.Note("Sending order " + msg.id + " failed with an unknown outcome: it may have reached the forwarder. " +
+					"The draft is gone; tell the user to check the shipments before ordering again.")
+			} else {
+				_ = m.conv.Note("Sending draft " + msg.id + " failed with an unknown outcome: it may have reached the carrier. " +
+					"The draft is gone; tell the user to check the shipments before booking again.")
+			}
 		}
 		m.next()
 		if m.dialog == nil {
@@ -117,9 +122,18 @@ func (m *Model) sent(msg sentMsg) tea.Cmd {
 		}
 		return nil
 	}
-	c := msg.sent.Confirmation
-	m.add(Row{Role: RoleSystem, At: m.now(), Text: fmt.Sprintf("Sent %s to %s, signed. Answer: %s %s.",
-		msg.id, msg.sent.Draft.Operator, assistant.OneLine(c.Status, 40), assistant.OneLine(c.BookingRef, 64))})
+	switch {
+	case msg.sent.Ordered != nil:
+		o := msg.sent.Ordered
+		m.add(Row{Role: RoleSystem, At: m.now(), Text: fmt.Sprintf("Sent order %s to %s, signed. Answer: %s %s.",
+			msg.id, msg.sent.Draft.Order.Forwarder, assistant.OneLine(o.Status, 40), assistant.OneLine(o.OrderRef, 64))})
+	case msg.sent.Confirmation != nil:
+		c := msg.sent.Confirmation
+		m.add(Row{Role: RoleSystem, At: m.now(), Text: fmt.Sprintf("Sent %s to %s, signed. Answer: %s %s.",
+			msg.id, msg.sent.Draft.Operator, assistant.OneLine(c.Status, 40), assistant.OneLine(c.BookingRef, 64))})
+	default:
+		m.add(Row{Role: RoleSystem, At: m.now(), Text: "Sent " + msg.id + ", signed."})
+	}
 	turn := m.turn.Add(1)
 	a, conv, ctx, s := m.a, m.conv, m.ctx, msg.sent
 	return func() tea.Msg {
@@ -147,6 +161,9 @@ func (m *Model) command(text string) bool {
 // what stays home.
 func (m *Model) dialogView() string {
 	d := m.dialog
+	if d.Order != nil {
+		return m.orderDialogView()
+	}
 	var r intents.BookingRequestBody
 	if d.Request != nil {
 		r = *d.Request
@@ -194,6 +211,71 @@ func (m *Model) dialogView() string {
 		Render(strings.Join(lines, "\n"))
 	title := m.st.you.Render(" Booking draft " + d.DraftID + " ")
 	// The title sits in the top border, as in the design's mockup.
+	if first, rest, ok := strings.Cut(box, "\n"); ok && lipgloss.Width(first) > lipgloss.Width(title)+4 {
+		box = m.st.link.Render("╭─") + title + m.st.link.Render(strings.Repeat("─", lipgloss.Width(first)-lipgloss.Width(title)-3)+"╮") + "\n" + rest
+	}
+	return lipgloss.Place(m.width, m.vp.Height(), lipgloss.Center, lipgloss.Center, box)
+}
+
+// orderDialogView is an order draft's dialog: everything the forwarder
+// will learn, in full, and what stays home.
+func (m *Model) orderDialogView() string {
+	d := m.dialog
+	o := *d.Order
+	width := max(30, min(90, m.width-8)) - 12
+	line := func(label, value string) string {
+		wrapped := lipgloss.NewStyle().Width(width).Render(assistant.OneLine(value, 1000))
+		return m.st.dim.Render(fmt.Sprintf("%-12s", label)) + m.st.text.Render(strings.ReplaceAll(wrapped, "\n", "\n"+strings.Repeat(" ", 12)))
+	}
+	party := func(p intents.Party) string {
+		out := p.Name
+		for _, id := range p.Identifiers {
+			out += " · " + id.Scheme + " " + id.Value
+		}
+		return out
+	}
+	place := func(p intents.Place) string {
+		parts := []string{}
+		if p.Facility != "" {
+			parts = append(parts, p.Facility)
+		}
+		if a := p.Address; a != nil {
+			parts = append(parts, strings.Join(slices.DeleteFunc([]string{a.Street, a.PostalCode, a.Locality, a.Region, a.Country}, func(s string) bool { return s == "" }), ", "))
+		}
+		return strings.Join(append(parts, p.UNLocationCode), " · ")
+	}
+	var eq []string
+	for _, e := range o.Equipment {
+		eq = append(eq, fmt.Sprintf("%d × %s (%s), %g kg each", e.Count, ports.SizeLabel(e.ISOType), e.ISOType, e.GrossWeightKg))
+	}
+	lines := []string{
+		line("Forwarder:", d.To),
+		line("Incoterms:", o.Incoterms.Rule+" "+o.Incoterms.Version+" · "+o.Incoterms.NamedPlace),
+		line("Shipper:", party(o.Shipper)),
+		line("Consignee:", party(o.Consignee)),
+		line("From:", place(o.PlaceOfReceipt)+" · ready from "+o.PlaceOfReceipt.Earliest),
+		line("To:", place(o.PlaceOfDelivery)),
+		line("Deliver by:", o.PlaceOfDelivery.Latest+" (sent: the forwarder plans to it)"),
+		line("Equipment:", strings.Join(eq, ", ")),
+		line("Cargo:", fmt.Sprintf("%s, HS %s", o.Cargo.Description, o.Cargo.HSCode)),
+		line("Reference:", o.ShipperRef),
+	}
+	if d.NewPartner {
+		lines = slices.Insert(lines, 1, fmt.Sprintf("%-12s", "")+m.st.pending.Render("A new partner: not in your address book, never ordered with. Check the domain."))
+	}
+	if s := o.Subscription; s != nil {
+		lines = append(lines, line("Updates:", strings.Join(s.Intents, ", ")+" → "+s.Endpoint))
+	}
+	for _, k := range []string{"requiredBy", "receivingSlot", "notes"} {
+		if v := d.NotSent[k]; v != "" {
+			what := map[string]string{"requiredBy": "your deadline", "receivingSlot": "your receiving slot", "notes": "your note"}[k]
+			lines = append(lines, m.st.ok.Render(fmt.Sprintf("%-12s", "Not sent:"))+m.st.text.Render(what+", "+assistant.OneLine(v, 300)+" (it stays with us)"))
+		}
+	}
+	lines = append(lines, "", m.st.you.Render("Send this order?")+m.st.dim.Render(" [y/N]"))
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(m.st.p.Blue)).Padding(0, 1).
+		Render(strings.Join(lines, "\n"))
+	title := m.st.you.Render(" Order draft " + d.DraftID + " ")
 	if first, rest, ok := strings.Cut(box, "\n"); ok && lipgloss.Width(first) > lipgloss.Width(title)+4 {
 		box = m.st.link.Render("╭─") + title + m.st.link.Render(strings.Repeat("─", lipgloss.Width(first)-lipgloss.Width(title)-3)+"╮") + "\n" + rest
 	}

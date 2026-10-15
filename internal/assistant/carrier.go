@@ -135,7 +135,16 @@ func (a *Assistant) tools() []llm.Tool {
 	if a.Carrier != nil {
 		return CarrierTools
 	}
-	return Tools
+	// The company's own assistant reads its private context, and orders
+	// between its places; an outside agent's (ToolAssistant) does neither.
+	out := Tools
+	if a.Business != nil {
+		out = append(slices.Clone(out), BusinessTool)
+	}
+	if len(a.Places) > 0 {
+		out = append(slices.Clone(out), DraftOrderTool)
+	}
+	return out
 }
 
 func (a *Assistant) runCarrier(ctx context.Context, call llm.ToolCall) (any, error) {

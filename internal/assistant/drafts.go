@@ -41,7 +41,10 @@ type Draft struct {
 	// Disruption, if set, makes this a carrier's drafted delay instead of
 	// a booking (Operator and Request are then unused).
 	Disruption *Disruption
-	Created    time.Time
+	// Order, if set, makes this a door-to-door order to a forwarder
+	// instead of a booking (Operator, Request and RequiredBy are unused).
+	Order   *OrderDraft
+	Created time.Time
 }
 
 // Drafts holds a session's drafts. Taking one removes it, so a draft is
@@ -74,6 +77,14 @@ func (d *Drafts) add(dr Draft) (Draft, error) {
 	d.next++
 	if dr.Disruption != nil {
 		dr.ID = fmt.Sprintf("DD-%04d", d.next)
+		d.drafts[dr.ID] = dr
+		return dr, nil
+	}
+	if dr.Order != nil {
+		dr.ID = fmt.Sprintf("OD-%04d", d.next)
+		if dr.Order.Request.ShipperRef == "" {
+			dr.Order.Request.ShipperRef = dr.ID
+		}
 		d.drafts[dr.ID] = dr
 		return dr, nil
 	}

@@ -147,6 +147,8 @@ func TestSentOutcome(t *testing.T) {
 			Disrupted: &operator.DisruptResponse{Alerts: []operator.VoyageAlert{{BookingRef: "OB-1", Alert: alert}, {BookingRef: "OB-2", Applied: true}}}},
 		"Sent BD-0001 to ocean-blue.example, signed. Answer: confirmed OB-BKG-1": {Draft: assistant.Draft{ID: "BD-0001", Operator: "ocean-blue.example"},
 			Confirmation: &intents.BookingConfirmationBody{Status: "confirmed", BookingRef: "OB-BKG-1"}},
+		"Sent order OD-0003 to meridian-forwarding.example, signed. Answer: pending MF-0007": {Draft: assistant.Draft{ID: "OD-0003",
+			Order: &assistant.OrderDraft{Forwarder: "meridian-forwarding.example"}}, Ordered: &intents.ForwardingConfirmationBody{Status: "pending", OrderRef: "MF-0007"}},
 	} {
 		if got := sentOutcome(s); got != want {
 			t.Errorf("%q, want %q", got, want)

@@ -33,10 +33,16 @@ description: How to tell a shipper's staff where their shipments are, from the s
 
 - An order is one booking with a forwarder, who carries it over several
   legs with other companies (a truck, a ship, a truck). Its events come from
-  the forwarder, each re-issued from a leg: `derived_from` says from what.
-  Ask the forwarder about the order; you never deal with its carriers.
+  the forwarder, each re-issued from a leg: a record's `source` says
+  whether the leg's carrier signed it. Ask the forwarder about the order;
+  you never deal with its carriers.
+- To order door to door, read our private business context
+  (`get_business_context`) for the shipment's own deadline and reference,
+  then draft the order (`draft_order`) between two of our places, with a
+  deliver-by date that leaves slack before that deadline. The deadline,
+  the receiving slot and the notes are never sent; the dialog says so.
 - The forwarder signs every record, and says where each came from: a
   carrier's signed message it holds (and can show), or an EDI status nobody
-  signed (`derived_from` with `signed: false`, or listed in `unsigned` in an
+  signed (`source` is `unsigned`, or listed in `unsigned` in an
   answer), which is the forwarder's word alone. Say which is which when it
   matters ("the pickup is reported over EDI, not signed by the trucker").

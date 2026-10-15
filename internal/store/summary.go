@@ -70,16 +70,44 @@ type RecordView struct {
 	SentAt     string          `json:"sentAt,omitempty"`
 	RecordedAt string          `json:"recordedAt"`
 	Body       json.RawMessage `json:"body"`
+	// Source is, for a record its sender re-issued (derived_from), whether
+	// it says its sources were all signed (SourceSigned) or not
+	// (SourceUnsigned): read from the body, so a reader can keep the
+	// body's derived_from (a partner's text) from a model and still say.
+	Source string `json:"source,omitempty"`
 }
+
+// A re-issued record's source, as RecordView says it.
+const (
+	SourceSigned   = "signed"
+	SourceUnsigned = "unsigned"
+)
 
 // ViewRecords returns recs as views.
 func ViewRecords(recs []Record) []RecordView {
 	out := make([]RecordView, 0, len(recs))
 	for _, r := range recs {
 		out = append(out, RecordView{ID: r.ID, Intent: r.Intent, Sender: r.Header.Sender, MessageID: r.Header.MessageID,
-			SentAt: r.Header.SentAt, RecordedAt: r.At.UTC().Format(time.RFC3339), Body: r.Body})
+			SentAt: r.Header.SentAt, RecordedAt: r.At.UTC().Format(time.RFC3339), Body: r.Body, Source: sourceOf(r.Body)})
 	}
 	return out
+}
+
+// sourceOf reads a body's derived_from: SourceUnsigned if any source is
+// unsigned, SourceSigned if all are signed, nothing if it has none.
+func sourceOf(body json.RawMessage) string {
+	var b struct {
+		DerivedFrom []intents.Provenance `json:"derived_from"`
+	}
+	if json.Unmarshal(body, &b) != nil || len(b.DerivedFrom) == 0 {
+		return ""
+	}
+	for _, p := range b.DerivedFrom {
+		if !p.Signed {
+			return SourceUnsigned
+		}
+	}
+	return SourceSigned
 }
 
 // Statuses a summary reports, from the latest actual event.
