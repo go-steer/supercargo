@@ -15,6 +15,7 @@
 package edi
 
 import (
+	"reflect"
 	"regexp"
 	"strconv"
 	"time"
@@ -29,6 +30,9 @@ type Instruction struct {
 	CargoDescription string
 	HSCode           string // optional
 	Carrier          string // optional: the carrier's code (TDT)
+	// Cancel withdraws the instruction sent under Reference (BGM message
+	// function 1): a cancellation names nothing else.
+	Cancel bool
 }
 
 // Stop is a place the truck calls at, and its window.
@@ -89,6 +93,10 @@ var (
 //	EQD+CN++<size type>  EQN+<count>  MEA+AAE+G+KGM:<kg>   per equipment line, each
 //	UNT+<n>+1
 //
+// A cancellation (Cancel) is BGM+610+<reference>+1, its DTM+137 and its
+// RFF+CU, and nothing else: it withdraws the instruction sent under that
+// reference.
+//
 // Times, the UNB's included, are written in format 203, which has no
 // zone, in env.Location, the zone agreed with the partner (UTC if nil).
 func WriteIFTMIN(i Instruction, env Envelope) ([]byte, error) {
@@ -111,6 +119,14 @@ func WriteIFTMIN(i Instruction, env Envelope) ([]byte, error) {
 		}
 	}
 	stamp := func(t time.Time) string { return t.In(loc).Format("200601021504") }
+	if i.Cancel {
+		msg := Message{Ref: "1", Type: "IFTMIN", Version: "D", Release: "04A", Agency: "UN", Segments: []Segment{
+			Seg("BGM", E("610"), E(i.Reference), E("1")),
+			Seg("DTM", E("137", stamp(env.At), "203")),
+			Seg("RFF", E("CU", i.Reference)),
+		}}
+		return Write(env.Sender, env.Recipient, env.Control, env.At.In(loc), msg), nil
+	}
 	segs := []Segment{
 		Seg("BGM", E("610"), E(i.Reference), E("9")),
 		Seg("DTM", E("137", stamp(env.At), "203")),
@@ -167,6 +183,12 @@ func (s Stop) loc(qualifier, earliest, latest string, stamp func(time.Time) stri
 func (i Instruction) validate() error {
 	if !refPattern.MatchString(i.Reference) {
 		return contentErr("reference %q is not a reference", i.Reference)
+	}
+	if i.Cancel {
+		if !reflect.DeepEqual(i, Instruction{Reference: i.Reference, Cancel: true}) {
+			return contentErr("a cancellation names the instruction's reference and nothing else")
+		}
+		return nil
 	}
 	if i.ShipperRef != "" && !refPattern.MatchString(i.ShipperRef) {
 		return contentErr("shipper reference %q is not a reference", i.ShipperRef)

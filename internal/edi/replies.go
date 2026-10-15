@@ -52,6 +52,12 @@ func WriteAPERAK(a Ack, env Envelope) ([]byte, error) {
 		Seg("DTM", E("137", st.stamp(env.At), "203")),
 		Seg("RFF", E("ACW", a.Reference)),
 	}
+	if a.Answers != "" {
+		if !controlPattern.MatchString(a.Answers) {
+			return nil, contentErr("the interchange answered, %q, is not a control reference", a.Answers)
+		}
+		segs = append(segs, Seg("RFF", E("AGO", a.Answers)))
+	}
 	seen := map[string]bool{}
 	for _, d := range a.TransportDocuments {
 		if !docPattern.MatchString(d) || seen[d] {
@@ -148,7 +154,7 @@ func ParseIFTMIN(data []byte, loc *time.Location) (Instruction, string, error) {
 		return Instruction{}, "", contentErr("want one IFTMIN message")
 	}
 	var i Instruction
-	var bgm string
+	var bgm, function string
 	seen := map[string]bool{}
 	once := func(part string) error {
 		if seen[part] {
@@ -165,7 +171,7 @@ func ParseIFTMIN(data []byte, loc *time.Location) (Instruction, string, error) {
 		switch s.Tag {
 		case "BGM":
 			if err = once("BGM"); err == nil {
-				bgm = s.Value(1, 0)
+				bgm, function = s.Value(1, 0), s.Value(2, 0)
 			}
 		case "RFF":
 			switch q := s.Value(0, 0); q {
@@ -266,6 +272,13 @@ func ParseIFTMIN(data []byte, loc *time.Location) (Instruction, string, error) {
 	}
 	if bgm != i.Reference {
 		return Instruction{}, "", contentErr("BGM names %q, RFF+CU %q", bgm, i.Reference)
+	}
+	switch function {
+	case "9": // an original
+	case "1":
+		i.Cancel = true
+	default:
+		return Instruction{}, "", contentErr("IFTMIN message function %q is not 9 (original) or 1 (cancellation)", function)
 	}
 	if err := i.validate(); err != nil {
 		return Instruction{}, "", err
