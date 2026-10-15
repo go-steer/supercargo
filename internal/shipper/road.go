@@ -29,7 +29,7 @@ import (
 // ErrPlanMismatch: a road carrier's plan doesn't fit what was asked for
 // (a pickup outside its window, an amendment answered for another leg).
 // It isn't recorded, and the person sees why. The carrier may hold it
-// all the same: until ULP can cancel a leg, the person takes it up with
+// all the same: the person takes it up with
 // the carrier.
 var ErrPlanMismatch = errors.New("shipper: the carrier's plan contradicts the request")
 

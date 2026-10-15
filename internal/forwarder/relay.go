@@ -485,6 +485,9 @@ func (r *Relay) Confirm(ctx context.Context, id string) (Proposal, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch {
+	case errors.Is(err, shipper.ErrCancelled):
+		// The leg was cancelled (the order rejected): nothing to re-time.
+		p.Status, p.Outcome = ProposalFailed, "the leg was cancelled"
 	case errors.Is(err, shipper.ErrPlanMismatch), errors.Is(err, shipper.ErrLegChanged):
 		// The carrier answered, but its plan wasn't recorded: it may hold
 		// the new one. Closed; the person checks with the carrier.

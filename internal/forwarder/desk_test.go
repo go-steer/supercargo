@@ -94,8 +94,10 @@ func TestDismissProposal(t *testing.T) {
 }
 
 // TestRejectWithLegsBooked: an order whose booking stopped part way (the
-// ship booked, the truck refused) can't be rejected: the shipper would be
-// told the order is off while a carrier holds its leg. Nothing is sent.
+// ship booked, the truck refused) isn't rejected by the order desk alone:
+// the shipper would be told the order is off while a carrier holds its
+// leg. The orchestrator's Reject cancels the legs first (TestReject*);
+// without a way to cancel them, nothing is sent.
 func TestRejectWithLegsBooked(t *testing.T) {
 	orch, sent := orchestrated(t, &carriers{refuseRoad: true}, portToDoor)
 	if _, err := orch.Orders.Handle(context.Background(), orderFrom(cymbal, doorOrder())); err != nil {
@@ -118,8 +120,8 @@ func TestRejectWithLegsBooked(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/orders/answer", strings.NewReader(`{"orderRef":"MF-0007","answer":{"status":"rejected"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusConflict {
-		t.Errorf("through the control API: HTTP %d", rec.Code)
+	if rec.Code != http.StatusBadGateway || len(sent.bodies) != before {
+		t.Errorf("through the control API, with no way to cancel the leg: HTTP %d, sent %d", rec.Code, len(sent.bodies)-before)
 	}
 }
 

@@ -672,11 +672,13 @@ function orderDetail(v) {
   out.push(facts);
   out.push(el('div', 'private-note', 'Only what the customer chose to send: why the date matters stays with them.'));
 
+  if ((v.withdrawn || []).length) {
+    out.push(section('Withdrawn', v.withdrawn.map((l) => `${l.name || l.carrier} ${l.ref} (${l.from} → ${l.to})`).join(' · ') + ' · booked, then cancelled with the carrier'));
+  }
   const pending = a.status === 'pending';
   if (pending) {
     // A booking that stopped part way: the legs booked stay booked, and
-    // booking again resumes after them. Such an order can't be rejected
-    // (a carrier holds a leg of it).
+    // booking again resumes after them. Rejecting it cancels them first.
     const booked = (v.steps || []).filter((s) => s.booked).length;
     out.push(section('Plan', v.planError ? 'no lane serves this order'
       : booked ? `${booked} of ${v.steps.length} legs booked · booking again resumes after them` : 'from the routing guide (forwarder.lanes) · nothing booked yet'));
@@ -685,11 +687,9 @@ function orderDetail(v) {
       out.push(legRow(s.mode, s.name, s.carrier, s.edi, `${s.from} → ${s.to}`, `${s.fromFacility} → ${s.toFacility}`, s.booked ? { state: s.booked + ' · booked', docs: '' } : null));
     }
     const act = el('div', 'actions');
-    if (!booked) {
-      const reject = el('button', null, 'Reject order…');
-      reject.onclick = () => rejectDialog(v);
-      act.appendChild(reject);
-    }
+    const reject = el('button', null, 'Reject order…');
+    reject.onclick = () => rejectDialog(v, booked);
+    act.appendChild(reject);
     if ((v.steps || []).length) {
       const book = el('button', 'primary', `${booked ? 'Resume booking' : 'Confirm plan & book'} ${v.steps.length - booked} leg${v.steps.length - booked === 1 ? '' : 's'}…`);
       book.onclick = () => bookOrderDialog(v);
@@ -759,13 +759,14 @@ function bookOrderDialog(v) {
     }, [sends]);
 }
 
-function rejectDialog(v) {
+function rejectDialog(v, booked) {
   const reason = el('input');
   reason.maxLength = 280;
   reason.value = "We can't take this order on these dates.";
   const r = el('div', 'row');
   r.append(el('span', 'k', 'Reason:'), reason);
-  modal(`Reject · ${v.orderRef}`, [['Customer:', v.shipper]], `Reject this order? ${v.shipper} gets a signed rejection with this reason.`,
+  const legs = booked ? ` First, the ${booked} leg${booked === 1 ? '' : 's'} booked ${booked === 1 ? 'is' : 'are'} cancelled with ${booked === 1 ? 'its carrier' : 'their carriers'}, last first; if a carrier keeps its leg (its cargo has moved), the order stays pending.` : '';
+  modal(`Reject · ${v.orderRef}`, [['Customer:', v.shipper]], `Reject this order? ${v.shipper} gets a signed rejection with this reason.${legs}`,
     'Reject order', async () => {
       await api(`orders/${encodeURIComponent(v.orderRef)}/reject`, { method: 'POST', body: JSON.stringify({ reason: reason.value }) });
       loadOrders();

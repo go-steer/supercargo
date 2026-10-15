@@ -200,8 +200,14 @@ are in:
   - The demo on Cloud Run (`deploy/cloudrun`): four services, with Polder
     Haulage as Meridian's EDI sidecar.
 
-Next: phase 3, the receiver (delegation, milestone 7), and the known gaps
-(an order status request, leg cancel, persistence).
+- The known gaps closed so far: the order status request
+  (`ulp.forwarding.status.*`) and booking cancellation
+  (`ulp.booking.cancellation`, its EDI form, and the forwarder's use:
+  rejecting an order with legs booked, withdrawing a plan that doesn't
+  fit).
+
+Next: persistence (the last known gap), and phase 3, the receiver
+(delegation, milestone 7).
 Cited cause IDs in alerts are always checked against the shipper's log
 before a model. `derived_from`'s text never reaches one: an inquiry
 model learns only whether a re-issued record's source was signed, as the

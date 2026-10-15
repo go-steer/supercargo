@@ -226,9 +226,10 @@ func TestConfirmProposalOutcomes(t *testing.T) {
 		err    error
 		status string
 	}{
-		"refused":      {&intents.RoadBookingConfirmationBody{BookingRef: "SR-BKG-0913", Status: intents.StatusRejected}, nil, ProposalRefused},
-		"unreachable":  {nil, errors.New("connection refused"), ProposalOpen},
-		"not recorded": {nil, shipper.ErrLegChanged, ProposalFailed},
+		"refused":       {&intents.RoadBookingConfirmationBody{BookingRef: "SR-BKG-0913", Status: intents.StatusRejected}, nil, ProposalRefused},
+		"unreachable":   {nil, errors.New("connection refused"), ProposalOpen},
+		"not recorded":  {nil, shipper.ErrLegChanged, ProposalFailed},
+		"leg cancelled": {nil, shipper.ErrCancelled, ProposalFailed},
 	} {
 		r, _, am := relayed(t)
 		_ = r.Event(shipLeg, event("EV-1", "est"))

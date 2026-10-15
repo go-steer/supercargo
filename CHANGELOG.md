@@ -14,6 +14,12 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- The forwarder cancels legs:
+  - **Rejecting an order with legs already booked** (a booking stopped part way) now cancels them first, last first, each with its carrier: a ULP booking cancellation, or an EDI cancellation for a carrier without a node. Each leg cancelled comes off the order and is kept as withdrawn. A carrier that keeps its leg (its cargo has moved) stops the rejection, and the order stays pending.
+  - **A carrier plan that doesn't fit the journey** is withdrawn at once, since the person confirmed booking that journey.
+  - **The Orders tab** offers Reject for such orders, and the dialog says the legs are cancelled first.
+  - **The desk assistant** no longer says ULP can't cancel a leg.
+
 - Cancelling an EDI leg (`forwarder.Gateway.Cancel`): an IFTMIN cancellation (BGM message function 1), answered by APERAK. Each APERAK now names the interchange it answers (RFF+AGO), so a cancellation's answer is never mistaken for the instruction's. Statuses for a cancelled leg are refused. The mock carrier (`ulpmock edifact`) accepts a cancellation until its truck has picked up, and refuses after (`UWY`).
 
 - Booking cancellation, a protocol addition: `ulp.booking.cancellation` and `.cancellation.response`, ULP's own, with one intent for any mode. The shipper of an ocean booking or a truck leg withdraws it, without saying why, and the carrier answers `cancelled` or `refused`.

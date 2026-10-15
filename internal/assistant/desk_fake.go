@@ -111,7 +111,7 @@ func deskAdvice(o deskOrder, draft string) string {
 		if draft != "" {
 			fmt.Fprintf(&b, " Draft %s is ready for you to review and send.", draft)
 		}
-		b.WriteString("\n2. Leave leg " + fmt.Sprint(p.Leg) + " as booked: the truck would arrive before the cargo is there. Changing carrier means a second booking (ULP can't cancel a leg yet).")
+		b.WriteString("\n2. Leave leg " + fmt.Sprint(p.Leg) + " as booked: the truck would arrive before the cargo is there. Changing a confirmed order's carrier isn't offered yet.")
 		b.WriteString("\n\nI'd confirm 1.")
 	}
 	return b.String()

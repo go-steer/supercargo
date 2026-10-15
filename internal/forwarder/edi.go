@@ -259,6 +259,16 @@ func (g *Gateway) Instructed(ref string) (edi.Instruction, *edi.Ack, bool) {
 	return in.instruction, in.ack, ok
 }
 
+// Cancelling reports whether a cancellation of the instruction sent
+// under ref is out and not refused: unanswered, or accepted. Such an
+// instruction isn't a leg to build a journey on.
+func (g *Gateway) Cancelling(ref string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	c := g.instructed[ref].cancel
+	return c != nil && (c.ack == nil || c.ack.Accepted)
+}
+
 // Withdrawn reports whether the carrier accepted the cancellation of the
 // instruction sent under ref.
 func (g *Gateway) Withdrawn(ref string) bool {

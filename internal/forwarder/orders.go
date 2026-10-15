@@ -181,7 +181,8 @@ func (o *Orders) answer(ctx context.Context, ref string, conf *intents.Forwardin
 	}
 	if conf.Status == intents.StatusRejected && len(b.Order.Legs) > 0 {
 		// Rejecting would leave carriers holding legs of an order the
-		// shipper was told is off; ULP can't cancel a leg yet.
+		// shipper was told is off: the orchestrator's Reject cancels them
+		// first.
 		return fmt.Errorf("%w: %s has %d", ErrLegsBooked, ref, len(b.Order.Legs))
 	}
 	conf.OrderRef = ref
