@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/go-steer/supercargo/internal/assistant"
 	"github.com/go-steer/supercargo/internal/config"
 )
 
@@ -46,6 +47,16 @@ func TestShipperAssistantOrders(t *testing.T) {
 	ext, err := ToolAssistant(c, nil)
 	if err != nil || ext.Places != nil || ext.Business != nil || len(ext.Private) == 0 {
 		t.Errorf("outside agents' tools: places %v, business %v, private %v, %v", ext.Places, ext.Business, ext.Private, err)
+	}
+	// The operator side's: a forwarder's has the desk; a carrier's doesn't.
+	op := cfg(t, config.RoleOperator)
+	op.LLM = &config.LLM{Provider: config.ProviderFake}
+	if a, err := CarrierAssistant(op, assistant.ControlCarrierNode{}); err != nil || a.Desk != nil {
+		t.Errorf("a carrier's assistant: desk %v, %v", a.Desk, err)
+	}
+	op.Forwarder = &config.Forwarder{RefPrefix: "MF"}
+	if a, err := CarrierAssistant(op, assistant.ControlCarrierNode{}); err != nil || a.Desk == nil {
+		t.Errorf("a forwarder's assistant: desk %v, %v", a.Desk, err)
 	}
 	// A broken address book stops it.
 	_ = os.WriteFile(book, []byte("places: [{ id: Bad Id }]\n"), 0o600)

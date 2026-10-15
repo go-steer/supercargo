@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/assistant"
+	"github.com/go-steer/supercargo/internal/forwarder"
 	"github.com/go-steer/supercargo/internal/operator"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -147,6 +148,8 @@ func TestSentOutcome(t *testing.T) {
 			Disrupted: &operator.DisruptResponse{Alerts: []operator.VoyageAlert{{BookingRef: "OB-1", Alert: alert}, {BookingRef: "OB-2", Applied: true}}}},
 		"Sent BD-0001 to ocean-blue.example, signed. Answer: confirmed OB-BKG-1": {Draft: assistant.Draft{ID: "BD-0001", Operator: "ocean-blue.example"},
 			Confirmation: &intents.BookingConfirmationBody{Status: "confirmed", BookingRef: "OB-BKG-1"}},
+		"Confirmed proposal MF-PR-000008 (PD-0001): the amendment went to serra-transportes.example, signed. Outcome: confirmed.": {
+			Draft: assistant.Draft{ID: "PD-0001"}, Proposed: &forwarder.Proposal{ID: "MF-PR-000008", Carrier: "serra-transportes.example", Status: "confirmed"}},
 		"Sent order OD-0003 to meridian-forwarding.example, signed. Answer: pending MF-0007": {Draft: assistant.Draft{ID: "OD-0003",
 			Order: &assistant.OrderDraft{Forwarder: "meridian-forwarding.example"}}, Ordered: &intents.ForwardingConfirmationBody{Status: "pending", OrderRef: "MF-0007"}},
 	} {

@@ -963,6 +963,9 @@ const ASSISTANT = {
     placeholder: 'Ask about a carrier, book a shipment, or check on one…' },
   operator: { hint: 'carrier role · it drafts; you decide', empty: 'Ask about our bookings and voyages, or prepare a delay.',
     placeholder: 'Ask about bookings or a voyage, or prepare a delay…' },
+  // A forwarder's operator side is its desk.
+  desk: { hint: 'forwarder’s desk · it drafts; you decide', empty: 'Ask about our orders, their legs and proposals: “what should we do about MF-0007?”',
+    placeholder: 'Ask about orders, legs and proposals…' },
 };
 // aq is an assistant route for side.
 const aq = (side, path = '') => 'assistant' + path + (side === 'operator' ? '?side=operator' : '');
@@ -974,7 +977,24 @@ async function loadChat() {
 
 // draftDialog opens a draft's confirmation dialog: a booking or a delay.
 function draftDialog(d, side) {
-  if (d.disruption) disruptionDraftDialog(d, side); else if (d.order) orderDraftDialog(d, chatVia(side)); else bookingDialog(d, chatVia(side));
+  if (d.disruption) disruptionDraftDialog(d, side);
+  else if (d.order) orderDraftDialog(d, chatVia(side));
+  else if (d.proposal) proposalDraftDialog(d, chatVia(side));
+  else bookingDialog(d, chatVia(side));
+}
+
+// proposalDraftDialog is a drafted proposal's confirmation: the amendment
+// to the leg's carrier, as the Orders tab's dialog shows it.
+function proposalDraftDialog(d, via) {
+  const p = d.proposal, am = p.amendment || {};
+  const rows = [['Order:', p.orderRef], ['Leg:', `${p.leg} · ${p.carrierName} (${p.carrier})`], ['Booking:', p.legRef]];
+  if (am.pickup) rows.push(['Collect from:', `${dayTime(am.pickup.earliest)}` + (p.wasPickup ? ` (was ${dayTime(p.wasPickup)})` : '')]);
+  if (am.delivery) rows.push(['Deliver:', `${dayTime(am.delivery.earliest || am.delivery.latest)}` + (p.wasDelivery ? ` (was ${dayTime(p.wasDelivery)})` : '')]);
+  rows.push(['Why:', p.why]);
+  let dlg = null;
+  const discard = discardLink(d, via, () => dlg.close());
+  dlg = modal(`Amend leg ${p.leg} · ${p.carrierName}`, rows, `Send this amendment? Your node signs it and sends it to ${p.carrier}.`, 'Send amendment',
+    () => via.send(d), [discard]);
 }
 
 // orderDraftDialog is a drafted door-to-door order's confirmation: all
@@ -1003,7 +1023,7 @@ function orderDraftDialog(d, via) {
 
 function renderChat() {
   if (currentTab() !== 'assistant') return;
-  const side = state.activeSide, chat = state.chats[side], words = ASSISTANT[side];
+  const side = state.activeSide, chat = state.chats[side], words = ASSISTANT[side === 'operator' && state.me.orders ? 'desk' : side];
   if (!chat || !words) return;
   // One turn at a time in this page: every side's composer waits, and the
   // turn's own side shows its progress.

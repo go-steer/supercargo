@@ -121,8 +121,13 @@ func CarrierAssistant(cfg *config.Config, node assistant.CarrierNode) (*assistan
 			return nil, err
 		}
 	}
-	return &assistant.Assistant{Model: model, Carrier: node, Drafts: &assistant.Drafts{}, Skills: agentSkills,
-		Self: assistant.Self{Domain: cfg.Domain, Name: cfg.Name}}, nil
+	a := &assistant.Assistant{Model: model, Carrier: node, Drafts: &assistant.Drafts{}, Skills: agentSkills,
+		Self: assistant.Self{Domain: cfg.Domain, Name: cfg.Name}}
+	// A forwarder's: its desk too (its orders and their proposals).
+	if d, ok := node.(assistant.Desk); ok && cfg.Forwarder != nil {
+		a.Desk = d
+	}
+	return a, nil
 }
 
 // Partners loads the configured address book's entries and the directory

@@ -120,9 +120,9 @@ func fakeStep(msgs []llm.Message, user string, done []step, now time.Time) llm.G
 	}
 	switch {
 	case strings.HasPrefix(user, notePrefix) && strings.Contains(user, `"forwarder"`):
-		return orderReportReply(block(user, "result"))
+		return orderReportReply(resultOf(user))
 	case strings.HasPrefix(user, notePrefix):
-		return reportReply(block(user, "result"))
+		return reportReply(resultOf(user))
 	case orderPattern.MatchString(user) && shipPattern.MatchString(user) && !whyPattern.MatchString(user):
 		return fakeOrderStep(msgs, user, done, now)
 	case strings.Contains(lower, "book "):
@@ -352,13 +352,14 @@ func askReply(content string) llm.GenerateResponse {
 	return say("%s.", out)
 }
 
-// block is the text between <name> and </name> in s.
-func block(s, name string) string {
-	_, after, ok := strings.Cut(s, "<"+name+">")
+// resultOf is the text between <result> and </result> in an [ulpchat]
+// note: what came of a send.
+func resultOf(s string) string {
+	_, after, ok := strings.Cut(s, "<result>")
 	if !ok {
 		return ""
 	}
-	inside, _, _ := strings.Cut(after, "</"+name+">")
+	inside, _, _ := strings.Cut(after, "</result>")
 	return strings.TrimSpace(inside)
 }
 
