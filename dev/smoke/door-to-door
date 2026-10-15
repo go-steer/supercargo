@@ -126,6 +126,14 @@ events="$(ctl cy "/shipments/meridian-forwarding.example/$ref/events")"
 grep -q '"signed":false' <<<"$events" || smoke_fail "$work" "no unsigned event at Cymbal"
 echo "Polder's statuses at Cymbal, unsigned"
 
+# Cymbal asks Meridian about the order (A2A): the answer goes leg by leg
+# and says which of Meridian's records are unsigned EDI statuses.
+answer="$(post cy /ask "{\"operator\":\"meridian-forwarding.example\",\"bookingRef\":\"$ref\",\"question\":\"Where is the order?\"}")" ||
+  smoke_fail "$work" "asking Meridian failed"
+grep -q 'by road with Polder Haulage' <<<"$answer" || smoke_fail "$work" "the answer names no leg: $answer"
+grep -q 'EDI statuses' <<<"$answer" || smoke_fail "$work" "the answer doesn't say what's unsigned: $answer"
+echo "Meridian's answer: leg by leg, the unsigned statuses said"
+
 # The ship is 72 hours late: Meridian proposes re-timing the truck.
 ship="$(ctl mf /shipments | grep -o '"bookingRef":"OB-BKG-[0-9]*"' | head -1 | cut -d'"' -f4)"
 [[ -n "$ship" ]] || smoke_fail "$work" "Meridian holds no ocean leg"

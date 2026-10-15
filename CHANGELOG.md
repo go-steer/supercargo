@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- Asking a forwarder about a door-to-door order: Meridian's inquiry agent answers leg by leg (each leg's mode and carrier) and says which of its records are EDI statuses nobody signed. Its model learns only whether a re-issued record's source was signed, decided by the code; none of `derived_from`'s text reaches it. The shipper marks the cited records its own copies say are unsigned (`unsigned` beside `held` in `POST /ask`), and its assistant tells the user which facts are the forwarder's word rather than a carrier's signature. The inquiry and tracking skills know about orders, and the door-to-door smoke asks Meridian about the order.
+
 - `dev/demo/door-to-door`: the door-to-door demo on localhost, step by step (`up`, `order`, `book`, `disrupt`, `confirm`, `status`, `down`): four nodes with their browser UIs (and a presenter page showing all four) and the mock EDIFACT trucker. `simulator.clock: shared` (and `ulpmock edifact --clock shared`) puts every voyage on one clock from the node's first booking, so the legs of a journey play in their real order across companies. The ports table knows Santos, Tilburg and São Paulo.
 
 - `dev/smoke/door-to-door`: the whole door-to-door journey as real processes. Four `ulpnode` processes (Cymbal, Meridian, Ocean Blue, Serra) and `ulpmock edifact` (Polder) on Meridian's file drops: Cymbal orders Tilburg to Cajamar, Meridian books the three legs and answers, Polder's statuses reach Cymbal marked unsigned, and a 72-hour ship delay becomes Meridian's alert and proposal, which, confirmed, re-times Serra's truck.

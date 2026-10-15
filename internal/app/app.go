@@ -682,6 +682,14 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 	}
 	handlers[intents.OceanTnTRequest] = &operator.StatusService{Bookings: a.Carrier.Bookings, Log: a.Carrier.Events}
 	handlers[intents.TnTInquiry] = &operator.InquiryService{Bookings: a.Carrier.Bookings, Log: a.Carrier.Events, Model: model, Name: cfg.Name, Skills: agentSkills,
+		// A forwarder's relay (made later, before the node serves) knows each
+		// re-issued record's leg.
+		LegOf: func(id string) (int, bool) {
+			if a.Relay == nil {
+				return 0, false
+			}
+			return a.Relay.LegOf(id)
+		},
 		OnModelCall: func(c operator.ModelCall) {
 			a.Activity.Publish(activity.Entry{Side: activity.SideOperator, Kind: activity.KindModel, Model: &activity.Model{
 				Agent: "inquiry responder", Booking: c.Booking, Attempt: c.Attempt, Model: c.Model, PromptHash: c.PromptHash, Skills: c.Skills,

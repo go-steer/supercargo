@@ -28,3 +28,15 @@ description: How to tell a shipper's staff where their shipments are, from the s
   private deadlines or warehouse details in it: the carrier reads it.
 - Report the answer as the carrier's, with the record IDs it cites. Our
   node says which of them we hold signed copies of (`held`).
+
+## Door-to-door orders
+
+- An order is one booking with a forwarder, who carries it over several
+  legs with other companies (a truck, a ship, a truck). Its events come from
+  the forwarder, each re-issued from a leg: `derived_from` says from what.
+  Ask the forwarder about the order; you never deal with its carriers.
+- The forwarder signs every record, and says where each came from: a
+  carrier's signed message it holds (and can show), or an EDI status nobody
+  signed (`derived_from` with `signed: false`, or listed in `unsigned` in an
+  answer), which is the forwarder's word alone. Say which is which when it
+  matters ("the pickup is reported over EDI, not signed by the trucker").
