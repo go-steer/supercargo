@@ -15,6 +15,7 @@
 package mockcarrier
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -152,5 +153,22 @@ func TestEDIFACTRun(t *testing.T) {
 	}
 	if acks, _ := r.replies(t); len(acks) != 1 {
 		t.Errorf("acks %+v", acks)
+	}
+}
+
+// TestEDIFACTRefusesMisaddressed: an instruction from the partner, but
+// addressed to another carrier, isn't taken.
+func TestEDIFACTRefusesMisaddressed(t *testing.T) {
+	r := newRig(t)
+	data := bytes.Replace(instruction("meridian-forwarding.example"), []byte("+polder-haulage.example+"), []byte("+other-haulage.example+"), 1)
+	if bytes.Equal(data, instruction("meridian-forwarding.example")) {
+		t.Fatal("the recipient wasn't replaced")
+	}
+	if _, err := r.toPol.Put("MF000034", data); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.polder.Step()
+	if acks, _ := r.replies(t); len(acks) != 0 || len(r.polder.trips) != 0 {
+		t.Errorf("took a misaddressed instruction: %+v", acks)
 	}
 }

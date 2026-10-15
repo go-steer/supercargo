@@ -148,8 +148,12 @@ func TestInstructRefused(t *testing.T) {
 func TestGatewayRefusesStrangers(t *testing.T) {
 	r := newEDIRig(t)
 	in := r.gw.Partners[polder].In
-	put := func(sender, ref string, kind string) {
-		env := edi.Envelope{Sender: sender, Recipient: meridian, Control: "X1", At: time.Now()}
+	put := func(sender, ref string, kind string, to ...string) {
+		recipient := meridian
+		if len(to) > 0 {
+			recipient = to[0]
+		}
+		env := edi.Envelope{Sender: sender, Recipient: recipient, Control: "X1", At: time.Now()}
 		var data []byte
 		var err error
 		if kind == "ack" {
@@ -167,7 +171,8 @@ func TestGatewayRefusesStrangers(t *testing.T) {
 	r.gw.instructed = map[string]instructed{"MF-0007-L1": {carrier: polder}}
 	put("mallory.example", "MF-0007-L1", "ack")
 	put(polder, "MF-0009-L1", "ack")
-	put(polder, "MF-0007-L1", "status") // not acknowledged yet
+	put(polder, "MF-0007-L1", "status")                         // not acknowledged yet
+	put(polder, "MF-0007-L1", "ack", "other-forwarder.example") // right in every way but its recipient
 	_, _ = in.Put("X2", []byte("UNH+1+IFTMIN:D:04A:UN'UNT+2+1'"))
 	r.gw.Step()
 	if r.gw.instructed["MF-0007-L1"].ack != nil || len(r.got) != 0 {
@@ -233,5 +238,25 @@ func TestRelayUnsigned(t *testing.T) {
 	}
 	if refOK("") || refOK("-x") || refOK("a.b") || !refOK("PH4471") {
 		t.Error("refOK")
+	}
+}
+
+// TestGatewayRefusesMisaddressed: a status from the right carrier, for a
+// leg it acknowledged, but addressed to someone else, isn't taken.
+func TestGatewayRefusesMisaddressed(t *testing.T) {
+	r := newEDIRig(t)
+	in := r.gw.Partners[polder].In
+	r.gw.instructed = map[string]instructed{"MF-0007-L1": {carrier: polder, ack: &edi.Ack{Reference: "MF-0007-L1", Accepted: true}}}
+	data, err := edi.WriteIFTSTA([]edi.Status{{Reference: "MF-0007-L1", Code: "12", Time: time.Now()}},
+		edi.Envelope{Sender: polder, Recipient: "other-forwarder.example", Control: "X1", At: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := in.Put("X1", data); err != nil {
+		t.Fatal(err)
+	}
+	r.gw.Step()
+	if len(r.got) != 0 {
+		t.Errorf("took a misaddressed status: %+v", r.got)
 	}
 }
