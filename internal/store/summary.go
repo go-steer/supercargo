@@ -29,6 +29,8 @@ type Summary struct {
 	Operator string `json:"operator"`
 	Shipper  string `json:"shipper"`
 	Ref      string `json:"bookingRef"`
+	// Kind is what was booked: KindOcean, KindRoad or KindOrder.
+	Kind string `json:"kind"`
 	// TransportDocumentReference is the eBL's, once confirmed.
 	TransportDocumentReference string           `json:"transportDocumentReference,omitempty"`
 	Status                     string           `json:"status"`
@@ -49,6 +51,13 @@ type Summary struct {
 	Containers []string `json:"containers"`
 	CreatedAt  string   `json:"createdAt"`
 }
+
+// What a booking is.
+const (
+	KindOcean = "ocean" // a port-to-port ocean booking
+	KindRoad  = "road"  // a truck leg
+	KindOrder = "order" // a door-to-door forwarding order
+)
 
 // RecordView is a record as the control API shows it: the stored body as
 // it was verified (received) or published, with the envelope facts that
@@ -87,7 +96,7 @@ var statuses = map[string]string{
 func Summarize(b Booking, recs []Record) Summary {
 	c := b.Confirmation
 	from, to := b.Places()
-	s := Summary{Operator: b.Operator, Shipper: b.Shipper, Ref: b.Ref, Status: c.Status,
+	s := Summary{Operator: b.Operator, Shipper: b.Shipper, Ref: b.Ref, Kind: KindOcean, Status: c.Status,
 		TransportDocumentReference: c.TransportDocumentReference(),
 		Origin:                     ports.Location(from), Destination: ports.Location(to),
 		PlannedDeparture: c.PlannedDeparture, PlannedArrival: c.PlannedArrival, ETA: c.PlannedArrival,
@@ -95,12 +104,12 @@ func Summarize(b Booking, recs []Record) Summary {
 	s.Vessel, s.Voyage = c.Vessel()
 	if r := b.Road; r != nil {
 		// A truck leg: its pickup and delivery are the departure and arrival.
-		s.Status, s.PlannedDeparture = r.Confirmation.Status, r.Confirmation.PlannedPickup
+		s.Kind, s.Status, s.PlannedDeparture = KindRoad, r.Confirmation.Status, r.Confirmation.PlannedPickup
 		s.PlannedArrival, s.ETA = r.Confirmation.PlannedDelivery, r.Confirmation.PlannedDelivery
 	}
 	if o := b.Order; o != nil {
 		// An order: pending until planned; its delivery is the arrival.
-		s.Status, s.PlannedArrival, s.ETA = o.Confirmation.Status, o.Confirmation.PlannedDelivery, o.Confirmation.PlannedDelivery
+		s.Kind, s.Status, s.PlannedArrival, s.ETA = KindOrder, o.Confirmation.Status, o.Confirmation.PlannedDelivery, o.Confirmation.PlannedDelivery
 		if legs := o.Confirmation.Legs; len(legs) > 0 {
 			s.PlannedDeparture = legs[0].PlannedDeparture
 		}
@@ -109,6 +118,7 @@ func Summarize(b Booking, recs []Record) Summary {
 		s.Containers = []string{}
 	}
 	arrived := false
+	var moved *intents.TnTAlertBody // an order's latest delay or early alert
 	// Only an arrival at the destination is the booking's: an order's leg
 	// arriving at a handover port is in transit, and its estimate isn't
 	// the delivery's.
@@ -118,6 +128,10 @@ func Summarize(b Booking, recs []Record) Summary {
 		switch r.Intent {
 		case intents.TnTAlert:
 			s.Alerts++
+			var a intents.TnTAlertBody
+			if b.Order != nil && json.Unmarshal(r.Body, &a) == nil && (a.Kind == intents.AlertDelay || a.Kind == intents.AlertEarly) && a.NewETA != "" {
+				moved = &a
+			}
 		case intents.TnTEvent:
 			var e intents.TnTEventBody
 			if json.Unmarshal(r.Body, &e) != nil {
@@ -139,6 +153,11 @@ func Summarize(b Booking, recs []Record) Summary {
 				arrived = e.EventClassifierCode == intents.ClassifierActual
 			}
 		}
+	}
+	// An order's delivery is where its latest delay or early alert moved
+	// it, over any estimate, until it arrives: as its journey's last leg.
+	if moved != nil && !arrived {
+		s.ETA, s.ETASource = moved.NewETA, moved.AlertID
 	}
 	return s
 }

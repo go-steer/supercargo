@@ -64,20 +64,21 @@ type OrderBooking struct {
 // which reference (the leg's own booking, held as the leg's shipper), and
 // what the carrier planned.
 type LegRef struct {
-	Mode       string // road or ocean
-	Carrier    string // the carrier's domain
-	Name       string // the carrier's name, as the customer is told it
-	Ref        string // the leg's booking reference with the carrier
-	From, To   string // UN/LOCODEs
-	Departure  string // planned, UTC
-	Arrival    string
-	Vessel     string   // an ocean leg's vessel and voyage
-	Containers []string // the containers it carries, once known
+	Mode       string   `json:"mode"`    // road or ocean
+	Carrier    string   `json:"carrier"` // the carrier's domain
+	Name       string   `json:"name"`    // the carrier's name, as the customer is told it
+	Ref        string   `json:"ref"`     // the leg's booking reference with the carrier
+	From       string   `json:"from"`    // UN/LOCODEs
+	To         string   `json:"to"`
+	Departure  string   `json:"departure,omitempty"` // planned, UTC
+	Arrival    string   `json:"arrival,omitempty"`
+	Vessel     string   `json:"vessel,omitempty"`     // an ocean leg's vessel and voyage
+	Containers []string `json:"containers,omitempty"` // the containers it carries, once known
 	// Unsigned marks a leg booked outside ULP (over EDI): its carrier
 	// signs nothing, and CarrierRef and Documents are what it reported.
-	Unsigned   bool
-	CarrierRef string
-	Documents  []string
+	Unsigned   bool     `json:"unsigned,omitempty"`
+	CarrierRef string   `json:"carrierRef,omitempty"`
+	Documents  []string `json:"documents,omitempty"`
 }
 
 // RoadBooking is a truck leg's request, as amended, and the carrier's

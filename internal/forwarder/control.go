@@ -20,6 +20,7 @@ import (
 	"net/http"
 
 	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
 
@@ -51,22 +52,85 @@ type AnswerResponse struct {
 	Error  string                              `json:"error,omitempty"`
 }
 
-// RegisterControl adds the forwarder's routes to mux (internal/control).
-// Like the shipper's POST /book, it sends what it is given: the human
-// confirmation happens before the call, and reaching the socket takes the
-// node user's own access. The orders themselves are listed with the
-// carrier side's bookings (GET /bookings).
 // ProposalsResponse is the answer to GET /orders/{ref}/proposals and
-// POST /proposals/{id}/confirm.
+// POST /proposals/{id}/confirm and /dismiss.
 type ProposalsResponse struct {
 	Proposals []Proposal `json:"proposals,omitempty"`
 	Error     string     `json:"error,omitempty"`
 }
 
-func RegisterControl(mux *http.ServeMux, o *Orders, orch *Orchestrator, relay *Relay) {
+// OrderView is one order as the forwarder's desk shows it: what the
+// shipper signed, the answer it was sent, the legs booked, the plan on
+// its lane, the journey from the order's own records (the legs' events as
+// re-issued), and the proposals waiting for a person.
+type OrderView struct {
+	Ref     string                             `json:"orderRef"`
+	Shipper string                             `json:"shipper"`
+	Request intents.ForwardingRequestBody      `json:"request"`
+	Answer  intents.ForwardingConfirmationBody `json:"answer"`
+	Legs    []store.LegRef                     `json:"legs"`
+	Steps   []Step                             `json:"steps,omitempty"`
+	// PlanError is why there is no plan (no lane serves the order).
+	PlanError string `json:"planError,omitempty"`
+	// Journey is measured against the plan the shipper was told: a leg
+	// re-timed since (a confirmed proposal) still shows as late as the
+	// promise it moved off.
+	Journey   store.Journey `json:"journey"`
+	Proposals []Proposal    `json:"proposals"`
+}
+
+// OrderResponse is the answer to GET /orders/{ref}.
+type OrderResponse struct {
+	Order *OrderView `json:"order,omitempty"`
+	Error string     `json:"error,omitempty"`
+}
+
+// RegisterControl adds the forwarder's routes to mux (internal/control).
+// Like the shipper's POST /book, it sends what it is given: the human
+// confirmation happens before the call, and reaching the socket takes the
+// node user's own access. The orders themselves are listed with the
+// carrier side's bookings (GET /bookings); log holds their events, as
+// the carrier side published them.
+func RegisterControl(mux *http.ServeMux, o *Orders, orch *Orchestrator, relay *Relay, log *store.EventLog) {
+	mux.HandleFunc("GET /orders/{ref}", func(w http.ResponseWriter, r *http.Request) {
+		ref := r.PathValue("ref")
+		b, err := o.Bookings.Get(o.Node.Domain(), ref)
+		if err != nil || b.Order == nil {
+			control.Answer(w, http.StatusNotFound, OrderResponse{Error: ErrUnknownOrder.Error() + ": " + ref})
+			return
+		}
+		v := &OrderView{Ref: b.Ref, Shipper: b.Shipper, Request: b.Order.Request, Answer: b.Order.Confirmation,
+			Legs: append([]store.LegRef{}, b.Order.Legs...), Proposals: []Proposal{}}
+		if orch != nil {
+			if v.Steps, err = orch.plan(b); err != nil {
+				v.PlanError = err.Error()
+			}
+		}
+		var recs []store.Record
+		if log != nil {
+			recs = log.List(b.Operator, b.Ref)
+		}
+		v.Journey = store.BuildJourney(b, recs)
+		if relay != nil {
+			v.Proposals = relay.Proposals(ref)
+		}
+		control.Answer(w, http.StatusOK, OrderResponse{Order: v})
+	})
 	if relay != nil {
 		mux.HandleFunc("GET /orders/{ref}/proposals", func(w http.ResponseWriter, r *http.Request) {
 			control.Answer(w, http.StatusOK, ProposalsResponse{Proposals: relay.Proposals(r.PathValue("ref"))})
+		})
+		// The person at the forwarder decided against a proposal.
+		mux.HandleFunc("POST /proposals/{id}/dismiss", func(w http.ResponseWriter, r *http.Request) {
+			p, err := relay.Dismiss(r.PathValue("id"))
+			switch {
+			case errors.Is(err, ErrUnknownProposal):
+				control.Answer(w, http.StatusNotFound, ProposalsResponse{Error: err.Error()})
+			case errors.Is(err, ErrProposalClosed):
+				control.Answer(w, http.StatusConflict, ProposalsResponse{Error: err.Error()})
+			default:
+				control.Answer(w, http.StatusOK, ProposalsResponse{Proposals: []Proposal{p}})
+			}
 		})
 		// The person at the forwarder confirmed a proposal: send its
 		// amendment to the leg's carrier.
@@ -129,7 +193,7 @@ func RegisterControl(mux *http.ServeMux, o *Orders, orch *Orchestrator, relay *R
 		switch {
 		case errors.Is(err, ErrUnknownOrder):
 			control.Answer(w, http.StatusNotFound, AnswerResponse{Error: err.Error()})
-		case errors.Is(err, ErrAnswered):
+		case errors.Is(err, ErrAnswered), errors.Is(err, ErrLegsBooked):
 			control.Answer(w, http.StatusConflict, AnswerResponse{Error: err.Error()})
 		case errors.Is(err, ErrInvalidAnswer):
 			control.Answer(w, http.StatusBadRequest, AnswerResponse{Error: err.Error()})

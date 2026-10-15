@@ -311,7 +311,9 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			roles = append(roles, func(m *http.ServeMux) { shipper.RegisterControl(m, a.Shipper, cache) })
 		}
 		if a.Orders != nil {
-			roles = append(roles, func(m *http.ServeMux) { forwarder.RegisterControl(m, a.Orders, a.Orchestrator, a.Relay) })
+			roles = append(roles, func(m *http.ServeMux) {
+				forwarder.RegisterControl(m, a.Orders, a.Orchestrator, a.Relay, a.Carrier.Events)
+			})
 		}
 		if err := registerRoutes(mux, roles...); err != nil {
 			a.closeDrops()
@@ -443,7 +445,7 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 		}
 	}
 	mux.Handle(webui.Prefix, webui.Handler(webui.Config{Company: a.Config.Name, Domain: a.Config.Domain, Personas: personas, NewAssistant: newAssistant,
-		AssistantSides: assistantSides, FrameAncestors: w.FrameAncestors, Panels: panels, Inbox: a.inbox, Google: a.webGoogle(), Control: a.controlAPI,
+		AssistantSides: assistantSides, FrameAncestors: w.FrameAncestors, Panels: panels, Inbox: a.inbox, Orders: a.Orders != nil, Google: a.webGoogle(), Control: a.controlAPI,
 		Secure: a.Config.TLS.Mode != config.TLSInsecureDev || strings.HasPrefix(publicURL(a.Config), "https://"),
 		Hosts:  slices.Concat(listenHosts(a.Config.Listen), publicHost(a.Config), w.Hosts)}))
 	return mux

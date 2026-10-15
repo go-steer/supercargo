@@ -87,7 +87,7 @@ type Proposal struct {
 	LegRef    string                           `json:"legRef"`
 	Amendment intents.RoadBookingAmendmentBody `json:"amendment"`
 	Why       string                           `json:"why"`
-	Status    string                           `json:"status"` // proposed, confirmed, refused, failed
+	Status    string                           `json:"status"` // proposed, sending, confirmed, refused, failed, superseded, dismissed
 	Outcome   string                           `json:"outcome,omitempty"`
 }
 
@@ -100,6 +100,8 @@ const (
 	ProposalFailed    = "failed"
 	// ProposalSuperseded: a later delay of the same leg made a newer one.
 	ProposalSuperseded = "superseded"
+	// ProposalDismissed: the person at the forwarder decided against it.
+	ProposalDismissed = "dismissed"
 )
 
 // MaxProposals bounds the proposals kept.
@@ -500,6 +502,22 @@ func (r *Relay) Confirm(ctx context.Context, id string) (Proposal, error) {
 		}
 	}
 	return *p, err
+}
+
+// Dismiss closes an open proposal without sending anything: the person
+// at the forwarder decided the leg stays as booked.
+func (r *Relay) Dismiss(id string) (Proposal, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.proposals[id]
+	if !ok {
+		return Proposal{}, fmt.Errorf("%w: %s", ErrUnknownProposal, id)
+	}
+	if p.Status != ProposalOpen {
+		return Proposal{}, fmt.Errorf("%w: %s is %s", ErrProposalClosed, id, p.Status)
+	}
+	p.Status, p.Outcome = ProposalDismissed, "dismissed: the leg stays as booked"
+	return *p, nil
 }
 
 func stamp(t time.Time) string { return t.UTC().Format(envelope.TimeLayout) }
