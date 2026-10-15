@@ -18,10 +18,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/edi"
+	"github.com/go-steer/supercargo/internal/node"
+	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -48,6 +51,11 @@ type LegBooker interface {
 	BookRoad(ctx context.Context, carrier string, req *intents.RoadBookingRequestBody) (*intents.RoadBookingConfirmationBody, error)
 }
 
+// LegCanceller cancels the legs' bookings: the forwarder's shipper side.
+type LegCanceller interface {
+	CancelLeg(ctx context.Context, carrier, ref string) (*intents.BookingCancellationResponseBody, error)
+}
+
 // Orchestrator plans an order on its lane and, once a person confirms the
 // plan, books each leg in turn and answers the order with the journey
 // (docs/proposals/door-to-door-forwarder.md). It is deterministic code: a
@@ -60,6 +68,9 @@ type Orchestrator struct {
 	// EDI books the legs of carriers without a node (nil: such a lane
 	// can't be booked).
 	EDI *Gateway
+	// Cancel cancels a leg booked over ULP (nil: such a leg can't be
+	// cancelled, so an order with one can't be rejected).
+	Cancel LegCanceller
 	// Name is the forwarder's company name, the legs' shipper; Endpoint
 	// is where the legs' carriers push their events (the forwarder's own
 	// /ulp).
@@ -87,6 +98,16 @@ var (
 	// ErrPlanChanged is an order whose booked legs no longer match its
 	// lane (the lane was edited after they were booked).
 	ErrPlanChanged = errors.New("forwarder: the order's booked legs don't match its lane")
+	// ErrLegKept is a leg its carrier refused to cancel (its cargo has
+	// moved): the carrier holds it.
+	ErrLegKept = errors.New("forwarder: a carrier keeps its leg")
+	// ErrCancelFailed is a leg that couldn't be cancelled (the carrier
+	// unreachable, no way to cancel it here): try again.
+	ErrCancelFailed = errors.New("forwarder: a leg couldn't be cancelled")
+	// ErrCancelPending is a leg whose cancellation is out, unanswered:
+	// it's neither booked nor off until the carrier answers. Rejecting
+	// again waits for the answer.
+	ErrCancelPending = errors.New("forwarder: a leg's cancellation is unanswered")
 )
 
 // Plan is the order's plan: the steps of its lane, with the legs booked
@@ -195,6 +216,9 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 			if done.Mode != s.Mode || done.Carrier != s.Carrier || done.From != s.From || done.To != s.To {
 				return nil, fmt.Errorf("%w: leg %d was booked with %s, %s → %s", ErrPlanChanged, i+1, done.Carrier, done.From, done.To)
 			}
+			if done.Unsigned && o.EDI != nil && o.EDI.Cancelling(done.Ref) {
+				return nil, fmt.Errorf("%w: leg %d (%s): reject the order again to hear the carrier's answer", ErrCancelPending, i+1, done.Ref)
+			}
 			ready, containers = afterLeg(done, ready), done.Containers
 			available = ready
 			continue
@@ -209,15 +233,16 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 		}
 		// The carrier's plan, held to the journey before it's used: a leg
 		// that leaves before the cargo is ready, or (last) delivers late.
-		// It's booked with the carrier, but not recorded: the person takes
-		// it up with them (ULP can't cancel a leg yet).
+		// It isn't recorded, and it's withdrawn: the person confirmed
+		// booking this journey, and a leg that doesn't fit it was never
+		// part of that.
 		if dep, ok := parseTime(leg.Departure); !ok || dep.Before(available) {
-			return nil, fmt.Errorf("%w: %s planned leg %d (%s) to leave %s, before the cargo is ready (%s)",
-				ErrPlanUnfit, s.Name, i+1, leg.Ref, leg.Departure, available.Format(envelope.TimeLayout))
+			return nil, o.withdraw(ctx, *leg, fmt.Errorf("%w: %s planned leg %d (%s) to leave %s, before the cargo is ready (%s)",
+				ErrPlanUnfit, s.Name, i+1, leg.Ref, leg.Departure, available.Format(envelope.TimeLayout)))
 		}
 		if arr, ok := parseTime(leg.Arrival); last && hasLatest && (!ok || arr.After(latest)) {
-			return nil, fmt.Errorf("%w: %s planned leg %d (%s) to arrive %s, after the order's delivery date %s",
-				ErrPlanUnfit, s.Name, i+1, leg.Ref, leg.Arrival, req.PlaceOfDelivery.Latest)
+			return nil, o.withdraw(ctx, *leg, fmt.Errorf("%w: %s planned leg %d (%s) to arrive %s, after the order's delivery date %s",
+				ErrPlanUnfit, s.Name, i+1, leg.Ref, leg.Arrival, req.PlaceOfDelivery.Latest))
 		}
 		if _, err := o.Orders.Bookings.Update(self, ref, func(b *store.Booking) error {
 			// Still pending (the claim keeps a hand-made answer out, and a
@@ -244,6 +269,104 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 		return nil, err
 	}
 	return conf, nil
+}
+
+// withdraw cancels a leg booked but not recorded (its plan doesn't fit),
+// and says so after why: withdrawn, or kept by its carrier.
+func (o *Orchestrator) withdraw(ctx context.Context, leg store.LegRef, why error) error {
+	if err := o.cancelLeg(ctx, leg); err != nil {
+		return fmt.Errorf("%w; it couldn't be withdrawn, so take it up with the carrier: %w", why, err)
+	}
+	return fmt.Errorf("%w; withdrawn from the carrier", why)
+}
+
+// cancelLeg cancels one leg with its carrier: over EDI for a carrier
+// without a node, else as a ULP booking cancellation. ErrLegKept if the
+// carrier refused.
+func (o *Orchestrator) cancelLeg(ctx context.Context, leg store.LegRef) error {
+	if leg.Unsigned {
+		if o.EDI == nil {
+			return fmt.Errorf("%w: %s %s (no EDI gateway)", ErrCancelFailed, leg.Carrier, leg.Ref)
+		}
+		ack, err := o.EDI.Cancel(ctx, leg.Carrier, leg.Ref)
+		if errors.Is(err, ErrNoAck) {
+			return fmt.Errorf("%w: %s %s: %w", ErrCancelPending, leg.Carrier, leg.Ref, err)
+		}
+		if err != nil {
+			return fmt.Errorf("%w: %s %s: %w", ErrCancelFailed, leg.Carrier, leg.Ref, err)
+		}
+		if !ack.Accepted {
+			return fmt.Errorf("%w: %s refused to cancel %s (EDI errors %s)", ErrLegKept, leg.Name, leg.Ref, strings.Join(ack.Errors, ", "))
+		}
+		return nil
+	}
+	if o.Cancel == nil {
+		return fmt.Errorf("%w: %s %s (no way to cancel a ULP leg here)", ErrCancelFailed, leg.Carrier, leg.Ref)
+	}
+	a, err := o.Cancel.CancelLeg(ctx, leg.Carrier, leg.Ref)
+	if errors.Is(err, shipper.ErrCancelled) {
+		return nil // cancelled before, its leg not yet off the order
+	}
+	if err != nil {
+		var remote *node.RemoteError
+		if errors.As(err, &remote) {
+			// The carrier's own words stay out of what we show: its code.
+			err = errors.New(remote.Code)
+		}
+		return fmt.Errorf("%w: %s %s: %w", ErrCancelFailed, leg.Carrier, leg.Ref, err)
+	}
+	if a.Status != intents.StatusCancelled {
+		codes := make([]string, len(a.Messages))
+		for n, m := range a.Messages {
+			codes[n] = m.Code
+		}
+		return fmt.Errorf("%w: %s refused to cancel %s (%s)", ErrLegKept, leg.Name, leg.Ref, strings.Join(codes, ", "))
+	}
+	return nil
+}
+
+// Reject answers a pending order with a rejection, cancelling first the
+// legs booked for it, last first. Each leg cancelled comes off the order
+// (kept as withdrawn); if a carrier keeps its leg, Reject stops there:
+// the order stays pending with the legs before it, and the person decides
+// (booking again resumes after them). It is the step a person at the
+// forwarder confirms; no model calls it.
+func (o *Orchestrator) Reject(ctx context.Context, ref string, conf *intents.ForwardingConfirmationBody) error {
+	if conf.Status != intents.StatusRejected {
+		return fmt.Errorf("%w: Reject rejects", ErrInvalidAnswer)
+	}
+	release, err := o.Orders.claim(ref)
+	if err != nil {
+		return err
+	}
+	defer release()
+	self := o.Orders.Node.Domain()
+	b, err := o.Orders.Bookings.Get(self, ref)
+	if err != nil || b.Order == nil {
+		return fmt.Errorf("%w: %s", ErrUnknownOrder, ref)
+	}
+	if b.Order.Confirmation.Status != intents.StatusPending {
+		return fmt.Errorf("%w: %s is %s", ErrAnswered, ref, b.Order.Confirmation.Status)
+	}
+	for i := len(b.Order.Legs) - 1; i >= 0; i-- {
+		leg := b.Order.Legs[i]
+		if err := o.cancelLeg(ctx, leg); err != nil {
+			return fmt.Errorf("leg %d of %s: %w", i+1, ref, err)
+		}
+		if _, err := o.Orders.Bookings.Update(self, ref, func(b *store.Booking) error {
+			// Still pending (the claim keeps a hand-made answer out, and a
+			// reset is the only other change), and this still its last leg.
+			if b.Order == nil || b.Order.Confirmation.Status != intents.StatusPending || len(b.Order.Legs) != i+1 {
+				return errors.New("forwarder: the order changed meanwhile")
+			}
+			b.Order.Legs = b.Order.Legs[:i]
+			b.Order.Withdrawn = append(b.Order.Withdrawn, leg)
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	return o.Orders.answer(ctx, ref, conf)
 }
 
 // afterLeg is when the cargo is ready for the next leg: a truck's
@@ -354,6 +477,9 @@ func (o *Orchestrator) bookEDI(ctx context.Context, b store.Booking, i int, s St
 		sent, ack, ok := o.EDI.Instructed(instruction.Reference)
 		if !ok {
 			break
+		}
+		if ack != nil && ack.Accepted && o.EDI.Cancelling(instruction.Reference) && !o.EDI.Withdrawn(instruction.Reference) {
+			return nil, fmt.Errorf("%w: leg %d (%s)", ErrCancelPending, i+1, instruction.Reference)
 		}
 		if ack == nil || ack.Accepted && !o.EDI.Withdrawn(instruction.Reference) {
 			instruction = sent

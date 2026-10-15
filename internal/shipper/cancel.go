@@ -39,15 +39,22 @@ var (
 // the person to see. Like Book, it is a deterministic send step, run only
 // after a person confirmed; no model calls it.
 func (s *Shipper) Cancel(ctx context.Context, carrier, ref string) (*intents.BookingCancellationResponseBody, error) {
+	if s.InOrder != nil && s.InOrder(carrier, ref) {
+		return nil, fmt.Errorf("%w: %s with %s", ErrLegOfOrder, ref, carrier)
+	}
+	return s.CancelLeg(ctx, carrier, ref)
+}
+
+// CancelLeg is Cancel for a leg of one of our forwarding orders: the
+// forwarder's orchestrator cancels its legs this way, as the order's
+// business (rejecting the order, withdrawing a plan that doesn't fit).
+func (s *Shipper) CancelLeg(ctx context.Context, carrier, ref string) (*intents.BookingCancellationResponseBody, error) {
 	b, err := s.Bookings.Get(carrier, ref)
 	if err != nil || b.Order != nil {
 		return nil, fmt.Errorf("%w: booking %s with %s", ErrNotOurBooking, ref, carrier)
 	}
 	if b.Cancelled() {
 		return nil, fmt.Errorf("%w: %s with %s", ErrCancelled, ref, carrier)
-	}
-	if s.InOrder != nil && s.InOrder(carrier, ref) {
-		return nil, fmt.Errorf("%w: %s with %s", ErrLegOfOrder, ref, carrier)
 	}
 	h := envelope.NewHeader(intents.BookingCancellation, s.Node.Domain(), carrier, s.Now())
 	h.BookingRef = &ref

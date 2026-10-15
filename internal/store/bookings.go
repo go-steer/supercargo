@@ -64,6 +64,10 @@ type OrderBooking struct {
 	// Legs are the legs the forwarder booked for the order, in journey
 	// order (the forwarder's record; empty on the shipper's side).
 	Legs []LegRef
+	// Withdrawn are legs booked for the order and then cancelled with
+	// their carriers, in the order they were cancelled (the forwarder's
+	// record).
+	Withdrawn []LegRef
 }
 
 // LegRef is one leg a forwarder booked for an order: with whom, under

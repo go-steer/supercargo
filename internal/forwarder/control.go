@@ -69,7 +69,9 @@ type OrderView struct {
 	Request intents.ForwardingRequestBody      `json:"request"`
 	Answer  intents.ForwardingConfirmationBody `json:"answer"`
 	Legs    []store.LegRef                     `json:"legs"`
-	Steps   []Step                             `json:"steps,omitempty"`
+	// Withdrawn are legs booked for the order and then cancelled.
+	Withdrawn []store.LegRef `json:"withdrawn,omitempty"`
+	Steps     []Step         `json:"steps,omitempty"`
 	// PlanError is why there is no plan (no lane serves the order).
 	PlanError string `json:"planError,omitempty"`
 	// Journey is measured against the plan the shipper was told: a leg
@@ -100,7 +102,7 @@ func RegisterControl(mux *http.ServeMux, o *Orders, orch *Orchestrator, relay *R
 			return
 		}
 		v := &OrderView{Ref: b.Ref, Shipper: b.Shipper, Request: b.Order.Request, Answer: b.Order.Confirmation,
-			Legs: append([]store.LegRef{}, b.Order.Legs...), Proposals: []Proposal{}}
+			Legs: append([]store.LegRef{}, b.Order.Legs...), Withdrawn: append([]store.LegRef(nil), b.Order.Withdrawn...), Proposals: []Proposal{}}
 		if orch != nil {
 			if v.Steps, err = orch.plan(b); err != nil {
 				v.PlanError = err.Error()
@@ -171,7 +173,7 @@ func RegisterControl(mux *http.ServeMux, o *Orders, orch *Orchestrator, relay *R
 			switch {
 			case errors.Is(err, ErrUnknownOrder):
 				control.Answer(w, http.StatusNotFound, BookResponse{Error: err.Error()})
-			case errors.Is(err, ErrAnswered):
+			case errors.Is(err, ErrAnswered), errors.Is(err, ErrCancelPending):
 				control.Answer(w, http.StatusConflict, BookResponse{Error: err.Error(), Steps: steps})
 			case errors.Is(err, ErrNoLane), errors.Is(err, ErrEDILeg), errors.Is(err, ErrInvalidAnswer), errors.Is(err, ErrPlanUnfit), errors.Is(err, ErrPlanChanged):
 				control.Answer(w, http.StatusUnprocessableEntity, BookResponse{Error: err.Error(), Steps: steps})
@@ -189,11 +191,17 @@ func RegisterControl(mux *http.ServeMux, o *Orders, orch *Orchestrator, relay *R
 			return
 		}
 		a := req.Answer
-		err := o.Answer(context.WithoutCancel(r.Context()), req.OrderRef, &a)
+		var err error
+		if a.Status == intents.StatusRejected && orch != nil {
+			// Its legs booked so far are cancelled first.
+			err = orch.Reject(context.WithoutCancel(r.Context()), req.OrderRef, &a)
+		} else {
+			err = o.Answer(context.WithoutCancel(r.Context()), req.OrderRef, &a)
+		}
 		switch {
 		case errors.Is(err, ErrUnknownOrder):
 			control.Answer(w, http.StatusNotFound, AnswerResponse{Error: err.Error()})
-		case errors.Is(err, ErrAnswered), errors.Is(err, ErrLegsBooked):
+		case errors.Is(err, ErrAnswered), errors.Is(err, ErrLegsBooked), errors.Is(err, ErrLegKept), errors.Is(err, ErrCancelPending):
 			control.Answer(w, http.StatusConflict, AnswerResponse{Error: err.Error()})
 		case errors.Is(err, ErrInvalidAnswer):
 			control.Answer(w, http.StatusBadRequest, AnswerResponse{Error: err.Error()})

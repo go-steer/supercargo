@@ -277,7 +277,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 		a.Shipper.InOrder = a.Orders.HoldsLeg
 		// The legs are booked through the shipper side, which a forwarder
 		// has (config requires it).
-		a.Orchestrator = &forwarder.Orchestrator{Orders: a.Orders, Legs: a.Shipper, Lanes: cfg.Forwarder.Lanes,
+		a.Orchestrator = &forwarder.Orchestrator{Orders: a.Orders, Legs: a.Shipper, Cancel: a.Shipper, Lanes: cfg.Forwarder.Lanes,
 			Name: cfg.Name, Endpoint: RESTURL(cfg), Now: time.Now}
 		// The legs' events, re-issued to the orders' shippers; a delay's
 		// proposals wait for a person.

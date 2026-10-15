@@ -133,6 +133,10 @@ func TestCancelOtherAnswer(t *testing.T) {
 	if code, _ := postCancel(t, ControlHandler(o, nil), ob, "OB-BKG-R-0913"); code != http.StatusConflict {
 		t.Errorf("a leg of an order: HTTP %d", code)
 	}
+	// The forwarder's own path, as the order's business.
+	if a, err := o.CancelLeg(ctx, ob, "OB-BKG-R-0913"); err != nil || a.Status != intents.StatusCancelled || sent != 1 {
+		t.Errorf("the order's leg: %+v, %v, sent %d", a, err, sent)
+	}
 }
 
 // TestInboundCancelled: a cancelled booking's subscription is over.
