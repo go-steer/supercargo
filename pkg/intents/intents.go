@@ -119,6 +119,11 @@ var specs = map[string]spec{
 	// confirmed with the forwarder's reference and the planned journey.
 	ForwardingRequest:      {bookingRef: forbidden, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &ForwardingRequestBody{} }},
 	ForwardingConfirmation: {bookingRef: required, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &ForwardingConfirmationBody{} }},
+	// Where an order stands, asked by the shipper's own reference (it may
+	// not have the forwarder's: its first answer may have been lost), and
+	// answered with the order's reference in the header when found.
+	ForwardingStatusRequest:  {bookingRef: forbidden, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &ForwardingStatusRequestBody{} }},
+	ForwardingStatusResponse: {bookingRef: optional, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &ForwardingStatusResponseBody{} }},
 }
 
 // Supported reports whether Decode has a body type for intent.
@@ -247,6 +252,15 @@ func crossCheck(h *envelope.Header, b Body) error {
 	}
 	if c, ok := b.(*ForwardingConfirmationBody); ok && c.OrderRef != *h.BookingRef {
 		return fmt.Errorf("body.forwarder_reference %s is not header.bookingRef %s", logsafe.Quote(c.OrderRef), logsafe.Quote(*h.BookingRef))
+	}
+	if r, ok := b.(*ForwardingStatusResponseBody); ok {
+		// The header names the order found, and nothing when none was.
+		switch {
+		case r.Found() && (h.BookingRef == nil || *h.BookingRef != r.OrderRef):
+			return fmt.Errorf("header.bookingRef is not body.forwarder_reference %s", logsafe.Quote(r.OrderRef))
+		case !r.Found() && h.BookingRef != nil:
+			return fmt.Errorf("header.bookingRef %s names an order not found", logsafe.Quote(*h.BookingRef))
+		}
 	}
 	if a, ok := b.(*RoadBookingAmendmentBody); ok && a.BookingRef != *h.BookingRef {
 		return fmt.Errorf("body.carrier_booking_reference %s is not header.bookingRef %s", logsafe.Quote(a.BookingRef), logsafe.Quote(*h.BookingRef))

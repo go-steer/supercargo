@@ -39,6 +39,9 @@ func (s *Shipper) Order(ctx context.Context, forwarder string, req *intents.Forw
 		return nil, ErrNoShipperRole
 	}
 	h := envelope.NewHeader(intents.ForwardingRequest, s.Node.Domain(), forwarder, s.Now())
+	// Kept until its first answer is recorded: if that answer is lost, a
+	// status request can still find the order (OrderStatus).
+	s.rememberSent(h.MessageID, forwarder, req)
 	resp, err := s.Node.Exchange(ctx, h, req, intents.ForwardingConfirmation)
 	if err != nil {
 		return nil, err
@@ -48,29 +51,40 @@ func (s *Shipper) Order(ctx context.Context, forwarder string, req *intents.Forw
 		return nil, errors.New("shipper: response is not a forwarding confirmation")
 	}
 	if conf.Status == intents.StatusRejected {
+		s.forgetSent(h.MessageID)
 		return conf, nil
 	}
-	if req.Subscription != nil && conf.SubscriptionID == "" {
-		return nil, fmt.Errorf("%w: %s's answer to %s has no subscription_id", ErrPlanMismatch, forwarder, req.ShipperRef)
+	if err := checkFirstAnswer(forwarder, req, conf); err != nil {
+		return nil, err
 	}
-	if req.Subscription == nil && conf.SubscriptionID != "" {
-		return nil, fmt.Errorf("%w: %s's answer to %s has a subscription the order didn't ask for", ErrPlanMismatch, forwarder, req.ShipperRef)
-	}
-	if conf.Status == intents.StatusConfirmed {
-		if err := intents.FitsOrder(req, conf); err != nil {
-			return nil, fmt.Errorf("%w: %s's answer to %s: %w", ErrPlanMismatch, forwarder, req.ShipperRef, err)
-		}
-	}
-	if err := s.Bookings.Add(store.Booking{
-		Ref: conf.OrderRef, Shipper: s.Node.Domain(), Operator: forwarder,
-		Order:     &store.OrderBooking{Request: *req, MessageID: h.MessageID, Confirmation: *conf},
-		CreatedAt: s.Now(),
-	}); errors.Is(err, store.ErrExists) {
-		return nil, fmt.Errorf("shipper: %s took %s again: %w", forwarder, conf.OrderRef, err)
-	} else if err != nil {
-		return nil, fmt.Errorf("shipper: recording %s's answer to %s: %w", forwarder, req.ShipperRef, err)
+	if _, err := s.record(forwarder, req, h.MessageID, conf); err != nil {
+		return nil, err
 	}
 	return conf, nil
+}
+
+// record holds the order sent to forwarder in message id, with its first
+// answer conf, and stops awaiting it. An order already held from that
+// message (taken up meanwhile by a status request, or recorded by its
+// first answer) is reported held; any other under the reference is an
+// error.
+func (s *Shipper) record(forwarder string, req *intents.ForwardingRequestBody, id string, conf *intents.ForwardingConfirmationBody) (held bool, err error) {
+	err = s.Bookings.Add(store.Booking{
+		Ref: conf.OrderRef, Shipper: s.Node.Domain(), Operator: forwarder,
+		Order:     &store.OrderBooking{Request: *req, MessageID: id, Confirmation: *conf},
+		CreatedAt: s.Now(),
+	})
+	if errors.Is(err, store.ErrExists) {
+		if !s.heldOrder(forwarder, conf.OrderRef, id) {
+			return false, fmt.Errorf("shipper: %s took %s again: %w", forwarder, conf.OrderRef, err)
+		}
+		held, err = true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("shipper: recording %s's answer to %s: %w", forwarder, req.ShipperRef, err)
+	}
+	s.forgetSent(id)
+	return held, nil
 }
 
 // OrderAnswers handles ulp.forwarding.confirmation pushed by a forwarder:

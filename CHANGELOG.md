@@ -14,6 +14,8 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- An order status request (a protocol addition: `ulp.forwarding.status.request` and `.response`, ULP's own). The shipper asks its forwarder where an order stands, by its own reference. The answer names the order, the ID of the signed order message it holds, its current answer (pending, confirmed with the journey, or rejected) and, once confirmed, the delivery as estimated now. Only the order's own shipper finds it. A shipper whose first answer was lost takes the order up: it keeps each order it sends until that answer is recorded, and a status naming one of those messages is held to the order as a first answer is. The forwarder's later answers are then taken. The control API's `POST /orders/status` asks, and the door-to-door smoke test asks it.
+
 - The door-to-door demo on Cloud Run (`deploy/cloudrun/deploy.sh`, `docs/guides/runbook-cloudrun.md`). Meridian Forwarding and Serra Transportes join Ocean Blue and Cymbal Shoes, each its own service at its own `run.app` domain. Polder Haulage, which has no node, runs as an EDI sidecar in Meridian's service; the two share only their file drops, on in-memory volumes. Cymbal's address book lists Meridian and its two doors, and its private context has the Brazil launch, dated from the day of the deploy. The runbook adds the door-to-door scene and its failure modes. Behind it:
   - `operator.transits` gives a port of discharge its own sailing time, so one service runs to Newark (134 h) and to Santos (380 h).
   - `forwarder.ediId` gives a forwarder an EDI identity other than its domain, since a `run.app` domain is too long for EDIFACT's 35 characters. A config whose identity wouldn't fit is refused.
