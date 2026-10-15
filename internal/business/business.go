@@ -265,16 +265,20 @@ func (c *Context) Guard() func(body []byte) error {
 		}
 		needles = append(needles, n)
 	}
-	for _, s := range c.Secrets() {
-		add([]byte(s))
-		// As JSON writes it in a string, with and without HTML escaping.
-		for _, html := range []bool{true, false} {
-			var buf bytes.Buffer
-			enc := json.NewEncoder(&buf)
-			enc.SetEscapeHTML(html)
-			if enc.Encode(s) == nil {
-				b := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
-				add(b[1 : len(b)-1])
+	for _, secret := range c.Secrets() {
+		// As written, and folded as the assistant folds the text it sends
+		// (each run of whitespace one space).
+		for _, s := range []string{secret, strings.Join(strings.Fields(secret), " ")} {
+			add([]byte(s))
+			// As JSON writes it in a string, with and without HTML escaping.
+			for _, html := range []bool{true, false} {
+				var buf bytes.Buffer
+				enc := json.NewEncoder(&buf)
+				enc.SetEscapeHTML(html)
+				if enc.Encode(s) == nil {
+					b := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+					add(b[1 : len(b)-1])
+				}
 			}
 		}
 	}

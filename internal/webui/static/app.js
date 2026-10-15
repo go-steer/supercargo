@@ -974,7 +974,31 @@ async function loadChat() {
 
 // draftDialog opens a draft's confirmation dialog: a booking or a delay.
 function draftDialog(d, side) {
-  if (d.disruption) disruptionDraftDialog(d, side); else bookingDialog(d, chatVia(side));
+  if (d.disruption) disruptionDraftDialog(d, side); else if (d.order) orderDraftDialog(d, chatVia(side)); else bookingDialog(d, chatVia(side));
+}
+
+// orderDraftDialog is a drafted door-to-door order's confirmation: all
+// that goes to the forwarder, and the private context that stays here.
+const NOT_SENT = { requiredBy: 'your deadline', receivingSlot: 'your receiving slot', notes: 'your note' };
+function orderDraftDialog(d, via) {
+  const q = d.order;
+  const rows = [
+    ['Forwarder:', d.to], ...(d.newPartner ? [['', 'A new partner: not in your address book, and never ordered with before. Check the domain.', 'newpartner']] : []),
+    ['Incoterms:', `${q.incoterms.rule} ${q.incoterms.version} · ${q.incoterms.named_place}`],
+    ['Shipper:', party(q.shipper)], ['Consignee:', party(q.consignee)],
+    ['From (door):', place(q.place_of_receipt) + (q.place_of_receipt.earliest ? ' · ready from ' + dayTime(q.place_of_receipt.earliest) : '')],
+    ['To (door):', place(q.place_of_delivery)],
+    ['Deliver by:', `${dayTime(q.place_of_delivery.latest)} UTC (sent: the forwarder plans to it)`, 'sent'],
+    ['Goods:', [equipment(q.containers) + `, ${(q.containers[0] || {}).gross_weight_kg} kg each`, `${q.cargo.description} · HS ${q.cargo.hs_code}`].join(' · ')],
+    ['Reference:', q.shipper_reference],
+  ];
+  if (q.subscription) rows.push(['Updates:', `${(q.subscription.intents || []).join(', ')} → ${q.subscription.endpoint}`]);
+  // The deadline first, then the slot, then the notes.
+  const notSent = Object.entries(d.notSent || {}).sort(([a], [b]) => Object.keys(NOT_SENT).indexOf(a) - Object.keys(NOT_SENT).indexOf(b));
+  for (const [k, v] of notSent) rows.push(['Not sent:', `${NOT_SENT[k] || k}, ${v} (it stays with us)`, 'notsent']);
+  let dlg = null;
+  const discard = discardLink(d, via, () => dlg.close());
+  dlg = modal(`Order draft ${d.draftId}`, rows, `Send this order? It is signed by your node and sent to ${d.to}.`, 'Send order', () => via.send(d), [discard]);
 }
 
 function renderChat() {

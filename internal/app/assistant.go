@@ -54,6 +54,20 @@ func ShipperAssistant(cfg *config.Config, node assistant.Node) (*assistant.Assis
 		return nil, err
 	}
 	a.Model, a.Skills = model, agentSkills
+	// The company's own assistant, unlike an outside agent's, reads the
+	// private business context and orders between the company's places.
+	if cfg.Business != nil {
+		if a.Business, err = business.Load(cfg.Business.File); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.AddressBook != nil {
+		f, err := directory.Load(cfg.AddressBook.File)
+		if err != nil {
+			return nil, fmt.Errorf("addressBook: %w", err)
+		}
+		a.Places = f.Places()
+	}
 	return a, nil
 }
 

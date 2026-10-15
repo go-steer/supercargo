@@ -30,3 +30,4 @@ The HTML pages here (walk-throughs, mockups) are published at **https://go-steer
 - [Route map](ui/route-map.md): the journey view's design.
 - [Web UI mockup](ui/web-ui-mockup.html): the approved look of the browser UI (open it in a browser).
 - [Door-to-door mockup](ui/door-to-door-mockup.html): the forwarder's desk (orders, plan, legs, proposals) and the shipper's multi-leg journey with signed and unsigned sources.
+- [Agents in door-to-door mockup](ui/agents-mockup.html): the assistant drafting an order, the desk's assistant on a delay, and "What can we do?" on Cymbal's delay banner.

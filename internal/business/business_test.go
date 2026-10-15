@@ -110,6 +110,18 @@ func TestGuardWithoutHTMLEscaping(t *testing.T) {
 	}
 }
 
+// TestGuardFolded: a note with runs of spaces is caught as the assistant
+// sends it, folded to single spaces.
+func TestGuardFolded(t *testing.T) {
+	c, err := Parse([]byte(`notes: ["Brazil launch:  the stores   open"]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Guard()([]byte(`{"cargo":{"description":"Footwear, Brazil launch: the stores open"}}`)); !errors.Is(err, ErrLeak) {
+		t.Errorf("the folded note: %v, want ErrLeak", err)
+	}
+}
+
 func TestParseRejects(t *testing.T) {
 	for name, text := range map[string]string{
 		"unknown key":       "shipments: []\nsecret: x\n",

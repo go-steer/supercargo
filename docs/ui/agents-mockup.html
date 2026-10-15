@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<!--
+Copyright 2026 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+<!--
+supercargo browser UI: agents in the door-to-door flow, a static mockup for
+review. Sample data only; nothing here talks to a node.
+
+  1. Cymbal · the assistant drafts a door-to-door order from a sentence
+  2. Cymbal · the order draft's dialog: what Meridian gets, what stays home
+  3. Meridian · the desk's assistant on a delay: the options, a draft to confirm
+  4. Cymbal · "What can we do?" on the delay banner: the assistant, with the
+     company's private context, suggests; a question to Meridian, previewed
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>supercargo · agents in door-to-door · mockup</title>
+<style>
+:root { --aurora-1: #217bfe; --aurora-2: #078efb; --aurora-3: #a770ef; --aurora-4: #ff5e62;
+  --aurora: linear-gradient(90deg, var(--aurora-1), var(--aurora-2), var(--aurora-3), var(--aurora-4)); }
+body[data-theme='grayscale-dark'] { --bg: #202124; --bg-surface: #1a1b1e; --bg-elevated: #2a2b2e; --border: #3c4043; --border-soft: #5f6368;
+  --text: #e8eaed; --text-dim: #9aa0a6; --green: #81c995; --red: #f28b82; --yellow: #fdd663; --blue: #8ab4f8; --purple: #c58af9; --cyan: #78d9ec;
+  --orange: #fcad70; --glow: 0 0 20px rgb(33 123 254 / 15%), 0 0 40px rgb(167 112 239 / 10%); }
+body[data-theme='grayscale-light'] { --bg: #f8f9fa; --bg-surface: #fff; --bg-elevated: #f1f3f4; --border: #dadce0; --border-soft: #bdc1c6;
+  --text: #202124; --text-dim: #5f6368; --green: #188038; --red: #d50000; --yellow: #dc6d00; --blue: #1a73e8; --purple: #9334e6; --cyan: #007b83;
+  --orange: #c26401; --glow: 0 0 18px rgb(33 123 254 / 12%), 0 0 36px rgb(167 112 239 / 8%); }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 13px; background: var(--bg); color: var(--text); }
+button { font: inherit; color: inherit; background: none; border: 1px solid var(--border); border-radius: 4px; padding: 3px 9px; cursor: pointer; }
+button.primary { border-color: var(--blue); color: var(--blue); }
+.dim { color: var(--text-dim); }
+.mockbar { display: flex; gap: 14px; align-items: center; padding: 4px 12px; font-size: 11px; color: var(--text-dim);
+  background: repeating-linear-gradient(45deg, var(--bg-elevated) 0 8px, var(--bg) 8px 16px); border-bottom: 1px dashed var(--border-soft); }
+.mockbar select { font: inherit; background: var(--bg-surface); color: var(--text); border: 1px solid var(--border); border-radius: 3px; }
+header { display: flex; align-items: center; gap: 16px; padding: 8px 14px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+.wordmark { font-weight: 700; font-size: 15px; background: var(--aurora); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.who b { font-weight: 600; }
+.spacer { flex: 1; }
+.demo-badge { font-size: 10px; letter-spacing: .12em; padding: 2px 6px; border: 1px solid var(--yellow); color: var(--yellow); border-radius: 3px; }
+nav.roles { display: flex; gap: 22px; padding: 0 14px; background: var(--bg-surface); border-bottom: 1px solid var(--border); }
+.rolegroup { display: flex; align-items: center; gap: 4px; }
+.rolegroup > .label { font-size: 10px; letter-spacing: .13em; text-transform: uppercase; color: var(--text-dim); margin-right: 6px; }
+.tab { border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 9px 10px 7px; color: var(--text-dim); }
+.tab.on { color: var(--text); border-bottom-color: var(--blue); }
+main { flex: 1; display: grid; grid-template-columns: minmax(420px, 1.1fr) minmax(440px, 1fr); gap: 10px; padding: 10px; }
+.panel { display: flex; flex-direction: column; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.panel-bar { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--border); background: var(--bg-elevated); }
+.panel-title { font-size: 10px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+.hint { color: var(--text-dim); font-size: 11px; }
+.panel.ai { border: 1px solid transparent; box-shadow: var(--glow);
+  background: linear-gradient(var(--bg-surface), var(--bg-surface)) padding-box, var(--aurora) border-box; }
+.panel.ai .panel-title { background: var(--aurora); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.chat { padding: 4px 14px 10px; flex: 1; }
+.turn { margin: 12px 0; }
+.turn .who { font-size: 11px; letter-spacing: .1em; font-weight: 700; }
+.turn.you .who { color: var(--blue); }
+.turn.ai .who { background: var(--aurora); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.turn.ai .md { border-left: 2px solid; border-image: linear-gradient(180deg, var(--aurora-1), var(--aurora-3), var(--aurora-4)) 1; padding-left: 10px; line-height: 1.5; }
+.md p { margin: 0 0 6px; }
+.md ol, .md ul { margin: 2px 0 6px; padding-left: 20px; }
+.md li { margin: 3px 0; }
+.toolcall { color: var(--text-dim); font-size: 12px; margin: 3px 0 3px 2px; }
+.toolcall .okk { color: var(--green); }
+.draftlink { margin: 6px 6px 0 0; }
+.composer { display: flex; gap: 8px; border-top: 1px solid var(--border); padding: 8px 12px; }
+.composer textarea { flex: 1; resize: none; min-height: 38px; font: inherit; color: var(--text-dim); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 7px 9px; }
+.tag { white-space: nowrap; font-size: 10px; letter-spacing: .08em; padding: 0 6px; border-radius: 3px; border: 1px solid currentColor; }
+.tag.ulp { color: var(--green); } .tag.edi { color: var(--yellow); } .tag.private { color: var(--purple); }
+.private { font-size: 11px; color: var(--text-dim); border-left: 2px solid var(--purple); padding-left: 8px; margin: 6px 0; }
+.msg { border-left: 3px solid var(--green); padding: 4px 10px; font-size: 12px; }
+.msg + .msg { border-top: 1px solid var(--border); }
+.msg .chip { display: inline-block; padding: 0 7px; border-radius: 10px; font-size: 11px; border: 1px solid currentColor; color: var(--purple); margin: 0 6px; }
+.msg .chip.pink { color: #c5157a; } .msg .chip.alert { color: var(--orange); }
+.msg .sum { color: var(--text-dim); padding-left: 118px; }
+.ts { color: var(--blue); }
+.banner { display: flex; gap: 12px; align-items: center; padding: 7px 14px; font-weight: 600; background: color-mix(in srgb, var(--orange) 22%, var(--bg-surface)); border-bottom: 2px solid var(--orange); }
+.banner .imp { color: var(--orange); }
+.banner button.ai { border: 1px solid transparent; background: linear-gradient(var(--bg-surface), var(--bg-surface)) padding-box, var(--aurora) border-box; font-weight: 600; }
+.scrim { position: fixed; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 80%, transparent); }
+.dialog { width: 680px; background: var(--bg-surface); border: 1px solid var(--blue); border-radius: 8px; padding: 16px 20px; box-shadow: 0 10px 50px rgb(0 0 0 / 40%); }
+.dialog h2 { font-size: 13px; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 10px; color: var(--blue); }
+.row { display: grid; grid-template-columns: 120px 1fr; gap: 10px; padding: 3px 0; }
+.row .k { color: var(--text-dim); }
+.row.notsent .k, .row.notsent .v { color: var(--green); }
+.row.sent .v b { color: var(--blue); font-weight: 600; }
+.q { margin-top: 14px; font-weight: 700; }
+.buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.fine { color: var(--text-dim); font-size: 11px; margin-top: 8px; }
+.card { margin: 8px 12px; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.card .top { display: flex; gap: 10px; align-items: center; }
+.badge { white-space: nowrap; font-size: 11px; padding: 0 7px; border-radius: 10px; border: 1px solid currentColor; line-height: 18px; }
+.badge.del { color: var(--orange); } .badge.prop { color: var(--orange); background: color-mix(in srgb, var(--orange) 14%, transparent); }
+.option { border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; margin: 6px 0; }
+.option.rec { border-color: var(--blue); }
+.option .h { font-weight: 600; }
+.option .h .tag { margin-left: 6px; }
+.preview { border: 1px dashed var(--border-soft); border-radius: 4px; padding: 6px 8px; margin: 6px 0; font-size: 12px; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body data-theme="grayscale-light">
+<div class="mockbar">
+  <b>MOCKUP</b> agents in door-to-door · sample data
+  <label>screen <select id="screen">
+    <option value="s1">1 · Cymbal · the assistant drafts an order</option>
+    <option value="s2">2 · Cymbal · the order draft's dialog</option>
+    <option value="s3">3 · Meridian · the desk's assistant on a delay</option>
+    <option value="s4">4 · Cymbal · "What can we do?" on the delay</option>
+  </select></label>
+  <label>theme <select id="theme"><option value="grayscale-light">light</option><option value="grayscale-dark">dark</option></select></label>
+</div>
+
+<!-- ═══ Cymbal: screens 1, 2 and 4 ═════════════════════════════════════ -->
+<section id="cymbal">
+  <header><span class="wordmark">⟨u⟩lp</span><span class="who"><b>Cymbal Shoes</b> <span class="dim">cymbal-shoes.example · Alex, Logistics (shipper)</span></span>
+    <span class="spacer"></span><span class="demo-badge">DEMO MODE</span></header>
+  <div class="banner" data-s="s4">⚠ DELAY · MF-0007 · ETA Wed, Nov 4 → Sat, Nov 7 <span class="imp">misses your deadline</span><span class="spacer"></span>
+    <button class="ai">✦ What can we do?</button><button>view</button><button>×</button></div>
+  <nav class="roles"><span class="rolegroup"><button class="tab on">Assistant</button><button class="tab">Shipments</button></span></nav>
+  <main>
+    <div class="panel ai">
+      <div class="panel-bar"><span class="panel-title">Assistant</span><span class="hint">shipper role · it drafts; you decide</span></div>
+      <!-- Screens 1–2: drafting the order. -->
+      <div class="chat" data-s="s1 s2">
+        <div class="turn you"><div class="who">YOU · 09:12</div>
+          <div>Ask Meridian Forwarding to ship one 45-footer of the Brazil launch sneakers from our Tilburg warehouse to the Cajamar DC, door to door.</div></div>
+        <div class="turn ai"><div class="who">ASSISTANT · 09:12</div>
+          <div class="toolcall">▸ get_business_context <span class="okk">✓</span> <span class="tag private">PRIVATE · STAYS HERE</span></div>
+          <div class="toolcall">▸ list_partners <span class="okk">✓</span></div>
+          <div class="toolcall">▸ draft_order <span class="dim">NLTLB → BRSAO, DAP, 1 × 45G1</span> <span class="okk">✓</span></div>
+          <div class="md"><p>Draft <b>OD-0001</b> is ready for <b>Meridian Forwarding</b> (our forwarder): one 45-footer, door to door from Ringbaan Oost 100, Tilburg to Cymbal Calçados DC, dock 2, Cajamar, under DAP.</p>
+            <p>I set <b>deliver by Thu, Nov 5</b>: two days before the launch (Sat, Nov 7), for slack. The launch date itself stays with us; Meridian only sees the deliver-by date.</p>
+            <p>Meridian plans the legs and answers with the journey. Nothing is sent until you confirm.</p></div>
+          <button class="draftlink">Review draft OD-0001…</button></div>
+      </div>
+      <!-- Screen 4: what can we do? -->
+      <div class="chat" data-s="s4" hidden>
+        <div class="turn you"><div class="who">YOU · 14:03 · from the delay banner</div><div>What can we do about the delay on MF-0007?</div></div>
+        <div class="turn ai"><div class="who">ASSISTANT · 14:03</div>
+          <div class="toolcall">▸ get_events <span class="dim">MF-0007</span> <span class="okk">✓</span></div>
+          <div class="toolcall">▸ get_business_context <span class="dim">launch, Cajamar DC slots</span> <span class="okk">✓</span> <span class="tag private">PRIVATE · STAYS HERE</span></div>
+          <div class="md"><p>MF-0007 is now due <b>Sat, Nov 7 02:00</b> (Meridian's alert MF-AL-000010, from Ocean Blue's signed alert: engine repair at Las Palmas). That's three days after the Brazil launch on <b>Wed, Nov 4</b>.</p>
+            <p>What we could do:</p></div>
+          <div class="option rec"><div class="h">1 · Ask Meridian whether it can be expedited <span class="tag ulp">A SIGNED QUESTION</span></div>
+            <div class="dim">E.g. a faster truck from Santos, or collecting at once on discharge. The question I'd send:</div>
+            <div class="preview">"The delivery of MF-0007 has moved to Nov 7. Can any part of the journey after Santos be expedited, and what is the earliest possible delivery?"</div>
+            <div class="private">Not in the question: our launch date, our warehouse slots.</div>
+            <button class="primary draftlink">Ask Meridian</button></div>
+          <div class="option"><div class="h">2 · Move the receiving slot at Cajamar DC</div>
+            <div class="dim">Dock 2 is booked Nov 3–4 for this container; Nov 7 morning is free (from our business context). This is ours to change, nothing is sent.</div></div>
+          <div class="option"><div class="h">3 · Launch with the stock already in Brazil</div>
+            <div class="dim">Your business context notes 1,200 pairs at the São Paulo store room. A partial launch Nov 4, the rest after Nov 7.</div></div>
+          <div class="md"><p>I'd do 1 now and keep 2 ready. Shall I ask Meridian?</p></div></div>
+      </div>
+      <div class="composer"><textarea>Ask about a shipment, order door to door, or book with a carrier…</textarea><button>Send</button></div>
+    </div>
+    <div class="panel">
+      <div class="panel-bar"><span class="panel-title">Messages</span><span class="hint">your side only</span></div>
+      <div data-s="s1 s2"><div class="msg"><span class="ts">09:01:12</span><span class="chip pink">tnt.inquiry.response</span> ocean-blue.example <span class="dim">✓ VERIFIED</span><div class="sum">OB-BKG-1033 arrived at Newark…</div></div></div>
+      <div data-s="s4" hidden>
+        <div class="msg"><span class="ts">14:01:58</span><span class="chip alert">tnt.alert · HIGH</span> meridian-forwarding.example <span class="dim">✓ VERIFIED</span><div class="sum">delay: ETA Nov 4 → Nov 7 · Leg 2 (Ocean Blue) is delayed…</div></div>
+        <div class="msg"><span class="ts">14:01:44</span><span class="chip" style="color:var(--cyan)">tnt.event</span> meridian-forwarding.example <span class="dim">✓ VERIFIED</span><div class="sum">TRANSPORT ARRI EST · BRSSZ · ✓ from EV-000005</div></div>
+      </div>
+    </div>
+  </main>
+  <!-- Screen 2: the order draft's dialog. -->
+  <div class="scrim" data-s="s2" hidden>
+    <div class="dialog">
+      <h2>Order draft OD-0001</h2>
+      <div class="row"><span class="k">Forwarder:</span><span class="v">meridian-forwarding.example <span class="dim"></span></span></div>
+      <div class="row"><span class="k">Incoterms:</span><span class="v">DAP 2020 · Cymbal Calçados DC, Cajamar</span></div>
+      <div class="row"><span class="k">Shipper:</span><span class="v">Cymbal Shoes B.V. · EORI NL123456789</span></div>
+      <div class="row"><span class="k">Consignee:</span><span class="v">Cymbal Calçados Ltda · CNPJ 12.345.678/0001-90</span></div>
+      <div class="row"><span class="k">From (door):</span><span class="v">Ringbaan Oost 100, 5013 CD Tilburg, NL · ready from Mon, Oct 12</span></div>
+      <div class="row"><span class="k">To (door):</span><span class="v">Cymbal Calçados DC, dock 2 · Rodovia Anhanguera km 33, Cajamar SP, BR</span></div>
+      <div class="row sent"><span class="k">Deliver by:</span><span class="v"><b>Thu, Nov 5, 12:00 UTC</b> <span class="dim">(sent: Meridian plans to it)</span></span></div>
+      <div class="row"><span class="k">Goods:</span><span class="v">1 × 45G1, 12,000 kg · Footwear (sneakers) · HS 6404</span></div>
+      <div class="row"><span class="k">Reference:</span><span class="v">CY-PO-55120</span></div>
+      <div class="row"><span class="k">Updates:</span><span class="v">tnt.event, tnt.alert → https://cymbal-shoes.example/ulp</span></div>
+      <div class="row notsent"><span class="k">Not sent:</span><span class="v">your deadline, Sat, Nov 7: the Brazil launch (it stays with us)</span></div>
+      <div class="row notsent"><span class="k">Not sent:</span><span class="v">your receiving slot, Nov 7 08:00-12:00, Brazil launch stock (it stays with us)</span></div>
+      <div class="q">Send this order? It is signed by your node and sent to meridian-forwarding.example.</div>
+      <div class="fine">Discard this draft</div>
+      <div class="buttons"><button>Cancel</button><button class="primary">Send order</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Meridian: screen 3 ════════════════════════════════════════════ -->
+<section id="meridian" hidden>
+  <header><span class="wordmark">⟨u⟩lp</span><span class="who"><b>Meridian Forwarding</b> <span class="dim">meridian-forwarding.example · Mia, Forwarding desk (operator + shipper)</span></span>
+    <span class="spacer"></span><span class="demo-badge">DEMO MODE</span></header>
+  <nav class="roles"><span class="rolegroup"><span class="label">as forwarder</span><button class="tab">Orders</button><button class="tab">Bookings</button><button class="tab on">Assistant</button></span>
+    <span class="rolegroup"><span class="label">as shipper</span><button class="tab">Assistant</button><button class="tab">Shipments</button></span></nav>
+  <main>
+    <div class="panel ai">
+      <div class="panel-bar"><span class="panel-title">Assistant</span><span class="hint">forwarder's desk · it drafts; you decide</span></div>
+      <div class="chat">
+        <div class="turn you"><div class="who">YOU · 14:05</div><div>What should we do about MF-0007?</div></div>
+        <div class="turn ai"><div class="who">ASSISTANT · 14:05</div>
+          <div class="toolcall">▸ get_order <span class="dim">MF-0007</span> <span class="okk">✓</span></div>
+          <div class="toolcall">▸ find_partners <span class="dim">ROAD BRSSZ → BRSAO</span> <span class="okk">✓</span></div>
+          <div class="md"><p><b>Ocean Blue's ship is 72 h late</b> (its signed alert AL-000006: engine repair at Las Palmas); it now reaches Santos Wed, Nov 4 14:00. Serra's truck is booked to collect Mon, Nov 2: before the container is there.</p>
+            <p>Cymbal already has our delay alert (MF-AL-000010): delivery Sat, Nov 7, still well before the order's date (Mon, Dec 14).</p></div>
+          <div class="option rec"><div class="h">1 · Re-time Serra's truck <span class="tag ulp">PROPOSAL MF-PR-000011</span></div>
+            <div class="dim">Collect Thu, Nov 5 20:00 (30 h after the ship, for discharge and release), deliver Sat, Nov 7 02:00. Serra keeps the leg; no new partner.</div>
+            <button class="primary draftlink">Review proposal MF-PR-000011…</button></div>
+          <div class="option"><div class="h">2 · Another trucker from Santos</div>
+            <div class="dim">The directory has <b>TransVale Logística</b> (transvale.example, verified) on BRSSZ → BRSAO. Never booked with; we'd still hold Serra's booking, which ULP can't cancel yet. Not worth it for a delay the date absorbs.</div></div>
+          <div class="md"><p>I'd confirm 1. If Cymbal asks, the delay is Ocean Blue's signed alert; Polder's leg was unaffected (its statuses are EDI, unsigned, all on time).</p></div></div>
+      </div>
+      <div class="composer"><textarea>Ask about orders, legs and proposals…</textarea><button>Send</button></div>
+    </div>
+    <div class="panel">
+      <div class="panel-bar"><span class="panel-title">Order MF-0007</span><span class="hint">from the Orders tab</span></div>
+      <div class="card"><div class="top"><b>MF-0007</b><span class="dim">cymbal-shoes.example</span><span class="spacer"></span><span class="badge prop">1 proposal</span><span class="badge" style="color:var(--cyan)">in transit</span></div>
+        <div>NLTLB Tilburg → BRSAO São Paulo · delivery Sat, Nov 7</div>
+        <div class="dim">leg 1 ROAD Polder Haulage <span class="tag edi">EDI</span> done · leg 2 SEA Ocean Blue <span class="tag ulp">ULP</span> +72 h · leg 3 ROAD Serra Transportes <span class="tag ulp">ULP</span> to re-time</div></div>
+      <div class="fine" style="margin:8px 12px">The assistant reads the order through the same API as this tab (get_order) and can open a proposal's dialog; only the dialog sends.</div>
+    </div>
+  </main>
+</section>
+
+<script>
+const screen = document.getElementById('screen');
+function show() {
+  const s = screen.value;
+  document.getElementById('meridian').hidden = s !== 's3';
+  document.getElementById('cymbal').hidden = s === 's3';
+  for (const el of document.querySelectorAll('[data-s]')) el.hidden = !el.dataset.s.split(' ').includes(s);
+}
+screen.addEventListener('change', show);
+document.getElementById('theme').addEventListener('change', (e) => { document.body.dataset.theme = e.target.value; });
+show();
+</script>
+</body>
+</html>

@@ -39,6 +39,9 @@ type Sent struct {
 	Draft        Draft
 	Confirmation *intents.BookingConfirmationBody
 	Disrupted    *operator.DisruptResponse
+	// Ordered is the forwarder's answer to a door-to-door order (pending,
+	// at first: the plan follows).
+	Ordered *intents.ForwardingConfirmationBody
 }
 
 // ErrOutcomeUnknown reports a send that may or may not have reached the
@@ -70,6 +73,9 @@ func (a *Assistant) Send(ctx context.Context, id string) (sent *Sent, err error)
 	}
 	if d.Disruption != nil {
 		return a.sendDisruption(ctx, d)
+	}
+	if d.Order != nil {
+		return a.sendOrder(ctx, d)
 	}
 	if a.Node == nil {
 		a.Drafts.Put(d)
@@ -142,6 +148,12 @@ func (a *Assistant) Report(ctx context.Context, c *Conversation, s *Sent) (Reply
 		note = notePrefix + "The user confirmed delay " + s.Draft.ID + " in the dialog, and our node published it. " +
 			"The outcome is below: tell the user which bookings got their signed alert and the new ETAs, in a sentence or two. " +
 			"Name any booking that got no alert; one marked applied was delayed anyway, so say not to publish the delay again.\n"
+	} else if s.Ordered != nil {
+		// The answer's facts, not its messages: the forwarder's free text.
+		result, err = json.Marshal(map[string]any{"draftId": s.Draft.ID, "forwarder": s.Draft.Order.Forwarder, "answer": map[string]string{
+			"forwarder_reference": s.Ordered.OrderRef, "status": s.Ordered.Status, "planned_delivery": s.Ordered.PlannedDelivery}})
+		note = notePrefix + "The user confirmed order " + s.Draft.ID + " in the dialog, and our node sent it, signed. " +
+			"The forwarder's answer is below: tell the user its reference and status in a sentence or two (pending means it plans the legs and confirms with the journey later).\n"
 	} else {
 		result, err = json.Marshal(map[string]any{"draftId": s.Draft.ID, "operator": s.Draft.Operator,
 			"confirmation": s.Confirmation, "requiredBy": s.Draft.RequiredBy})

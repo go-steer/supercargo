@@ -119,8 +119,12 @@ func fakeStep(msgs []llm.Message, user string, done []step, now time.Time) llm.G
 		}
 	}
 	switch {
+	case strings.HasPrefix(user, notePrefix) && strings.Contains(user, `"forwarder"`):
+		return orderReportReply(block(user, "result"))
 	case strings.HasPrefix(user, notePrefix):
 		return reportReply(block(user, "result"))
+	case orderPattern.MatchString(user) && shipPattern.MatchString(user) && !whyPattern.MatchString(user):
+		return fakeOrderStep(msgs, user, done, now)
 	case strings.Contains(lower, "book "):
 		switch {
 		case last != nil && last.call.Name == ToolDraftBooking:

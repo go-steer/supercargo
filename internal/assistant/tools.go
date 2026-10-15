@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,11 +51,11 @@ const (
 var Tools = []llm.Tool{
 	{Name: ToolGetProfile, Description: "Fetch a company's ULP profile (intents, capabilities, supported dialects, endpoints, signing keys) through our node, which verifies it. Use it when the user names a carrier.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"domain":{"type":"string","maxLength":253,"description":"The company's domain: as the user wrote it, or the domain of a partner the user named, from list_partners or find_partners"}},"required":["domain"],"additionalProperties":false}`)},
-	{Name: ToolPartners, Description: "List the partners we know: our address book (carriers, shippers, consignees, with their domains), the carriers we've booked with, and partners found in this conversation. Use it to find the domain of a company the user names by name.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"role":{"type":"string","enum":["carrier","shipper","consignee"]}},"additionalProperties":false}`)},
+	{Name: ToolPartners, Description: "List the partners we know: our address book (carriers, forwarders, shippers, consignees, with their domains), our own places (doors and ports, by ID, for an order), the carriers we've booked with, and partners found in this conversation. Use it to find the domain of a company the user names by name.",
+		Schema: json.RawMessage(`{"type":"object","properties":{"role":{"type":"string","enum":["carrier","shipper","consignee","forwarder"]}},"additionalProperties":false}`)},
 	{Name: ToolFind, Description: "Search the partner directory for companies we don't know yet, e.g. carriers serving a lane. Each candidate's profile is fetched from its domain and verified; only verified ones can be used, and only once the user names one.",
 		Schema: json.RawMessage(`{"type":"object","properties":{` +
-			`"role":{"type":"string","enum":["carrier","shipper","consignee"],"description":"Default carrier"},` +
+			`"role":{"type":"string","enum":["carrier","shipper","consignee","forwarder"],"description":"Default carrier"},` +
 			`"mode":{"type":"string","enum":["OCEAN","ROAD","RAIL","AIR"]},` +
 			`"from":{"type":"string","maxLength":5,"description":"UN/LOCODE of the port of loading, e.g. NLRTM"},` +
 			`"to":{"type":"string","maxLength":5,"description":"UN/LOCODE of the port of discharge, e.g. USEWR"},` +
@@ -170,6 +171,10 @@ func (a *Assistant) run(ctx context.Context, c *Conversation, t *turnState, call
 		return a.Node.Profile(ctx, in.Domain)
 	case ToolDraftBooking:
 		return a.draft(ctx, c, call.Input)
+	case ToolDraftOrder:
+		return a.draftOrder(ctx, c, call.Input)
+	case ToolBusiness:
+		return a.businessContext()
 	case ToolPartners:
 		return a.listPartners(ctx, c, call.Input)
 	case ToolFind:
@@ -326,6 +331,8 @@ type DraftResult struct {
 	Sent    bool                        `json:"sent"` // always false
 	To      string                      `json:"to,omitempty"`
 	Request *intents.BookingRequestBody `json:"request,omitempty"` // a booking's
+	// Order is a door-to-door order's, to the forwarder To.
+	Order *intents.ForwardingRequestBody `json:"order,omitempty"`
 	// Disruption is a carrier's drafted delay, instead of a booking.
 	Disruption *Disruption `json:"disruption,omitempty"`
 	// NotSent is the private part of the draft, which stays here.
@@ -353,6 +360,13 @@ func (a *Assistant) draft(ctx context.Context, c *Conversation, raw json.RawMess
 	iso := ports.SizeType(in.ContainerType)
 	if iso == "" {
 		return nil, refuse("no container type %s", in.ContainerType)
+	}
+	// The model may hold our private context: none of it in the request's
+	// free text, however written.
+	for field, text := range map[string]string{"cargoDescription": in.CargoDescription, "consigneeName": in.ConsigneeName, "shipperRef": in.ShipperRef} {
+		if p := a.privateIn(text); p != "" {
+			return nil, refuse("%s mentions %s, which is private to us: the booking must not carry it; leave it out", field, p)
+		}
 	}
 	req := intents.BookingRequestBody{
 		ShipperRef: in.ShipperRef, ShipperName: a.shipperName(), PortOfLoading: in.PortOfLoading, PortOfDischarge: in.PortOfDischarge,
@@ -406,6 +420,11 @@ func (d Draft) Result() DraftResult {
 		dis.Bookings = slices.Clone(dis.Bookings)
 		return DraftResult{DraftID: d.ID, Disruption: &dis,
 			Next: "Nothing has been published. Tell the user the delay is ready for them to review and confirm; only they can publish it."}
+	}
+	if o := d.Order; o != nil {
+		req := o.Request
+		return DraftResult{DraftID: d.ID, To: o.Forwarder, Order: &req, NotSent: maps.Clone(o.NotSent), NewPartner: d.NewPartner,
+			Next: "Nothing has been sent. Tell the user the order is ready for them to review and confirm; only they can send it. Say which private dates stay with us."}
 	}
 	req := d.Request
 	out := DraftResult{DraftID: d.ID, To: d.Operator, Request: &req, NewPartner: d.NewPartner, NewConsignee: d.NewConsignee,
