@@ -194,7 +194,22 @@ func (g *Gateway) Step() {
 	}
 }
 
+// addressed refuses an interchange addressed to anyone but us.
+func (g *Gateway) addressed(data []byte) error {
+	ic, err := edi.Parse(data)
+	if err != nil {
+		return err
+	}
+	if ic.Recipient != g.Self {
+		return fmt.Errorf("forwarder: an interchange for %q, not us (%q)", ic.Recipient, g.Self)
+	}
+	return nil
+}
+
 func (g *Gateway) ack(carrier string, p *EDIPartner, data []byte) error {
+	if err := g.addressed(data); err != nil {
+		return err
+	}
 	a, err := edi.ParseAPERAK(data)
 	if err != nil {
 		return err
@@ -216,6 +231,9 @@ func (g *Gateway) ack(carrier string, p *EDIPartner, data []byte) error {
 }
 
 func (g *Gateway) statuses(carrier string, p *EDIPartner, data []byte) error {
+	if err := g.addressed(data); err != nil {
+		return err
+	}
 	sts, err := edi.ParseIFTSTAIn(data, p.Zone)
 	if err != nil {
 		return err

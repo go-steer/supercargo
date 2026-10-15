@@ -91,6 +91,9 @@ func (c *EDIFACT) Step() error {
 		c.Log = slog.New(slog.DiscardHandler)
 	}
 	err := c.In.Receive(func(name string, data []byte) error {
+		if err := c.addressed(data); err != nil {
+			return err // to failed/: a person looks at it
+		}
 		i, sender, err := edi.ParseIFTMIN(data, c.Zone)
 		if err != nil {
 			return err // to failed/: a person looks at it
@@ -226,4 +229,16 @@ func (c *EDIFACT) Run(ctx context.Context, tick time.Duration) error {
 			}
 		}
 	}
+}
+
+// addressed refuses an interchange addressed to anyone but this carrier.
+func (c *EDIFACT) addressed(data []byte) error {
+	ic, err := edi.Parse(data)
+	if err != nil {
+		return err
+	}
+	if ic.Recipient != c.ID {
+		return fmt.Errorf("mockcarrier: an instruction for %q, not us (%q)", ic.Recipient, c.ID)
+	}
+	return nil
 }
