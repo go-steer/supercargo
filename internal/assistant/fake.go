@@ -77,7 +77,7 @@ func turnSoFar(msgs []llm.Message) (string, []step) {
 
 var (
 	domainPattern = regexp.MustCompile(`\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}\b`)
-	refPattern    = regexp.MustCompile(`\b[A-Z]{2,}-[A-Z]{2,}-[0-9]+\b`)
+	refPattern    = regexp.MustCompile(`\b[A-Z]{2,}(?:-[A-Z]{2,})?-[0-9]+\b`) // OB-BKG-1042, MF-0007
 	poPattern     = regexp.MustCompile(`\b[A-Z]{2,}-PO-[0-9]+\b`)
 	consignee     = regexp.MustCompile(`(?i)consignee is ([^,.(]+?)\s*(?:in [A-Za-z ]+?)?\s*\(([a-z0-9.-]+)\)`)
 	dayPattern    = regexp.MustCompile(`(?i)before (?:[a-z]+ )?the ([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)`)
@@ -340,7 +340,12 @@ func askReply(content string) llm.GenerateResponse {
 	if json.Unmarshal([]byte(content), &r) != nil || r.Answer == nil {
 		return say("The carrier didn't answer.")
 	}
-	return say("%s answered: %s (sources: %s)", r.Operator, r.Answer.Answer, strings.Join(r.Answer.CitedEventIDs, ", "))
+	out := fmt.Sprintf("%s answered: %s (sources: %s)", r.Operator, r.Answer.Answer, strings.Join(r.Answer.CitedEventIDs, ", "))
+	if len(r.Unsigned) > 0 {
+		// Our own copies say so, whatever the answer says.
+		out += fmt.Sprintf(". Of those, %s came from an EDI status nobody signed: the forwarder's word, not the carrier's signature", strings.Join(r.Unsigned, ", "))
+	}
+	return say("%s.", out)
 }
 
 // block is the text between <name> and </name> in s.

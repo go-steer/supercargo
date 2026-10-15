@@ -82,7 +82,7 @@ var Tools = []llm.Tool{
 		Schema: json.RawMessage(`{"type":"object","properties":{"bookingRef":{"type":"string","maxLength":64},"operator":{"type":"string","maxLength":253,"description":"Only needed if two carriers use the same reference"}},"required":["bookingRef"],"additionalProperties":false}`)},
 	{Name: ToolStatus, Description: "Ask the carrier for one of our bookings' current DCSA status (structured, signed, no model involved): status, vessel, current location, ETA and all its events, including any we missed.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"bookingRef":{"type":"string","maxLength":64}},"required":["bookingRef"],"additionalProperties":false}`)},
-	{Name: ToolAsk, Description: "Ask the carrier a question about one of our bookings. Our node sends it signed; the carrier's agent answers from that booking's records and cites them.",
+	{Name: ToolAsk, Description: "Ask the carrier a question about one of our bookings. Our node sends it signed; the carrier's (or forwarder's) agent answers from that booking's records and cites them. The result says which cited records we hold signed copies of (held) and which of those came from a source nobody signed, a forwarder's re-issued EDI status (unsigned): tell the user which facts are unsigned.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"bookingRef":{"type":"string","maxLength":64},"question":{"type":"string","maxLength":1000}},"required":["bookingRef","question"],"additionalProperties":false}`)},
 }
 

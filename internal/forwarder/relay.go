@@ -65,6 +65,7 @@ type Relay struct {
 	seq       int
 	relayed   map[legEvent]string // a leg's event or alert → the order's
 	statuses  map[statusKey]bool  // EDI statuses re-issued
+	legs      map[string]int      // a re-issued event's or alert's ID → its leg (0-based)
 	order     []legEvent          // relayed's keys, oldest first
 	proposals map[string]*Proposal
 }
@@ -153,6 +154,7 @@ func (r *Relay) Event(leg store.Booking, e *intents.TnTEventBody) error {
 		return fmt.Errorf("forwarder: relaying %s's %s on %s: %w", leg.Operator, e.EventID, order.Ref, err)
 	}
 	r.remember(legEvent{leg.Operator, leg.Ref, e.EventID}, out.EventID)
+	r.noteLeg(out.EventID, i)
 	return nil
 }
 
@@ -204,7 +206,9 @@ func (r *Relay) Unsigned(carrier string, s edi.Status) error {
 	default:
 		return fmt.Errorf("%w: %s's status code %q on %s means nothing the forwarder knows", ErrSkipped, carrier, s.Code, s.Reference)
 	}
-	if s.UNLocode != "" {
+	// A place the status names, if it's one of its leg's own: a carrier
+	// without a node can't put its statuses at another leg's port.
+	if s.UNLocode == at || s.UNLocode == end {
 		e.UNLocationCode = s.UNLocode
 	}
 	e.Description = clip(fmt.Sprintf("%s (leg %d, %s, reported over EDI)", meaningWords[s.Meaning], i+1, clip(l.Name, 128)), 280)
@@ -228,6 +232,7 @@ func (r *Relay) Unsigned(carrier string, s edi.Status) error {
 		return fmt.Errorf("forwarder: re-issuing %s's status on %s: %w", carrier, order.Ref, err)
 	}
 	r.statuses[k] = true
+	r.noteLeg(e.EventID, i)
 	return nil
 }
 
@@ -266,6 +271,25 @@ func refOK(s string) bool {
 
 func isAlnum(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z'
+}
+
+// noteLeg keeps which leg a re-issued record came from (at most
+// MaxRelayed; the map starts over past that). r.mu is held.
+func (r *Relay) noteLeg(id string, leg int) {
+	if r.legs == nil || len(r.legs) >= MaxRelayed {
+		r.legs = map[string]int{}
+	}
+	r.legs[id] = leg
+}
+
+// LegOf is the leg (1-based) a record the relay re-issued came from, as
+// the relay knew when it re-issued it; false for one it didn't, or has
+// forgotten.
+func (r *Relay) LegOf(id string) (int, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	leg, ok := r.legs[id]
+	return leg + 1, ok
 }
 
 func (r *Relay) remember(k legEvent, id string) {
@@ -377,6 +401,7 @@ func (r *Relay) Alert(leg store.Booking, a *intents.TnTAlertBody) error {
 		return fmt.Errorf("forwarder: relaying %s's %s on %s: %w", leg.Operator, a.AlertID, order.Ref, err)
 	}
 	r.remember(legEvent{leg.Operator, leg.Ref, a.AlertID}, out.AlertID)
+	r.noteLeg(out.AlertID, i)
 	if proposal != nil {
 		return r.propose(proposal)
 	}

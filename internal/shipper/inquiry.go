@@ -16,8 +16,10 @@ package shipper
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/go-steer/supercargo/pkg/envelope"
@@ -32,6 +34,10 @@ type Answer struct {
 	// Held are the cited records this shipper holds, as signed events or
 	// alerts the operator pushed; the rest it has only the answer's word for.
 	Held []string
+	// Unsigned are the held records that say they came from a source
+	// nobody signed (derived_from): a forwarder's re-issued EDI statuses,
+	// as this shipper's own copies say, not the answer.
+	Unsigned []string
 }
 
 // AskTimeout bounds an inquiry: longer than the 10s other exchanges get,
@@ -71,23 +77,33 @@ func (s *Shipper) Ask(ctx context.Context, operator, ref, question string) (*Ans
 	if got := resp.Envelope.Header.BookingRef; got == nil || *got != ref {
 		return nil, errors.New("shipper: the answer is about another booking")
 	}
-	return &Answer{Operator: operator, Response: r, Held: s.held(operator, ref, r.CitedEventIDs)}, nil
+	held, unsigned := s.held(operator, ref, r.CitedEventIDs)
+	return &Answer{Operator: operator, Response: r, Held: held, Unsigned: unsigned}, nil
 }
 
-// held is the subset of ids this shipper has recorded for the booking.
-func (s *Shipper) held(operator, ref string, ids []string) []string {
+// held is the subset of ids this shipper has recorded for the booking,
+// and of those, the ones re-issued from a source nobody signed.
+func (s *Shipper) held(operator, ref string, ids []string) (held, unsigned []string) {
 	if s.Events == nil {
-		return nil
+		return nil, nil
 	}
-	have := map[string]bool{}
+	have, from := map[string]bool{}, map[string]bool{}
 	for _, r := range s.Events.List(operator, ref) {
 		have[r.ID] = true
-	}
-	var out []string
-	for _, id := range ids {
-		if have[id] {
-			out = append(out, id)
+		var b struct {
+			DerivedFrom []intents.Provenance `json:"derived_from"`
+		}
+		if json.Unmarshal(r.Body, &b) == nil && slices.ContainsFunc(b.DerivedFrom, func(p intents.Provenance) bool { return !p.Signed }) {
+			from[r.ID] = true
 		}
 	}
-	return out
+	for _, id := range ids {
+		if have[id] {
+			held = append(held, id)
+			if from[id] {
+				unsigned = append(unsigned, id)
+			}
+		}
+	}
+	return held, unsigned
 }

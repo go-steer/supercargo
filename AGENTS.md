@@ -195,4 +195,6 @@ are in:
 Next: the door-to-door UI (Meridian's orders, legs and proposals; the
 multi-leg journey; unsigned marks), then the six-company deployment.
 Cited cause IDs in alerts are always checked against the shipper's log
-before a model, and `derived_from` never reaches one.
+before a model. `derived_from`'s text never reaches one: an inquiry
+model learns only whether a re-issued record's source was signed, as the
+code decides it.

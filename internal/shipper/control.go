@@ -210,7 +210,7 @@ func RegisterControl(mux *http.ServeMux, s *Shipper, profiles rest.Profiles) {
 		case err != nil:
 			control.Answer(w, http.StatusBadGateway, AskResponse{Error: err.Error()})
 		default:
-			control.Answer(w, http.StatusOK, AskResponse{Operator: a.Operator, Answer: a.Response, Held: a.Held})
+			control.Answer(w, http.StatusOK, AskResponse{Operator: a.Operator, Answer: a.Response, Held: a.Held, Unsigned: a.Unsigned})
 		}
 	})
 	mux.HandleFunc("POST /status", func(w http.ResponseWriter, r *http.Request) {
@@ -265,7 +265,9 @@ type AskResponse struct {
 	Operator string                          `json:"operator,omitempty"`
 	Answer   *intents.TnTInquiryResponseBody `json:"answer,omitempty"`
 	Held     []string                        `json:"held,omitempty"`
-	Error    string                          `json:"error,omitempty"`
+	// Unsigned are the held records re-issued from a source nobody signed.
+	Unsigned []string `json:"unsigned,omitempty"`
+	Error    string   `json:"error,omitempty"`
 }
 
 // ShipmentsResponse is GET /shipments.

@@ -74,7 +74,8 @@ func (s *Shipper) Status(ctx context.Context, operator, ref string) (*Status, er
 		ids = append(ids, e.EventID)
 	}
 	held := map[string]bool{}
-	for _, id := range s.held(operator, ref, ids) {
+	have, _ := s.held(operator, ref, ids)
+	for _, id := range have {
 		held[id] = true
 	}
 	for _, id := range ids {
