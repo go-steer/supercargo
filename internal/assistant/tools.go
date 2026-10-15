@@ -173,6 +173,8 @@ func (a *Assistant) run(ctx context.Context, c *Conversation, t *turnState, call
 		return a.draft(ctx, c, call.Input)
 	case ToolDraftOrder:
 		return a.draftOrder(ctx, c, call.Input)
+	case ToolDraftQuestion:
+		return a.draftQuestion(ctx, call.Input)
 	case ToolBusiness:
 		return a.businessContext()
 	case ToolPartners:
@@ -335,6 +337,8 @@ type DraftResult struct {
 	Order *intents.ForwardingRequestBody `json:"order,omitempty"`
 	// Proposal is a forwarder's confirmation of a delay's proposal.
 	Proposal *ProposalDraft `json:"proposal,omitempty"`
+	// Question is a question to a booking's operator, To.
+	Question *QuestionDraft `json:"question,omitempty"`
 	// Disruption is a carrier's drafted delay, instead of a booking.
 	Disruption *Disruption `json:"disruption,omitempty"`
 	// NotSent is the private part of the draft, which stays here.
@@ -422,6 +426,11 @@ func (d Draft) Result() DraftResult {
 		dis.Bookings = slices.Clone(dis.Bookings)
 		return DraftResult{DraftID: d.ID, Disruption: &dis,
 			Next: "Nothing has been published. Tell the user the delay is ready for them to review and confirm; only they can publish it."}
+	}
+	if q := d.Question; q != nil {
+		qd := *q
+		return DraftResult{DraftID: d.ID, To: q.Operator, Question: &qd,
+			Next: "Nothing has been sent. Tell the user the question is ready for them to read and send; only they can send it."}
 	}
 	if p := d.Proposal; p != nil {
 		pd := *p

@@ -115,6 +115,7 @@ shipments:
     notes: "Brazil launch: the São Paulo stores open with this stock"
 notes:
   - "Tell the launch team about any delay that puts the launch at risk"
+  - "1,200 pairs of the launch line are already in the São Paulo store room: enough for a partial launch"
 EOF
   # Cymbal's address book: its forwarder, and its doors (what an order its
   # assistant drafts goes between).

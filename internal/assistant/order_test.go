@@ -74,7 +74,7 @@ func orderingAssistant(t *testing.T, n Node) *Assistant {
 	a := &Assistant{Model: FakeModel(func() time.Time { return thursday }), Node: n, Drafts: &Drafts{}, Skills: BuiltinSkills(),
 		Self: Self{Domain: "cymbal-shoes.example", Name: "Cymbal Shoes", Endpoint: "https://cymbal-shoes.example/ulp"},
 		Now:  func() time.Time { return thursday }, AddressBook: []directory.Entry{meridianEntry},
-		Places: []directory.Place{tilburg, cajamar}, Business: biz, Private: biz.Private()}
+		Places: []directory.Place{tilburg, cajamar}, Business: biz, Private: biz.Private(), Own: true}
 	return a
 }
 

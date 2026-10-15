@@ -108,7 +108,10 @@ func (m *Model) sent(msg sentMsg) tea.Cmd {
 		m.add(Row{Role: RoleSystem, At: m.now(), Text: "Draft " + msg.id + ": " + assistant.OneLine(msg.err.Error(), 300)})
 		if errors.Is(msg.err, assistant.ErrOutcomeUnknown) {
 			// The assistant must not think the draft is still unsent.
-			if strings.HasPrefix(msg.id, "OD-") {
+			if strings.HasPrefix(msg.id, "QD-") {
+				_ = m.conv.Note("Sending question " + msg.id + " failed with an unknown outcome: it may have been asked. " +
+					"The draft is gone; tell the user so, and not to send the same question again without checking.")
+			} else if strings.HasPrefix(msg.id, "OD-") {
 				_ = m.conv.Note("Sending order " + msg.id + " failed with an unknown outcome: it may have reached the forwarder. " +
 					"The draft is gone; tell the user to check the shipments before ordering again.")
 			} else {
@@ -123,6 +126,9 @@ func (m *Model) sent(msg sentMsg) tea.Cmd {
 		return nil
 	}
 	switch {
+	case msg.sent.Asked != nil && msg.sent.Draft.Question != nil:
+		m.add(Row{Role: RoleSystem, At: m.now(), Text: fmt.Sprintf("Asked %s about %s (%s), signed. It answered.",
+			msg.sent.Asked.Operator, msg.sent.Draft.Question.BookingRef, msg.id)})
 	case msg.sent.Ordered != nil:
 		o := msg.sent.Ordered
 		m.add(Row{Role: RoleSystem, At: m.now(), Text: fmt.Sprintf("Sent order %s to %s, signed. Answer: %s %s.",
@@ -163,6 +169,9 @@ func (m *Model) dialogView() string {
 	d := m.dialog
 	if d.Order != nil {
 		return m.orderDialogView()
+	}
+	if d.Question != nil {
+		return m.questionDialogView()
 	}
 	var r intents.BookingRequestBody
 	if d.Request != nil {
@@ -276,6 +285,32 @@ func (m *Model) orderDialogView() string {
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(m.st.p.Blue)).Padding(0, 1).
 		Render(strings.Join(lines, "\n"))
 	title := m.st.you.Render(" Order draft " + d.DraftID + " ")
+	if first, rest, ok := strings.Cut(box, "\n"); ok && lipgloss.Width(first) > lipgloss.Width(title)+4 {
+		box = m.st.link.Render("╭─") + title + m.st.link.Render(strings.Repeat("─", lipgloss.Width(first)-lipgloss.Width(title)-3)+"╮") + "\n" + rest
+	}
+	return lipgloss.Place(m.width, m.vp.Height(), lipgloss.Center, lipgloss.Center, box)
+}
+
+// questionDialogView is a drafted question's dialog: the exact text the
+// operator will read.
+func (m *Model) questionDialogView() string {
+	d := m.dialog
+	q := d.Question
+	width := max(30, min(90, m.width-8)) - 11
+	line := func(label, value string) string {
+		wrapped := lipgloss.NewStyle().Width(width).Render(assistant.OneLine(value, 1000))
+		return m.st.dim.Render(fmt.Sprintf("%-11s", label)) + m.st.text.Render(strings.ReplaceAll(wrapped, "\n", "\n"+strings.Repeat(" ", 11)))
+	}
+	lines := []string{
+		line("To:", q.Operator),
+		line("About:", q.BookingRef),
+		line("Question:", q.Question),
+		m.st.ok.Render(fmt.Sprintf("%-11s", "Not sent:")) + m.st.text.Render("your private dates and notes: checked, none is in it"),
+		"", m.st.you.Render("Ask this?") + m.st.dim.Render(" [y/N]"),
+	}
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color(m.st.p.Blue)).Padding(0, 1).
+		Render(strings.Join(lines, "\n"))
+	title := m.st.you.Render(" Question draft " + d.DraftID + " ")
 	if first, rest, ok := strings.Cut(box, "\n"); ok && lipgloss.Width(first) > lipgloss.Width(title)+4 {
 		box = m.st.link.Render("╭─") + title + m.st.link.Render(strings.Repeat("─", lipgloss.Width(first)-lipgloss.Width(title)-3)+"╮") + "\n" + rest
 	}

@@ -46,3 +46,19 @@ description: How to tell a shipper's staff where their shipments are, from the s
   signed (`source` is `unsigned`, or listed in `unsigned` in an
   answer), which is the forwarder's word alone. Say which is which when it
   matters ("the pickup is reported over EDI, not signed by the trucker").
+
+## When a delay hits: "what can we do?"
+
+- Read our private context (`get_business_context`) and the booking's
+  records. Say what the delay means for us: the new arrival against our own
+  deadline and receiving slot, and anything our notes say to do.
+- Then the options, the useful ones first:
+  - Ask the carrier or forwarder whether it can be expedited, or how firm
+    the new date is: draft the question (`draft_question`), naming none of
+    our private dates or notes, and say so; the user reads it and sends it
+    from its dialog. (`ask_operator` is for a question the user asks you
+    outright.)
+  - What is ours to change, which sends nothing: move our receiving slot,
+    use stock we hold elsewhere, tell the people our notes name.
+- Never promise what the carrier will do; never put a private date in a
+  question.

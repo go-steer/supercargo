@@ -111,6 +111,10 @@ func say(format string, a ...any) llm.GenerateResponse {
 func fakeStep(msgs []llm.Message, user string, done []step, now time.Time) llm.GenerateResponse {
 	lower := strings.ToLower(user)
 	id := "call-" + strconv.Itoa(len(msgs))
+	// What to do about a delay: its own steps, which retry a refused draft.
+	if shipperAdvice.MatchString(user) && refPattern.MatchString(user) && !strings.HasPrefix(user, notePrefix) {
+		return adviceStep(id, refPattern.FindString(user), done)
+	}
 	var last *step
 	if len(done) > 0 {
 		last = &done[len(done)-1]
@@ -119,6 +123,8 @@ func fakeStep(msgs []llm.Message, user string, done []step, now time.Time) llm.G
 		}
 	}
 	switch {
+	case strings.HasPrefix(user, notePrefix) && strings.Contains(user, `"question"`):
+		return questionReport(resultOf(user))
 	case strings.HasPrefix(user, notePrefix) && strings.Contains(user, `"forwarder"`):
 		return orderReportReply(resultOf(user))
 	case strings.HasPrefix(user, notePrefix):

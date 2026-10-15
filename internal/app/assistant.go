@@ -53,7 +53,7 @@ func ShipperAssistant(cfg *config.Config, node assistant.Node) (*assistant.Assis
 	if err != nil {
 		return nil, err
 	}
-	a.Model, a.Skills = model, agentSkills
+	a.Model, a.Skills, a.Own = model, agentSkills, true
 	// The company's own assistant, unlike an outside agent's, reads the
 	// private business context and orders between the company's places.
 	if cfg.Business != nil {

@@ -31,6 +31,8 @@ type Summary struct {
 	Ref      string `json:"bookingRef"`
 	// Kind is what was booked: KindOcean, KindRoad or KindOrder.
 	Kind string `json:"kind"`
+	// ShipperRef is the shipper's own reference for it (a PO number).
+	ShipperRef string `json:"shipperRef,omitempty"`
 	// TransportDocumentReference is the eBL's, once confirmed.
 	TransportDocumentReference string           `json:"transportDocumentReference,omitempty"`
 	Status                     string           `json:"status"`
@@ -124,7 +126,7 @@ var statuses = map[string]string{
 func Summarize(b Booking, recs []Record) Summary {
 	c := b.Confirmation
 	from, to := b.Places()
-	s := Summary{Operator: b.Operator, Shipper: b.Shipper, Ref: b.Ref, Kind: KindOcean, Status: c.Status,
+	s := Summary{Operator: b.Operator, Shipper: b.Shipper, Ref: b.Ref, Kind: KindOcean, ShipperRef: b.ShipperRef(), Status: c.Status,
 		TransportDocumentReference: c.TransportDocumentReference(),
 		Origin:                     ports.Location(from), Destination: ports.Location(to),
 		PlannedDeparture: c.PlannedDeparture, PlannedArrival: c.PlannedArrival, ETA: c.PlannedArrival,

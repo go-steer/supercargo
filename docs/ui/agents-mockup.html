@@ -129,7 +129,7 @@ main { flex: 1; display: grid; grid-template-columns: minmax(420px, 1.1fr) minma
 <section id="cymbal">
   <header><span class="wordmark">⟨u⟩lp</span><span class="who"><b>Cymbal Shoes</b> <span class="dim">cymbal-shoes.example · Alex, Logistics (shipper)</span></span>
     <span class="spacer"></span><span class="demo-badge">DEMO MODE</span></header>
-  <div class="banner" data-s="s4">⚠ DELAY · MF-0007 · ETA Wed, Nov 4 → Sat, Nov 7 <span class="imp">misses your deadline</span><span class="spacer"></span>
+  <div class="banner" data-s="s4">⚠ DELAY · MF-0007 · ETA Thu, Nov 5 → Sun, Nov 8 <span class="imp">misses your deadline</span><span class="spacer"></span>
     <button class="ai">✦ What can we do?</button><button>view</button><button>×</button></div>
   <nav class="roles"><span class="rolegroup"><button class="tab on">Assistant</button><button class="tab">Shipments</button></span></nav>
   <main>
@@ -153,19 +153,20 @@ main { flex: 1; display: grid; grid-template-columns: minmax(420px, 1.1fr) minma
         <div class="turn you"><div class="who">YOU · 14:03 · from the delay banner</div><div>What can we do about the delay on MF-0007?</div></div>
         <div class="turn ai"><div class="who">ASSISTANT · 14:03</div>
           <div class="toolcall">▸ get_events <span class="dim">MF-0007</span> <span class="okk">✓</span></div>
+          <div class="toolcall">▸ draft_question <span class="dim">MF-0007</span> <span class="okk">✓</span></div>
           <div class="toolcall">▸ get_business_context <span class="dim">launch, Cajamar DC slots</span> <span class="okk">✓</span> <span class="tag private">PRIVATE · STAYS HERE</span></div>
-          <div class="md"><p>MF-0007 is now due <b>Sat, Nov 7 02:00</b> (Meridian's alert MF-AL-000010, from Ocean Blue's signed alert: engine repair at Las Palmas). That's three days after the Brazil launch on <b>Wed, Nov 4</b>.</p>
+          <div class="md"><p>MF-0007 is now due <b>Sun, Nov 8 02:00</b> (Meridian's alert, from Ocean Blue's signed alert: engine repair at Las Palmas). That's after the Brazil launch on <b>Sat, Nov 7</b>, which stays with us.</p>
             <p>What we could do:</p></div>
           <div class="option rec"><div class="h">1 · Ask Meridian whether it can be expedited <span class="tag ulp">A SIGNED QUESTION</span></div>
             <div class="dim">E.g. a faster truck from Santos, or collecting at once on discharge. The question I'd send:</div>
-            <div class="preview">"The delivery of MF-0007 has moved to Nov 7. Can any part of the journey after Santos be expedited, and what is the earliest possible delivery?"</div>
+            <div class="preview">"The delivery of MF-0007 has moved to 2026-11-08 02:00:00Z. Can any part of the journey still ahead be expedited, and what is the earliest possible delivery?"</div>
             <div class="private">Not in the question: our launch date, our warehouse slots.</div>
-            <button class="primary draftlink">Ask Meridian</button></div>
+            <button class="primary draftlink">Review draft QD-0001…</button></div>
           <div class="option"><div class="h">2 · Move the receiving slot at Cajamar DC</div>
-            <div class="dim">Dock 2 is booked Nov 3–4 for this container; Nov 7 morning is free (from our business context). This is ours to change, nothing is sent.</div></div>
+            <div class="dim">Our slot is Nov 7, 08:00-12:00 (from our business context); move it to the new arrival. This is ours to change, nothing is sent.</div></div>
           <div class="option"><div class="h">3 · Launch with the stock already in Brazil</div>
-            <div class="dim">Your business context notes 1,200 pairs at the São Paulo store room. A partial launch Nov 4, the rest after Nov 7.</div></div>
-          <div class="md"><p>I'd do 1 now and keep 2 ready. Shall I ask Meridian?</p></div></div>
+            <div class="dim">Our notes: 1,200 pairs are already in the São Paulo store room, enough for a partial launch.</div></div>
+          <div class="md"><p>I'd do 1 now and keep 2 ready: the draft's dialog sends exactly that question.</p></div></div>
       </div>
       <div class="composer"><textarea>Ask about a shipment, order door to door, or book with a carrier…</textarea><button>Send</button></div>
     </div>

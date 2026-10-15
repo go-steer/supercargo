@@ -90,6 +90,9 @@ type Assistant struct {
 	// Places are the company's doors and ports from its address book,
 	// which an order goes between (draft_order).
 	Places []directory.Place
+	// Own: the company's own assistant, with a person at its chat (the
+	// browser UI's, ulpchat's), not an outside agent's tools over MCP.
+	Own bool
 	// Desk, on a forwarder, is its orders, for the operator side's
 	// assistant (list_orders, get_order, draft_proposal).
 	Desk Desk

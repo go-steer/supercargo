@@ -22,6 +22,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/go-steer/supercargo/internal/assistant"
+	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
 
@@ -67,6 +68,30 @@ func TestOrderDialog(t *testing.T) {
 	// reached the forwarder.
 	m.sent(sentMsg{id: "OD-0003", err: assistant.ErrOutcomeUnknown})
 	if !strings.Contains(m.rows[len(m.rows)-1].Text, "OD-0003") {
+		t.Errorf("unknown outcome: %q", m.rows[len(m.rows)-1].Text)
+	}
+}
+
+// TestQuestionDialog: a drafted question's dialog shows the exact text;
+// its outcome says it was asked.
+func TestQuestionDialog(t *testing.T) {
+	m := newModel(t, assistant.FakeModel(time.Now), "dark")
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	q := &assistant.QuestionDraft{Operator: "meridian-forwarding.example", BookingRef: "MF-0007", Question: "Can any part of the journey still ahead be expedited?"}
+	m.offer(assistant.DraftResult{DraftID: "QD-0001", To: q.Operator, Question: q})
+	s := screen(m)
+	for _, want := range []string{"Question draft QD-0001", "meridian-forwarding.example", "MF-0007", "Can any part of the journey still ahead be expedited?", "Ask this?"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the dialog lacks %q:\n%s", want, s)
+		}
+	}
+	m.sent(sentMsg{id: "QD-0001", sent: &assistant.Sent{Draft: assistant.Draft{ID: "QD-0001", Question: q},
+		Asked: &shipper.AskResponse{Operator: q.Operator, Answer: &intents.TnTInquiryResponseBody{Answer: "Not before Nov 8."}}}})
+	if last := m.rows[len(m.rows)-1].Text; last != "Asked meridian-forwarding.example about MF-0007 (QD-0001), signed. It answered." {
+		t.Errorf("outcome %q", last)
+	}
+	m.sent(sentMsg{id: "QD-0002", err: assistant.ErrOutcomeUnknown})
+	if !strings.Contains(m.rows[len(m.rows)-1].Text, "QD-0002") {
 		t.Errorf("unknown outcome: %q", m.rows[len(m.rows)-1].Text)
 	}
 }
