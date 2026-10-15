@@ -395,6 +395,9 @@ func (s *server) assistantSend(w http.ResponseWriter, r *http.Request, _ Persona
 			if strings.HasPrefix(req.DraftID, "DD-") {
 				_ = c.conv.Note("Publishing delay " + req.DraftID + " failed with an unknown outcome: it may have been published. " +
 					"The draft is gone; tell the user to check the bookings, and not to publish the same delay again, which would delay them twice.")
+			} else if strings.HasPrefix(req.DraftID, "QD-") {
+				_ = c.conv.Note("Sending question " + req.DraftID + " failed with an unknown outcome: it may have been asked. " +
+					"The draft is gone; tell the user so, and not to send the same question again without checking.")
 			} else if strings.HasPrefix(req.DraftID, "PD-") {
 				_ = c.conv.Note("Confirming " + req.DraftID + " failed with an unknown outcome: the amendment may have reached the carrier. " +
 					"The draft is gone; tell the user to check the order's proposals before confirming again.")
@@ -512,6 +515,9 @@ func sentOutcome(sent *assistant.Sent) string {
 			out += " " + strings.Join(failed, "; ") + "."
 		}
 		return out
+	}
+	if a := sent.Asked; a != nil && sent.Draft.Question != nil {
+		return "Asked " + a.Operator + " about " + sent.Draft.Question.BookingRef + " (" + id + "), signed. It answered; the assistant reports it below."
 	}
 	if p := sent.Proposed; p != nil {
 		return "Confirmed proposal " + p.ID + " (" + id + "): the amendment went to " + p.Carrier + ", signed. Outcome: " + p.Status + "."

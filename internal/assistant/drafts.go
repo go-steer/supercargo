@@ -47,6 +47,9 @@ type Draft struct {
 	// Proposal, if set, makes this a forwarder's confirmation of a
 	// delay's proposal (an amendment to a leg's carrier).
 	Proposal *ProposalDraft
+	// Question, if set, makes this a question to a booking's operator,
+	// for a person to send.
+	Question *QuestionDraft
 	Created  time.Time
 }
 
@@ -80,6 +83,11 @@ func (d *Drafts) add(dr Draft) (Draft, error) {
 	d.next++
 	if dr.Disruption != nil {
 		dr.ID = fmt.Sprintf("DD-%04d", d.next)
+		d.drafts[dr.ID] = dr
+		return dr, nil
+	}
+	if dr.Question != nil {
+		dr.ID = fmt.Sprintf("QD-%04d", d.next)
 		d.drafts[dr.ID] = dr
 		return dr, nil
 	}

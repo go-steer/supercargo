@@ -141,6 +141,11 @@ func (a *Assistant) tools() []llm.Tool {
 	// The company's own assistant reads its private context, and orders
 	// between its places; an outside agent's (ToolAssistant) does neither.
 	out := Tools
+	if a.Own {
+		// A drafted question goes to a dialog in the company's own UI; an
+		// outside agent's session has none.
+		out = append(slices.Clone(out), DraftQuestionTool)
+	}
 	if a.Business != nil {
 		out = append(slices.Clone(out), BusinessTool)
 	}

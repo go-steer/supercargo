@@ -272,6 +272,8 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
 .banner.ok .impact, .banner.ok .icon { color: var(--text-dim); }
 .banner .spacer { flex: 1; }
 .banner button { padding: 1px 8px; }
+.banner button.ai { border: 1px solid transparent; font-weight: 600;
+  background: linear-gradient(var(--bg-surface), var(--bg-surface)) padding-box, var(--aurora) border-box; }
 .delayed-badge { font-size: 10px; font-weight: 700; letter-spacing: .1em; padding: 1px 6px; border-radius: 3px;
   background: var(--orange); color: var(--bg-surface); }
 .was { text-decoration: line-through; color: var(--text-dim); }

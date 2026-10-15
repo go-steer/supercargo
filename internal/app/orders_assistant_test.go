@@ -41,11 +41,11 @@ func TestShipperAssistantOrders(t *testing.T) {
 	_ = os.WriteFile(biz, []byte("shipments:\n  - { shipperRef: CY-PO-1, requiredBy: 2026-11-07 }\n"), 0o600)
 	c.AddressBook, c.Business = &config.AddressBook{File: book}, &config.Business{File: biz}
 	a, err := ShipperAssistant(c, nil)
-	if err != nil || len(a.Places) != 1 || a.Business == nil || len(a.Business.Shipments) != 1 {
+	if err != nil || len(a.Places) != 1 || a.Business == nil || len(a.Business.Shipments) != 1 || !a.Own {
 		t.Fatalf("own assistant: %+v %v", a, err)
 	}
 	ext, err := ToolAssistant(c, nil)
-	if err != nil || ext.Places != nil || ext.Business != nil || len(ext.Private) == 0 {
+	if err != nil || ext.Places != nil || ext.Business != nil || ext.Own || len(ext.Private) == 0 {
 		t.Errorf("outside agents' tools: places %v, business %v, private %v, %v", ext.Places, ext.Business, ext.Private, err)
 	}
 	// The operator side's: a forwarder's has the desk; a carrier's doesn't.

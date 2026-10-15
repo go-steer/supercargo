@@ -479,6 +479,21 @@ function renderBanner() {
   const parts = [el('span', 'icon', '⚠'), el('span', null, `${(a.kind || 'alert').toUpperCase()} · ${s.booking}`)];
   if (a.previous_eta && a.new_eta) parts.push(el('span', null, `ETA ${day(a.previous_eta)} → ${day(a.new_eta)}`));
   parts.push(el('span', 'impact', IMPACT[s.impact] || ''), el('span', 'spacer'));
+  // The shipper's assistant, on this delay: what it means for us, with our
+  // private context, and what we could do. It drafts; nothing goes out
+  // unless the person says so.
+  if ((state.me.assistants || []).includes('customer') && s.impact !== 'ok') {
+    const ask = el('button', 'ai', '✦ What can we do?');
+    ask.dataset.tip = 'Ask your assistant: it reads your private context (deadlines, slots), suggests options, and asks the forwarder only if you say so.';
+    ask.onclick = () => {
+      state.activeSide = 'customer';
+      state.tab.customer = 'assistant';
+      renderRoles();
+      const go = () => chatTurn(`What can we do about the delay on ${s.booking}?`);
+      if (state.chats.customer) { renderChat(); go(); } else loadChat().then(go);
+    };
+    parts.push(ask);
+  }
   if (alert) {
     const view = el('button', null, 'view');
     view.onclick = () => {
@@ -980,7 +995,19 @@ function draftDialog(d, side) {
   if (d.disruption) disruptionDraftDialog(d, side);
   else if (d.order) orderDraftDialog(d, chatVia(side));
   else if (d.proposal) proposalDraftDialog(d, chatVia(side));
+  else if (d.question) questionDraftDialog(d, chatVia(side));
   else bookingDialog(d, chatVia(side));
+}
+
+// questionDraftDialog is a drafted question: the exact text the operator
+// will read, signed, and that nothing private is in it.
+function questionDraftDialog(d, via) {
+  const q = d.question;
+  let dlg = null;
+  const discard = discardLink(d, via, () => dlg.close());
+  dlg = modal(`Question draft ${d.draftId}`, [['To:', q.operator], ['About:', q.bookingRef], ['Question:', q.question],
+    ['Not sent:', 'your private dates and notes: checked, none is in it', 'notsent']],
+  `Ask ${q.operator} this? Your node signs it and sends it; its agent answers from the booking's records.`, 'Ask', () => via.send(d), [discard]);
 }
 
 // proposalDraftDialog is a drafted proposal's confirmation: the amendment
