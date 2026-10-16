@@ -297,6 +297,12 @@ func New(cfg *config.Config, logger *slog.Logger) (_ *App, failed error) {
 	if a.Customer != nil {
 		a.Shipper = &shipper.Shipper{Node: n, Bookings: a.Customer.Bookings, Events: a.Customer.Events, Now: time.Now,
 			NoBooking: !cfg.Has(config.RoleShipper)}
+		if a.DB != nil {
+			a.Shipper.OnSaveError = func(err error) { a.Logger.Error("shipper state not saved", "error", err) }
+			if err := a.Shipper.PersistSent(a.DB.Bucket("shipper.sent")); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if a.Orders != nil {
 		a.Orders.Node = n
@@ -311,6 +317,13 @@ func New(cfg *config.Config, logger *slog.Logger) (_ *App, failed error) {
 			OnProposal: func(p forwarder.Proposal) {
 				a.Logger.Info("proposal", "id", p.ID, "order", p.OrderRef, "leg", p.Leg, "why", p.Why)
 			}}
+		if a.DB != nil {
+			a.Relay.OnSaveError = func(err error) { a.Logger.Error("relay state not saved", "error", err) }
+			if err := a.Relay.Persist(forwarder.RelaySavers{Statuses: a.DB.Bucket("relay.statuses"), Legs: a.DB.Bucket("relay.legs"),
+				Relayed: a.DB.Bucket("relay.relayed"), Proposals: a.DB.Bucket("relay.proposals")}); err != nil {
+				return nil, err
+			}
+		}
 		a.Relay.Resume(a.Carrier.Events.IDs()) // restored after a restart: number on from them
 		if err := a.ediGateway(); err != nil {
 			a.closeDrops()
@@ -891,6 +904,11 @@ func (a *App) ediGateway() error {
 		}
 		a.ediDrops = append(a.ediDrops, in)
 		g.Partners[p.Carrier] = &forwarder.EDIPartner{ID: p.ID, Out: out, In: in, Zone: zone, Transit: p.Transit}
+	}
+	if a.DB != nil {
+		if err := g.Persist(a.DB.Bucket("forwarder.edi")); err != nil {
+			return err
+		}
 	}
 	a.Gateway, a.Orchestrator.EDI = g, g
 	return nil

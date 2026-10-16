@@ -14,6 +14,12 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- Persistence, second step: the forwarder's and shipper's own state survives a restart too.
+  - **Shipper:** orders awaiting a first answer, so a lost answer can still be taken up. Each is saved before the order is sent.
+  - **EDI gateway:** instructions, cancellations and their answers. Each is saved before its file is written.
+  - **Relay:** each re-issued record's leg, which leg record each order record came from, the EDI statuses already re-issued, and the proposals.
+  - **After a restart:** a proposal that was being sent comes back closed as failed, for a person to check with the carrier.
+
 - Persistence, first step (`persistence.file`, `internal/persist`):
   - **What survives a restart:** with a SQLite file configured, each side's bookings, their event logs and the replay window. A message seen before the restart is still refused as a replay after it.
   - **How:** the stores stay in memory and write every change through before it takes effect; if the file refuses the write, the change doesn't happen.

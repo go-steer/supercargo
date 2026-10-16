@@ -41,7 +41,9 @@ func (s *Shipper) Order(ctx context.Context, forwarder string, req *intents.Forw
 	h := envelope.NewHeader(intents.ForwardingRequest, s.Node.Domain(), forwarder, s.Now())
 	// Kept until its first answer is recorded: if that answer is lost, a
 	// status request can still find the order (OrderStatus).
-	s.rememberSent(h.MessageID, forwarder, req)
+	if err := s.rememberSent(h.MessageID, forwarder, req); err != nil {
+		return nil, err
+	}
 	resp, err := s.Node.Exchange(ctx, h, req, intents.ForwardingConfirmation)
 	if err != nil {
 		return nil, err

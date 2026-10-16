@@ -17,6 +17,7 @@ package app
 import (
 	"context"
 	"maps"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +48,7 @@ forwarder:
         - { mode: road, carrier: polder-haulage.example, name: Polder Haulage, to: NLRTM, facility: Euromax terminal, edi: true }
         - { mode: ocean, carrier: ocean-blue.example, name: Ocean Blue, to: BRSSZ, facility: Santos Brasil Tecon terminal }
         - { mode: road, carrier: serra-transportes.example, name: Serra Transportes, to: BRSAO }
+persistence: { file: "` + filepath.Join(t.TempDir(), "mf.db") + `" }
 `
 	apps := startNodes(t, rig)
 	cymbal, meridian := apps["cymbal-shoes.example"], apps["meridian-forwarding.example"]

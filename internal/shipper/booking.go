@@ -44,6 +44,12 @@ type Shipper struct {
 	// forwarding orders (a forwarder's): Cancel leaves those to the order.
 	InOrder func(carrier, ref string) bool
 
+	// OnSaveError learns of an order the persistence file couldn't forget
+	// (PersistSent). Optional; it must not block.
+	OnSaveError func(error)
+
+	sentSaver store.Saver // nil: in memory only (PersistSent)
+	sentN     uint64      // orders kept so far
 	mu        sync.Mutex
 	sent      map[string]sentOrder // orders sent, awaiting a recorded first answer
 	sentOrder []string             // sent's keys, oldest first

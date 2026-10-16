@@ -62,14 +62,21 @@ type Relay struct {
 	// OnProposal learns of each proposal made. Optional; it must not
 	// block.
 	OnProposal func(Proposal)
+	// OnSaveError learns of a change the persistence file refused
+	// (Persist). Optional; it must not block.
+	OnSaveError func(error)
 
 	mu        sync.Mutex
 	seq       int
 	relayed   map[legEvent]string // a leg's event or alert → the order's
 	statuses  map[statusKey]bool  // EDI statuses re-issued
 	legs      map[string]int      // a re-issued event's or alert's ID → its leg (0-based)
-	order     []legEvent          // relayed's keys, oldest first
+	order     []relayedEntry      // relayed's keys, oldest first
 	proposals map[string]*Proposal
+
+	save              *RelaySavers // nil: in memory only
+	statusGen, legGen int          // generations of statuses and legs (Persist)
+	relayedN          uint64       // relayed entries ever remembered
 }
 
 // MaxDelay is the largest delay projected onto an order; a leg's alert
@@ -137,6 +144,11 @@ func (r *Relay) orderOf(leg store.Booking) (store.Booking, int, bool) {
 func (r *Relay) Resume(ids []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.resumeLocked(ids)
+}
+
+// resumeLocked is Resume with r.mu held.
+func (r *Relay) resumeLocked(ids []string) {
 	for _, id := range ids {
 		parts := strings.Split(id, "-")
 		if len(parts) < 3 || strings.Join(parts[:len(parts)-2], "-") != r.Orders.RefPrefix {
@@ -254,13 +266,14 @@ func (r *Relay) Unsigned(carrier string, s edi.Status) error {
 		return fmt.Errorf("%w: %s's status %s on %s was re-issued already", ErrSkipped, carrier, s.Code, s.Reference)
 	}
 	if r.statuses == nil || len(r.statuses) >= MaxRelayed {
-		r.statuses = map[statusKey]bool{}
+		r.statusesOver()
 	}
 	e.EventID = r.nextID("EV")
 	if err := r.Publish.Publish(order, &e); err != nil {
 		return fmt.Errorf("forwarder: re-issuing %s's status on %s: %w", carrier, order.Ref, err)
 	}
 	r.statuses[k] = true
+	r.saveStatus(k)
 	r.noteLeg(e.EventID, i)
 	return nil
 }
@@ -306,9 +319,10 @@ func isAlnum(c byte) bool {
 // MaxRelayed; the map starts over past that). r.mu is held.
 func (r *Relay) noteLeg(id string, leg int) {
 	if r.legs == nil || len(r.legs) >= MaxRelayed {
-		r.legs = map[string]int{}
+		r.legsOver()
 	}
 	r.legs[id] = leg
+	r.saveLeg(id, leg)
 }
 
 // LegOf is the leg (1-based) a record the relay re-issued came from, as
@@ -325,13 +339,28 @@ func (r *Relay) remember(k legEvent, id string) {
 	if r.relayed == nil {
 		r.relayed = map[legEvent]string{}
 	}
+	e := relayedEntry{k: k}
 	if _, ok := r.relayed[k]; !ok {
-		r.order = append(r.order, k)
+		r.relayedN++
+		e.n = r.relayedN
+		r.order = append(r.order, e)
+	} else {
+		for _, o := range r.order {
+			if o.k == k {
+				e = o
+			}
+		}
 	}
 	r.relayed[k] = id
+	r.saveRelayed(e, id)
+	evicted := false
 	for len(r.order) > MaxRelayed {
-		delete(r.relayed, r.order[0])
+		delete(r.relayed, r.order[0].k)
 		r.order = r.order[1:]
+		evicted = true
+	}
+	if evicted {
+		r.forgetRelayedBefore(r.order[0])
 	}
 }
 
@@ -456,12 +485,14 @@ func (r *Relay) propose(p *Proposal) error {
 		switch {
 		case q.OrderRef == p.OrderRef && q.Leg == p.Leg && q.Status == ProposalOpen:
 			q.Status, q.Outcome = ProposalSuperseded, "a later delay replaced it"
+			r.saveProposal(q)
 		case q.Status == ProposalOpen || q.Status == ProposalSending:
 			open++
 			continue
 		}
 		if len(r.proposals) >= MaxProposals {
 			delete(r.proposals, id) // closed: make room
+			r.forgetProposal(id)
 		}
 	}
 	if open >= MaxProposals {
@@ -469,6 +500,7 @@ func (r *Relay) propose(p *Proposal) error {
 	}
 	p.ID = r.nextID("PR")
 	r.proposals[p.ID] = p
+	r.saveProposal(p)
 	if r.OnProposal != nil {
 		r.OnProposal(*p)
 	}
@@ -505,6 +537,15 @@ func (r *Relay) Confirm(ctx context.Context, id string) (Proposal, error) {
 		return Proposal{}, fmt.Errorf("%w: %s is %s", ErrProposalClosed, id, p.Status)
 	}
 	p.Status = ProposalSending // no second confirmation while this one is out
+	if r.save != nil {
+		// Saved before sending, or not sent: a restart must not find it
+		// open (a second confirmation would amend the leg twice).
+		if err := r.save.Proposals.Put(p.ID, p); err != nil {
+			p.Status = ProposalOpen
+			r.mu.Unlock()
+			return *p, fmt.Errorf("forwarder: saving proposal %s before sending it: %w", id, err)
+		}
+	}
 	a := p.Amendment
 	r.mu.Unlock()
 
@@ -538,6 +579,7 @@ func (r *Relay) Confirm(ctx context.Context, id string) (Proposal, error) {
 			p.Outcome += " (not recorded in the order: " + uerr.Error() + ")"
 		}
 	}
+	r.saveProposal(p)
 	return *p, err
 }
 
@@ -554,6 +596,7 @@ func (r *Relay) Dismiss(id string) (Proposal, error) {
 		return Proposal{}, fmt.Errorf("%w: %s is %s", ErrProposalClosed, id, p.Status)
 	}
 	p.Status, p.Outcome = ProposalDismissed, "dismissed: the leg stays as booked"
+	r.saveProposal(p)
 	return *p, nil
 }
 
