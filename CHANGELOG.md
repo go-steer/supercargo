@@ -155,6 +155,7 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Fixed
 
+- The assistant's `get_status` on a door-to-door order asks its forwarder for the order's status (by our reference), instead of failing as an ocean status request: the order's status, its legs as planned and the estimated delivery, without the forwarder's or a carrier's own words.
 - An EDI interchange addressed to anyone else is refused: the forwarder takes an acknowledgement or status only if its UNB recipient is its own EDI identity, and the mock carrier an instruction only if it is addressed to it. Before, only the sender was checked.
 
 - References a body carries (booking, event, alert, voyage and shipper references) may no longer contain `.`: a carrier booking reference with a dot was valid in a confirmation but couldn't be asked about in a status request, whose references follow the DCSA query's pattern. The business file's shipper references follow the same rule. An operator's config now refuses a `voyage` or `refPrefix` that would make references the bodies refuse (a dot, a space, a leading `-`): before, the node started and then issued messages its partners rejected.

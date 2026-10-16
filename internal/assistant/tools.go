@@ -82,7 +82,7 @@ var Tools = []llm.Tool{
 		Schema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
 	{Name: ToolGetEvents, Description: "Get one booking's signed track-and-trace events and alerts, oldest first.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"bookingRef":{"type":"string","maxLength":64},"operator":{"type":"string","maxLength":253,"description":"Only needed if two carriers use the same reference"}},"required":["bookingRef"],"additionalProperties":false}`)},
-	{Name: ToolStatus, Description: "Ask the carrier for one of our bookings' current DCSA status (structured, signed, no model involved): status, vessel, current location, ETA and all its events, including any we missed.",
+	{Name: ToolStatus, Description: "Ask the carrier for one of our bookings' current DCSA status (structured, signed, no model involved): status, vessel, current location, ETA and all its events, including any we missed. For a door-to-door order, the forwarder's signed answer: the order's status, its legs as planned, and the estimated delivery.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"bookingRef":{"type":"string","maxLength":64}},"required":["bookingRef"],"additionalProperties":false}`)},
 	{Name: ToolAsk, Description: "Ask the carrier a question about one of our bookings. Our node sends it signed; the carrier's (or forwarder's) agent answers from that booking's records and cites them. The result says which cited records we hold signed copies of (held) and which of those came from a source nobody signed, a forwarder's re-issued EDI status (unsigned): tell the user which facts are unsigned.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"bookingRef":{"type":"string","maxLength":64},"question":{"type":"string","maxLength":1000}},"required":["bookingRef","question"],"additionalProperties":false}`)},
@@ -268,12 +268,15 @@ func (a *Assistant) run(ctx context.Context, c *Conversation, t *turnState, call
 		if t.statused[in.BookingRef] {
 			return nil, refuse("you already have %s's status from this turn; use it", in.BookingRef)
 		}
-		op, err := a.operatorOf(ctx, in.BookingRef, "")
+		held, err := a.heldBooking(ctx, in.BookingRef, "")
 		if err != nil {
 			return nil, err
 		}
 		t.statused[in.BookingRef] = true
-		st, err := a.Node.Status(ctx, op, in.BookingRef)
+		if held.Kind == store.KindOrder {
+			return a.orderStatus(ctx, held)
+		}
+		st, err := a.Node.Status(ctx, held.Operator, in.BookingRef)
 		if err != nil {
 			return nil, err
 		}
@@ -348,24 +351,81 @@ func trimStatus(st *shipper.StatusResponse) statusResult {
 
 // operatorOf finds the operator of our booking ref (one of ours: a tool
 // never reaches a booking the node doesn't hold).
+// OrderStatuser asks a forwarder for an order's status (the shipper's
+// control API's POST /orders/status).
+type OrderStatuser interface {
+	OrderStatus(ctx context.Context, forwarder, shipperRef string) (*shipper.OrderStatus, error)
+}
+
+// OrderStatus implements OrderStatuser.
+func (n ControlNode) OrderStatus(ctx context.Context, forwarder, shipperRef string) (*shipper.OrderStatus, error) {
+	var r shipper.OrderStatusResponse
+	if err := n.do(ctx, "POST", "/orders/status", shipper.OrderStatusRequest{Forwarder: forwarder, ShipperRef: shipperRef}, &r); err != nil {
+		return nil, withMessage(err, r.Error)
+	}
+	return r.OrderStatus, nil
+}
+
+// orderStatus is a door-to-door order's status from its forwarder: its
+// answer's facts, not its messages (the forwarder's own words).
+func (a *Assistant) orderStatus(ctx context.Context, s *store.Summary) (any, error) {
+	os, ok := a.Node.(OrderStatuser)
+	if !ok || s.ShipperRef == "" {
+		return nil, refuse("%s is a door-to-door order: get_events has its journey, leg by leg", s.Ref)
+	}
+	st, err := os.OrderStatus(ctx, s.Operator, s.ShipperRef)
+	if err != nil {
+		return nil, err
+	}
+	if st == nil || st.Status == nil || st.Status.Answer == nil {
+		return nil, refuse("%s didn't find the order %s", s.Operator, s.Ref)
+	}
+	if st.Unknown || st.Status.OrderRef != s.Ref {
+		// Another order under our reference: not this one's status.
+		return nil, refuse("%s answered about another order than %s; get_events has its journey", s.Operator, s.Ref)
+	}
+	ans := *st.Status.Answer
+	ans.Messages = nil
+	ans.Legs = slices.Clone(ans.Legs)
+	for i := range ans.Legs {
+		ans.Legs[i].Vessel, ans.Legs[i].Carrier = "", "" // a carrier's or the forwarder's own text
+	}
+	return map[string]any{"forwarder": st.Forwarder, "orderRef": st.Status.OrderRef, "status": ans.Status, "legs": ans.Legs,
+		"plannedDelivery": ans.PlannedDelivery, "estimatedDelivery": st.Status.EstimatedDelivery}, nil
+}
+
 func (a *Assistant) operatorOf(ctx context.Context, ref, operator string) (string, error) {
-	all, err := a.Node.Shipments(ctx)
+	s, err := a.heldBooking(ctx, ref, operator)
 	if err != nil {
 		return "", err
 	}
-	var found []string
+	return s.Operator, nil
+}
+
+// heldBooking is our booking ref (with operator, if given), as
+// operatorOf finds it.
+func (a *Assistant) heldBooking(ctx context.Context, ref, operator string) (*store.Summary, error) {
+	all, err := a.Node.Shipments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var found []store.Summary
 	for _, s := range all {
 		if s.Ref == ref && (operator == "" || s.Operator == operator) {
-			found = append(found, s.Operator)
+			found = append(found, s)
 		}
 	}
 	switch len(found) {
 	case 0:
-		return "", refuse("we hold no booking %s", ref)
+		return nil, refuse("we hold no booking %s", ref)
 	case 1:
-		return found[0], nil
+		return &found[0], nil
 	}
-	return "", refuse("%s is a booking with %s; say which carrier", ref, strings.Join(found, " and "))
+	ops := make([]string, len(found))
+	for i, s := range found {
+		ops[i] = s.Operator
+	}
+	return nil, refuse("%s is a booking with %s; say which carrier", ref, strings.Join(ops, " and "))
 }
 
 // draftInput is draft_booking's input.
