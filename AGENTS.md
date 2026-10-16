@@ -211,8 +211,10 @@ are in:
   the shipper's unanswered orders, the forwarder's relay and EDI
   gateway); `dev/smoke/restart` checks it.
 
-Next: Litestream on Cloud Run, then phase 3, the receiver (delegation,
-milestone 7).
+  On Cloud Run each node runs under Litestream, copying its file to the
+  company's bucket (`deploy/cloudrun`).
+
+Next: phase 3, the receiver (delegation, milestone 7).
 Cited cause IDs in alerts are always checked against the shipper's log
 before a model. `derived_from`'s text never reaches one: an inquiry
 model learns only whether a re-issued record's source was signed, as the

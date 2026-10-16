@@ -74,14 +74,19 @@ func TestFile(t *testing.T) {
 	if err := os.WriteFile(wide, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(wide+"-wal", nil, 0o644); err != nil { // a restore's
+		t.Fatal(err)
+	}
 	w, err := Open(wide)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = w.Close()
-	if st, _ := os.Stat(wide); st.Mode().Perm() != 0o600 {
-		t.Errorf("an existing file left %v", st.Mode().Perm())
+	for _, f := range []string{wide, wide + "-wal"} { // checked open: a clean close removes the WAL
+		if st, err := os.Stat(f); err != nil || st.Mode().Perm() != 0o600 {
+			t.Errorf("an existing %s: %v, %v", filepath.Base(f), st, err)
+		}
 	}
+	_ = w.Close()
 	// A lock file that can't be created, or a file that can't be.
 	if _, err := Open(filepath.Join(dir, "missing", "x.db")); err == nil {
 		t.Error("opened in a directory that isn't there")

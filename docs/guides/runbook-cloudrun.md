@@ -128,13 +128,20 @@ and stores it in Secret Manager. Here is what it does, so you know what's
 in your project:
 
 - **APIs:** enables Cloud Run, Cloud Build, Artifact Registry, Secret
-  Manager and Vertex AI.
+  Manager, Vertex AI and Cloud Storage.
 - **Service accounts:** creates one per company: `ulp-ocean-blue@…`,
   `ulp-cymbal-shoes@…`, `ulp-meridian-forwarding@…` and
   `ulp-serra-transportes@…`. Each gets `roles/aiplatform.user`, and can
   read only its own secrets.
   A new account takes up to a couple of minutes to be usable in IAM, so
   the script retries those bindings.
+- **State buckets:** creates one Cloud Storage bucket per company,
+  `<project>-ulp-<service>-state` (in the region, uniform access, public
+  access prevented). That company's service account is the only one
+  granted on it (`roles/storage.objectAdmin` on the bucket); the
+  project's owners can read it, and so can Cloud Build's account, which
+  the script gives read access to storage across the project. It holds the company's
+  node's records: see **Records across restarts** below.
 - **Cloud Build:** grants Cloud Build's account
   (`<project number>-compute@developer.gserviceaccount.com`) what it needs
   to push the image and write its logs. New projects no longer give that
@@ -150,8 +157,9 @@ in your project:
   are mounted as files, and a re-run adds a new version only when
   something changed.
 - **Image:** builds the node and the mock EDI carrier, and uploads a small
-  image (the two binaries and Ocean Blue's agent skills) with Cloud
-  Build. No source and no secret go into it.
+  image (the two binaries, Litestream 0.5.17 pinned by digest, and Ocean
+  Blue's agent skills) with Cloud Build. No source and no secret go into
+  it.
 - **Meridian's EDI sidecar:** `meridian-forwarding` runs two containers.
   One is the node; the other, `polder`, is Polder Haulage's mock EDIFACT
   carrier. They share two in-memory volumes, the file drops, and talk only
@@ -162,11 +170,41 @@ in your project:
   because an EDI identity is at most 35 characters.
 - **Services:** deploys `ocean-blue`, `cymbal-shoes`,
   `meridian-forwarding` and `serra-transportes` with:
-  - exactly one instance each, with the CPU always on (the stores are in
-    memory, and the voyage simulator runs between requests);
+  - exactly one instance each, with the CPU always on (the voyage
+    simulator runs between requests, and one instance keeps one writer
+    on each node's records);
   - `--no-invoker-iam-check`, so anyone can reach them, and nobody needs
     an `allUsers` IAM binding, which many org policies forbid. People
     still sign in with Google, and partners still send signed envelopes.
+
+**Records across restarts.** Each node keeps its records (bookings,
+orders, their events, the replay window, the forwarder's EDI state) in
+a SQLite file on an in-memory volume, and runs under
+[Litestream](https://litestream.io), which copies the file to the
+company's bucket about once a second. When an instance starts (a new
+revision, a restarted instance), Litestream restores the file from the
+bucket before the node starts, so the node comes back with what it had.
+What can be lost: the last second or so before an instance stops
+abruptly. Two instances copying to one bucket at once can leave a copy
+that can't be restored (Litestream has no lease on Cloud Storage to stop
+two writers), so a re-run **deletes each service and waits for its last
+copy before deploying it again**: about a minute of downtime per
+service. Deploy when nobody is mid-scene.
+
+**Starting over.** The script keeps the records across re-runs, and
+re-running it on a demo's day moves Cymbal's deadlines but leaves
+yesterday's bookings in place. To start from nothing, stop the services
+first (a running node would go on copying into an emptied bucket), empty
+the buckets, then re-run the script:
+
+```bash
+gcloud run services delete ocean-blue cymbal-shoes meridian-forwarding serra-transportes --region "$REGION" --quiet
+sleep 20
+for s in ocean-blue cymbal-shoes meridian-forwarding serra-transportes; do
+  gcloud storage rm -r "gs://$PROJECT-ulp-$s-state/**" || true   # an empty bucket is fine
+done
+deploy/cloudrun/deploy.sh
+```
 
 It prints the addresses when done. Then check that each node is up:
 
@@ -352,6 +390,11 @@ them. Disrupt while it's at sea.
 | The assistant answers from templates | Vertex AI isn't enabled, or the model isn't available in `LLM_LOCATION`. Set `LLM_MODEL` or `LLM_LOCATION` and re-run. |
 | Nodes reject each other's messages | Read each node's log: `gcloud run services logs read cymbal-shoes --region "$REGION"`. |
 | `meridian-forwarding` doesn't start; its log says `edi: drop directory: … permission denied` | The node can't write to the in-memory volumes. The services run in the second-generation environment (`--execution-environment gen2`), which in-memory volumes need. If the error persists, mount the drops on a directory the nonroot user owns, or file an issue with the log. |
+| A node doesn't start; its log says `restore failed` with `googleapi: Error 403` or `404` | Litestream can't use the company's bucket. Re-run the script (it creates the bucket and grants the account); a new binding takes a minute to apply. |
+| A node doesn't start; its log says `restore failed` (`non-contiguous ltx files`, or another error), or the node exits on a malformed database | The copy is unusable, most likely after two instances copied at once. Delete the service, empty its bucket (step 3, **Starting over**, for that one service) and re-run: that company starts afresh. |
+| The image build fails pulling `litestream/litestream` (`toomanyrequests`) | Docker Hub's rate limit for anonymous pulls. Wait a few minutes and re-run. |
+| A node doesn't start; its log says `persist: the file is in use by another process` | Two processes share one file; with one instance per service this shouldn't happen. Redeploy the service. |
+| Yesterday's bookings are still there | Records persist across re-runs. To start over, empty the buckets (step 3, **Starting over**). |
 | Meridian's booking stops at Polder's leg ("no acknowledgement") | The `polder` sidecar isn't running, or can't use the file drops. Read its log: Console → Cloud Run → meridian-forwarding → **Logs**, container `polder`. |
 | Meridian refuses to book: a leg ends after the order's date | The dates are stale: Cymbal's deadlines were set when you deployed. Re-run the script, then order again. |
 | "What can we do?" says the deadline is still met | The same: re-run the script on the day, so the 72-hour delay misses the launch. |
@@ -367,6 +410,9 @@ for s in ulp-ob-signing-key ulp-cy-signing-key ulp-mf-signing-key ulp-sr-signing
          ulp-ob-config ulp-cy-config ulp-mf-config ulp-sr-config \
          ulp-cy-business ulp-cy-address-book ulp-cy-directory; do gcloud secrets delete "$s" --quiet; done
 gcloud artifacts repositories delete supercargo --location "$REGION"
+for s in ocean-blue cymbal-shoes meridian-forwarding serra-transportes; do
+  gcloud storage rm -r "gs://$PROJECT-ulp-$s-state"
+done
 for a in ocean-blue cymbal-shoes meridian-forwarding serra-transportes; do
   gcloud iam service-accounts delete "ulp-$a@$PROJECT.iam.gserviceaccount.com"
 done
