@@ -68,6 +68,8 @@ type Summarizer struct {
 	Skills []skills.Skill
 	// Name is the shipper's name, for the model's instructions.
 	Name string
+	// Language is the notifications' language (llm.Languages; "" English).
+	Language string
 	// Timeout bounds each model call (default 15s).
 	Timeout time.Duration
 	// OnSummary receives each notification. Required.
@@ -421,6 +423,10 @@ func (s *Summarizer) prompt(b bookingFacts, records []summaryRecord, alert *inte
 		name = "the shipper"
 	}
 	system := fmt.Sprintf(summarySystemPrompt, name)
+	if lang := llm.Languages[s.Language]; lang != "" {
+		// Among the rules, before the reply's format.
+		system = strings.Replace(system, "\n\nReply with one JSON object", "\n- Write the notification in "+lang+"; keep IDs, dates and amounts exactly as they are.\n\nReply with one JSON object", 1)
+	}
 	if len(s.Skills) > 0 {
 		var sb strings.Builder
 		sb.WriteString(system)

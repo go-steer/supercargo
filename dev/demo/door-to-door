@@ -37,6 +37,9 @@
 # Environment: D2D_PORT (8451: Cymbal; Meridian, Ocean Blue, Serra and the
 # QualP mock take the next four), HOURS_PER_SECOND (8: the journey takes about a minute; the companies share one simulated clock, from their first bookings),
 # ULP_LLM and ULP_LLM_MODEL (as for hello-ulp: fake by default).
+# D2D_CUSTOMIZE, if set, is a program run with DIR after the configs are
+# written and before anything starts: a scenario's own names, brand or
+# language, kept outside this repository.
 set -euo pipefail
 . "$(dirname "$0")/../smoke/lib.sh"
 
@@ -184,6 +187,7 @@ up() {
   echo "Building..."
   demo_build "$dir"
   setup
+  if [[ -n "${D2D_CUSTOMIZE:-}" ]]; then "$D2D_CUSTOMIZE" "$dir"; fi
   : >"$dir/pids"
   export QUALP_TOKEN="${QUALP_TOKEN:-demo}" # the mock's; a real QualP token stays in the environment
   nohup "$dir/bin/ulpmock" qualp --listen "127.0.0.1:$QP" --token-env QUALP_TOKEN >/dev/null 2>"$dir/qualp.log" &

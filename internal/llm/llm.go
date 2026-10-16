@@ -124,3 +124,18 @@ func StripCodeFence(s string) string {
 	}
 	return strings.TrimSpace(body)
 }
+
+// Languages are the languages a node's own models may answer its people
+// in, by BCP 47 tag, with how a prompt names each ("" for English, the
+// prompts' own).
+var Languages = map[string]string{"en": "", "pt-BR": "Brazilian Portuguese", "es": "Spanish"}
+
+// LanguageRule is the instruction that has a model answer people in the
+// language tagged lang, keeping what's exact as it is; "" for English.
+func LanguageRule(lang string) string {
+	name := Languages[lang]
+	if name == "" {
+		return ""
+	}
+	return "\n- Write what you say to our people in " + name + ". Keep references, codes, domains, dates, amounts and tool inputs exactly as they are, and write anything that goes to another company in English. Never translate or restate our private context (deadlines, slots, notes) for another company: it stays ours in any language."
+}

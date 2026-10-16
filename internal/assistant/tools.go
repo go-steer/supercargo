@@ -128,8 +128,36 @@ func (p *privateSet) list() []string {
 	return slices.Clone(p.v)
 }
 
+// unaccent drops the accents people may or may not type ("día", "março").
+var unaccent = strings.NewReplacer("á", "a", "à", "a", "â", "a", "ã", "a", "é", "e", "ê", "e", "í", "i", "ó", "o", "ô", "o", "õ", "o", "ú", "u", "ü", "u", "ç", "c", "ñ", "n")
+
+// The months as Portuguese and Spanish write them, unaccented.
+var (
+	monthsPT = []string{"janeiro", "fevereiro", "marco", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"}
+	monthsES = []string{"enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"}
+)
+
+// dateForms are the ways people write the date t, in English, Portuguese
+// and Spanish: any of them in a message carries it.
+func dateForms(d string, t time.Time) []string {
+	day, m := strconv.Itoa(t.Day()), int(t.Month())
+	dd, mm := fmt.Sprintf("%02d", t.Day()), fmt.Sprintf("%02d", m)
+	forms := []string{d, t.Format("Jan 2"), t.Format("January 2"), t.Format("2 Jan"), t.Format("2 January"),
+		"the " + day + ordinal(t.Day()), day + ordinal(t.Day())}
+	for _, months := range [][]string{monthsPT, monthsES} {
+		name := months[m-1]
+		forms = append(forms, day+" de "+name, day+" de "+name[:3], dd+" de "+name)
+	}
+	for _, x := range []string{day, dd} {
+		for _, y := range []string{strconv.Itoa(m), mm} {
+			forms = append(forms, x+"/"+y, x+"."+y, y+"/"+x, x+"-"+y) // D/M, D.M, M/D (US), D-M
+		}
+	}
+	return append(forms, "dia "+day, "dia "+dd)
+}
+
 func (a *Assistant) privateIn(question string) string {
-	q := strings.ToLower(question)
+	q := unaccent.Replace(strings.ToLower(question))
 	dates, texts := a.Drafts.requiredBy(), []string(nil)
 	for _, p := range a.private() {
 		if _, err := time.Parse(time.DateOnly, p); err == nil {
@@ -139,16 +167,13 @@ func (a *Assistant) privateIn(question string) string {
 		}
 	}
 	for _, p := range texts {
-		if strings.Contains(q, strings.ToLower(strings.TrimSpace(p))) {
+		if strings.Contains(q, unaccent.Replace(strings.ToLower(strings.TrimSpace(p)))) {
 			return "a note from our business context"
 		}
 	}
 	for _, d := range dates {
 		t, _ := time.Parse(time.DateOnly, d)
-		day := strconv.Itoa(t.Day())
-		forms := []string{d, t.Format("Jan 2"), t.Format("January 2"), t.Format("2 Jan"), t.Format("2 January"),
-			"the " + day + ordinal(t.Day()), day + ordinal(t.Day())}
-		for _, f := range forms {
+		for _, f := range dateForms(d, t) {
 			f = strings.ToLower(f)
 			for i := 0; ; {
 				j := strings.Index(q[i:], f)
