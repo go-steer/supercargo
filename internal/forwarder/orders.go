@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -113,6 +114,14 @@ func (o *Orders) Handle(_ context.Context, req *node.Request) (*node.Reply, erro
 	o.mu.Lock()
 	if o.next == 0 {
 		o.next = 7
+		// Orders restored after a restart: number on after them.
+		for _, held := range o.Bookings.List() {
+			if rest, ok := strings.CutPrefix(held.Ref, o.RefPrefix+"-"); ok && held.Order != nil {
+				if n, ok := digits(rest); ok && n >= o.next {
+					o.next = n + 1
+				}
+			}
+		}
 	}
 	n := o.next
 	o.next++

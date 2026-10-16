@@ -165,6 +165,7 @@ type Bookings struct {
 
 	mu sync.Mutex
 	m  map[bookingKey]Booking
+	sv Saver // nil: in memory only
 }
 
 // MaxBookings bounds a Bookings store. Anyone may request a booking
@@ -192,6 +193,12 @@ func (s *Bookings) Add(b Booking) error {
 	if len(s.m) >= s.max {
 		return ErrFull
 	}
+	b.Operator, b.Ref = k.operator, k.ref
+	if s.sv != nil {
+		if err := s.sv.Put(k.String(), b); err != nil {
+			return err
+		}
+	}
 	s.m[k] = clone(b)
 	return nil
 }
@@ -212,6 +219,11 @@ func (s *Bookings) Update(operator, ref string, change func(*Booking) error) (Bo
 		return Booking{}, err
 	}
 	b.Operator, b.Ref = operator, ref
+	if s.sv != nil {
+		if err := s.sv.Put(k.String(), b); err != nil {
+			return Booking{}, err
+		}
+	}
 	s.m[k] = clone(b)
 	return clone(b), nil
 }

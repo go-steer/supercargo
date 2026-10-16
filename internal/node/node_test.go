@@ -475,6 +475,34 @@ func TestReplayStoreFullFailsClosed(t *testing.T) {
 	}
 }
 
+// TestSinceFence: a message sent before the node started is refused as
+// stale, retryable, before it is recorded or handled; one sent after is
+// taken.
+func TestSinceFence(t *testing.T) {
+	op, cy := newParty(t, "ob-2026-1"), newParty(t, "cy-2026-1")
+	keys := staticKeys{shipperDomain + "/cy-2026-1": cy.v}
+	handled := 0
+	c := baseConfig(t, op, keys, handlerFunc{handle: func(context.Context, *node.Request) (*node.Reply, error) {
+		handled++
+		return nil, nil
+	}})
+	c.Since = time.Now().Add(time.Minute)
+	n, err := node.New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := process(t, n, cy, op); e == nil || e.Code != intents.CodeStale || !e.Retryable || handled != 0 || c.Replay.Len() != 0 {
+		t.Errorf("sent before the start: %+v, handled %d, recorded %d", e, handled, c.Replay.Len())
+	}
+	c.Since = time.Now().Add(-time.Minute)
+	if n, err = node.New(c); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := process(t, n, cy, op); e != nil || handled != 1 {
+		t.Errorf("sent after the start: %+v, handled %d", e, handled)
+	}
+}
+
 type posterFunc func(context.Context, string, []byte) ([]byte, error)
 
 func (f posterFunc) Post(ctx context.Context, r string, m []byte) ([]byte, error) {

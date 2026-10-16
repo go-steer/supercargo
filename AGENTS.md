@@ -206,8 +206,13 @@ are in:
   rejecting an order with legs booked, withdrawing a plan that doesn't
   fit).
 
-Next: persistence (the last known gap), and phase 3, the receiver
-(delegation, milestone 7).
+- Persistence, in progress (`internal/persist`, `persistence.file`):
+  bookings, event logs and the replay window survive a restart;
+  `dev/smoke/restart` checks it.
+
+Next: the rest of persistence (the forwarder's and shipper's own state,
+then Litestream on Cloud Run), and phase 3, the receiver (delegation,
+milestone 7).
 Cited cause IDs in alerts are always checked against the shipper's log
 before a model. `derived_from`'s text never reaches one: an inquiry
 model learns only whether a re-issued record's source was signed, as the

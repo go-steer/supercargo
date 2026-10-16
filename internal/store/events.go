@@ -44,6 +44,8 @@ type EventLog struct {
 	mu  sync.Mutex
 	m   map[bookingKey][]Record
 	ids map[bookingKey]map[string]bool
+	seq uint64 // records added, saved ones included
+	sv  Saver  // nil: in memory only
 }
 
 // NewEventLog returns an empty log holding at most perBooking records per
@@ -68,13 +70,33 @@ func (l *EventLog) Add(operator, ref string, r Record) (bool, error) {
 	if len(l.m[k]) >= l.perBooking {
 		return false, ErrFull
 	}
+	r.Body = slices.Clone(r.Body)
+	if l.sv != nil {
+		if err := l.sv.Put(recordKey(k, l.seq+1), saveRecord(k, r)); err != nil {
+			return false, err
+		}
+	}
+	l.seq++
 	if l.ids[k] == nil {
 		l.ids[k] = map[string]bool{}
 	}
 	l.ids[k][r.Intent+" "+r.ID] = true
-	r.Body = slices.Clone(r.Body)
 	l.m[k] = append(l.m[k], r)
 	return true, nil
+}
+
+// IDs returns the IDs of every record held, of every booking: what a
+// restarted node numbers its new events and alerts after.
+func (l *EventLog) IDs() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, recs := range l.m {
+		for _, r := range recs {
+			out = append(out, r.ID)
+		}
+	}
+	return out
 }
 
 // List returns a copy of the booking's records, oldest first.

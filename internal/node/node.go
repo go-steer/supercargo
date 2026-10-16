@@ -100,6 +100,12 @@ type Config struct {
 	// MaxSkew is the allowed difference between sentAt and this node's
 	// clock. Zero means 5m. Replay's retention must be at least twice it.
 	MaxSkew time.Duration
+	// Since, if set, is when this node started: an envelope sent before it
+	// is refused as stale (retryable: the sender sends it anew). The replay
+	// window a restart restores may miss its last moments (a crash, or a
+	// copy that lags), so a message captured then can't be replayed into
+	// the restarted node; after MaxSkew the skew check refuses it anyway.
+	Since time.Time
 
 	// Handlers serve the intents this node accepts. Each must be an intent
 	// the intents package decodes.

@@ -657,6 +657,23 @@ func (s *Simulator) publish(tl *timeline, body intents.Body) error {
 	return err
 }
 
+// Resume numbers on after the IDs held (the events and alerts restored
+// after a restart), so none is used twice.
+func (s *Simulator) Resume(ids []string) {
+	s.init()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range ids {
+		prefix, num, ok := strings.Cut(id, "-")
+		if !ok || (prefix != "EV" && prefix != "AL") {
+			continue
+		}
+		if n, ok := refNumber("x", "x-"+num); ok && n > s.seq {
+			s.seq = n
+		}
+	}
+}
+
 // nextID is a fresh event or alert ID. It is called with s.mu held.
 func (s *Simulator) nextID(prefix string) string {
 	s.seq++
