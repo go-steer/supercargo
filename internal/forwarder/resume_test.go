@@ -50,6 +50,7 @@ func TestRelayResume(t *testing.T) {
 type failing struct{}
 
 func (failing) Put(string, any) error                 { return errors.New("disk full") }
+func (failing) Delete(string) error                   { return errors.New("disk full") }
 func (failing) DeleteBefore(string) error             { return errors.New("disk full") }
 func (failing) Load(func(string, []byte) error) error { return nil }
 

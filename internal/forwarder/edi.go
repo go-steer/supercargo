@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/edi"
+	"github.com/go-steer/supercargo/internal/store"
 )
 
 // EDIPartner is a carrier booked over EDIFACT file drops.
@@ -61,6 +62,7 @@ type Gateway struct {
 	seq        int
 	instructed map[string]instructed // by reference
 	held       []heldStatus          // statuses whose leg isn't recorded yet
+	sv         store.Saver           // nil: in memory only (Persist)
 }
 
 // heldStatus is a status taken before its leg was recorded, retried on
@@ -83,6 +85,7 @@ type instructed struct {
 	carrier     string
 	instruction edi.Instruction
 	control     string
+	written     bool // its file is in the outbox
 	ack         *edi.Ack
 	cancel      *cancelling
 }
@@ -91,6 +94,7 @@ type instructed struct {
 // and the answer once it came.
 type cancelling struct {
 	control string
+	written bool // its file is in the outbox
 	ack     *edi.Ack
 }
 
@@ -137,19 +141,41 @@ func (g *Gateway) Instruct(ctx context.Context, carrier string, i edi.Instructio
 		control = g.nextControl()
 		prev = instructed{carrier: carrier, instruction: i, control: control}
 		g.instructed[i.Reference] = prev // claimed before it's written: the order's claim keeps out a second Book
+		if err := g.saveLocked(i.Reference); err != nil {
+			// Not written unless saved: a restart must know what was sent.
+			delete(g.instructed, i.Reference)
+			g.mu.Unlock()
+			return edi.Ack{}, fmt.Errorf("forwarder: saving the instruction for %s: %w", i.Reference, err)
+		}
+	}
+	// Saved but never written (the node stopped between the two, or the
+	// write failed and its record couldn't be dropped): written now, in
+	// the interchange it was saved with, so its answer can come.
+	unwritten := sent && !prev.written && prev.ack == nil && prev.cancel == nil && prev.carrier == carrier && reflect.DeepEqual(prev.instruction, i)
+	if unwritten {
+		control = prev.control
 	}
 	g.mu.Unlock()
-	if !sent {
+	if !sent || unwritten {
 		data, err := edi.WriteIFTMIN(i, edi.Envelope{Sender: g.Self, Recipient: p.ID, Control: control, At: g.Now(), Location: p.Zone})
 		if err == nil {
 			_, err = p.Out.Put(control, data)
 		}
+		g.mu.Lock()
 		if err != nil {
-			g.mu.Lock()
-			delete(g.instructed, i.Reference)
+			if !sent {
+				delete(g.instructed, i.Reference)
+				g.keepLocked(i.Reference)
+			}
 			g.mu.Unlock()
 			return edi.Ack{}, fmt.Errorf("forwarder: sending the instruction for %s: %w", i.Reference, err)
 		}
+		if in, ok := g.instructed[i.Reference]; ok {
+			in.written = true
+			g.instructed[i.Reference] = in
+			g.keepLocked(i.Reference)
+		}
+		g.mu.Unlock()
 		g.Log.Info("instruction sent", "carrier", carrier, "reference", i.Reference)
 	}
 	if sent && prev.cancelled() {
@@ -189,10 +215,19 @@ func (g *Gateway) Cancel(ctx context.Context, carrier, ref string) (edi.Ack, err
 		g.mu.Unlock()
 		return edi.Ack{}, fmt.Errorf("%w: %s, with %s", ErrNotTaken, ref, carrier)
 	}
-	send := in.cancel == nil
-	if send {
+	fresh := in.cancel == nil
+	// A cancellation saved but never written goes out now, in its
+	// interchange (as an instruction does).
+	send := fresh || in.cancel.ack == nil && !in.cancel.written
+	if fresh {
 		in.cancel = &cancelling{control: g.nextControl()}
 		g.instructed[ref] = in
+		if err := g.saveLocked(ref); err != nil {
+			in.cancel = nil
+			g.instructed[ref] = in
+			g.mu.Unlock()
+			return edi.Ack{}, fmt.Errorf("forwarder: saving the cancellation of %s: %w", ref, err)
+		}
 	}
 	control := in.cancel.control
 	g.mu.Unlock()
@@ -201,14 +236,22 @@ func (g *Gateway) Cancel(ctx context.Context, carrier, ref string) (edi.Ack, err
 		if err == nil {
 			_, err = p.Out.Put(control, data)
 		}
+		g.mu.Lock()
+		in := g.instructed[ref]
 		if err != nil {
-			g.mu.Lock()
-			in := g.instructed[ref]
-			in.cancel = nil
-			g.instructed[ref] = in
+			if fresh {
+				in.cancel = nil
+				g.instructed[ref] = in
+				g.keepLocked(ref)
+			}
 			g.mu.Unlock()
 			return edi.Ack{}, fmt.Errorf("forwarder: sending the cancellation of %s: %w", ref, err)
 		}
+		if in.cancel != nil {
+			in.cancel.written = true
+			g.keepLocked(ref)
+		}
+		g.mu.Unlock()
 		g.Log.Info("cancellation sent", "carrier", carrier, "reference", ref)
 	}
 	return g.await(ctx, carrier, ref, func(in instructed) *edi.Ack {
@@ -331,6 +374,7 @@ func (g *Gateway) ack(carrier string, p *EDIPartner, data []byte) error {
 	case a.Answers != "" && in.cancel != nil && a.Answers == in.cancel.control:
 		if in.cancel.ack == nil {
 			in.cancel.ack = &a
+			g.keepLocked(a.Reference)
 		}
 	case a.Answers == "" && in.ack != nil && in.cancel != nil && in.cancel.ack == nil:
 		// Most likely the cancellation's, from a partner that doesn't say
@@ -342,6 +386,7 @@ func (g *Gateway) ack(carrier string, p *EDIPartner, data []byte) error {
 		if in.ack == nil {
 			in.ack = &a
 			g.instructed[a.Reference] = in
+			g.keepLocked(a.Reference)
 		}
 	default:
 		return fmt.Errorf("forwarder: an APERAK for %s answering %q, which we didn't send", a.Reference, a.Answers)

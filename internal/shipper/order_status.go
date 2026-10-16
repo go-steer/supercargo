@@ -16,11 +16,13 @@ package shipper
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
@@ -38,31 +40,90 @@ type sentOrder struct {
 	forwarder string
 	request   intents.ForwardingRequestBody
 	at        time.Time
+	n         uint64 // its place in the order sent (its saved key)
 }
 
-// rememberSent keeps an order about to be sent, under its message ID.
-func (s *Shipper) rememberSent(id, forwarder string, req *intents.ForwardingRequestBody) {
+// rememberSent keeps an order about to be sent, under its message ID. It
+// is saved first (PersistSent): an order the shipper couldn't take up
+// after a restart isn't sent.
+func (s *Shipper) rememberSent(id, forwarder string, req *intents.ForwardingRequestBody) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.sent == nil {
 		s.sent = map[string]sentOrder{}
 	}
-	s.sent[id] = sentOrder{forwarder: forwarder, request: *req, at: s.Now()}
+	o := sentOrder{forwarder: forwarder, request: *req, at: s.Now(), n: s.sentN + 1}
+	if s.sentSaver != nil {
+		if err := s.sentSaver.Put(sentKey(id, o.n), savedSent{id, forwarder, *req, o.at, o.n}); err != nil {
+			return fmt.Errorf("shipper: keeping the order: %w", err)
+		}
+	}
+	s.sentN = o.n
+	s.sent[id] = o
 	s.sentOrder = append(s.sentOrder, id)
 	for len(s.sentOrder) > MaxSentOrders {
-		delete(s.sent, s.sentOrder[0])
+		s.dropSentLocked(s.sentOrder[0])
 		s.sentOrder = s.sentOrder[1:]
 	}
+	return nil
 }
 
 // forgetSent drops an order once its first answer is recorded.
 func (s *Shipper) forgetSent(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.sent, id)
+	s.dropSentLocked(id)
 	if i := slices.Index(s.sentOrder, id); i >= 0 {
 		s.sentOrder = slices.Delete(s.sentOrder, i, i+1)
 	}
+}
+
+// dropSentLocked forgets id's order, saved copy and all. Forgetting is
+// best effort: a saved order left behind is one more to take up, never
+// a wrong one. s.mu is held.
+func (s *Shipper) dropSentLocked(id string) {
+	o, ok := s.sent[id]
+	delete(s.sent, id)
+	if ok && s.sentSaver != nil {
+		if err := s.sentSaver.Delete(sentKey(id, o.n)); err != nil && s.OnSaveError != nil {
+			s.OnSaveError(err)
+		}
+	}
+}
+
+// savedSent is an order awaiting its first answer, as saved.
+type savedSent struct {
+	ID, Forwarder string
+	Request       intents.ForwardingRequestBody
+	At            time.Time
+	N             uint64
+}
+
+// sentKey orders the saved orders as they were sent (a counter, not the
+// clock, which may repeat or step back).
+func sentKey(id string, n uint64) string { return fmt.Sprintf("%020d %s", n, id) }
+
+// PersistSent loads the orders awaiting a first answer that sv holds,
+// then saves each order sent and forgets each answered (docs/DESIGN.md,
+// A.12 "persistence"). Call it once, before s is used.
+func (s *Shipper) PersistSent(sv store.Saver) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sent, s.sentOrder = map[string]sentOrder{}, nil
+	if err := sv.Load(func(_ string, raw []byte) error {
+		var o savedSent
+		if err := json.Unmarshal(raw, &o); err != nil {
+			return err
+		}
+		s.sent[o.ID] = sentOrder{forwarder: o.Forwarder, request: o.Request, at: o.At, n: o.N}
+		s.sentOrder = append(s.sentOrder, o.ID)
+		s.sentN = max(s.sentN, o.N)
+		return nil
+	}); err != nil {
+		return err
+	}
+	s.sentSaver = sv
+	return nil
 }
 
 // sentTo is the order sent in message id to forwarder, if it's kept.

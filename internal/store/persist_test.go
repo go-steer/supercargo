@@ -49,6 +49,14 @@ func (s *memSaver) Put(key string, v any) error {
 	return nil
 }
 
+func (s *memSaver) Delete(key string) error {
+	if s.fail {
+		return errSave
+	}
+	delete(s.m, key)
+	return nil
+}
+
 func (s *memSaver) DeleteBefore(key string) error {
 	if s.fail {
 		return errSave

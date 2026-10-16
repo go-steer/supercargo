@@ -27,6 +27,7 @@ import (
 // saver refuses doesn't happen.
 type Saver interface {
 	Put(key string, v any) error
+	Delete(key string) error
 	// DeleteBefore removes every key ordered before key.
 	DeleteBefore(key string) error
 	Load(fn func(key string, raw []byte) error) error

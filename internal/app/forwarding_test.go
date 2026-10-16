@@ -17,6 +17,7 @@ package app
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -56,6 +57,9 @@ forwarder: { refPrefix: MF }
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Both keep their records in files, as deployed.
+	cCfg.Persistence = &config.Persistence{File: filepath.Join(t.TempDir(), "cy.db")}
+	mCfg.Persistence = &config.Persistence{File: filepath.Join(t.TempDir(), "mf.db")}
 	var apps []*App
 	for _, c := range []*config.Config{cCfg, mCfg} {
 		a, err := New(c, quiet())
