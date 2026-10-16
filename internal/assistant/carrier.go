@@ -152,6 +152,9 @@ func (a *Assistant) tools() []llm.Tool {
 	if len(a.Places) > 0 {
 		out = append(slices.Clone(out), DraftOrderTool)
 	}
+	if a.Docks != nil {
+		out = append(slices.Clone(out), DockTools...)
+	}
 	return out
 }
 

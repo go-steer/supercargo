@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -98,10 +99,39 @@ const (
 // draft's required-by date or one of a.Private, in the forms people write
 // dates ("2026-10-15", "Oct 15", "15 October", "the 15th"), compared
 // without case.
+// private is what no message may carry: the business file's, and what
+// the model has learned of our dock appointments.
+func (a *Assistant) private() []string {
+	return append(slices.Clone(a.Private), a.seen.list()...)
+}
+
+// privateSet is what the assistant has learned that's private, beyond
+// the business file.
+type privateSet struct {
+	mu sync.Mutex
+	v  []string
+}
+
+func (p *privateSet) add(v ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, s := range v {
+		if !slices.Contains(p.v, s) && len(p.v) < 1000 {
+			p.v = append(p.v, s)
+		}
+	}
+}
+
+func (p *privateSet) list() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.v)
+}
+
 func (a *Assistant) privateIn(question string) string {
 	q := strings.ToLower(question)
 	dates, texts := a.Drafts.requiredBy(), []string(nil)
-	for _, p := range a.Private {
+	for _, p := range a.private() {
 		if _, err := time.Parse(time.DateOnly, p); err == nil {
 			dates = append(dates, p)
 		} else if strings.TrimSpace(p) != "" {
@@ -177,6 +207,10 @@ func (a *Assistant) run(ctx context.Context, c *Conversation, t *turnState, call
 		return a.draftQuestion(ctx, call.Input)
 	case ToolBusiness:
 		return a.businessContext()
+	case ToolGetDock, ToolFindSlots, ToolDraftDock:
+		if a.Docks != nil {
+			return a.runDocks(ctx, call)
+		}
 	case ToolPartners:
 		return a.listPartners(ctx, c, call.Input)
 	case ToolFind:
@@ -341,6 +375,8 @@ type DraftResult struct {
 	Question *QuestionDraft `json:"question,omitempty"`
 	// Rate is a forwarder's new freight rate for an order's leg.
 	Rate *RateDraft `json:"rate,omitempty"`
+	// Dock is a move of one of our dock appointments.
+	Dock *DockDraft `json:"dock,omitempty"`
 	// Disruption is a carrier's drafted delay, instead of a booking.
 	Disruption *Disruption `json:"disruption,omitempty"`
 	// NotSent is the private part of the draft, which stays here.
@@ -433,6 +469,11 @@ func (d Draft) Result() DraftResult {
 		qd := *q
 		return DraftResult{DraftID: d.ID, To: q.Operator, Question: &qd,
 			Next: "Nothing has been sent. Tell the user the question is ready for them to read and send; only they can send it."}
+	}
+	if k := d.Dock; k != nil {
+		kd := *k
+		return DraftResult{DraftID: d.ID, Dock: &kd,
+			Next: "Nothing has moved. Tell the user the move is ready for them to review and confirm; only they can move the appointment."}
 	}
 	if r := d.Rate; r != nil {
 		rd := *r

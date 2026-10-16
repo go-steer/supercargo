@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/assistant"
+	"github.com/go-steer/supercargo/internal/backend"
 	"github.com/go-steer/supercargo/internal/forwarder"
 	"github.com/go-steer/supercargo/internal/operator"
 	"github.com/go-steer/supercargo/internal/shipper"
@@ -157,6 +158,8 @@ func TestSentOutcome(t *testing.T) {
 			Order: &assistant.OrderDraft{Forwarder: "meridian-forwarding.example"}}, Ordered: &intents.ForwardingConfirmationBody{Status: "pending", OrderRef: "MF-0007"}},
 		"Set the rate for leg 3 of MF-0007 to R$ 1180.00 (RD-0002; sent to no one). Freight: ok.": {Draft: assistant.Draft{ID: "RD-0002",
 			Rate: &assistant.RateDraft{OrderRef: "MF-0007", Leg: 3, Rate: 1180}}, Rated: "ok"},
+		"Moved the dock appointment AG-1 for CY-PO-55120 (AD-0003; sent to no one): Dock 1, 2026-11-11 14:00 +00:00.": {Draft: assistant.Draft{ID: "AD-0003"},
+			Docked: &backend.Appointment{ID: "AG-1", ShipperRef: "CY-PO-55120", Dock: "Dock 1", Start: time.Date(2026, 11, 11, 14, 0, 0, 0, time.UTC)}},
 	} {
 		if got := sentOutcome(s); got != want {
 			t.Errorf("%q, want %q", got, want)

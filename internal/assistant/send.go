@@ -28,6 +28,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/go-steer/supercargo/internal/backend"
 	"github.com/go-steer/supercargo/internal/forwarder"
 	"github.com/go-steer/supercargo/internal/operator"
 	"github.com/go-steer/supercargo/internal/shipper"
@@ -52,6 +53,8 @@ type Sent struct {
 	// Rated is a set rate's freight status on the plan, checked again
 	// (ok, below, unchecked).
 	Rated string
+	// Docked is a moved dock appointment, as the schedule holds it now.
+	Docked *backend.Appointment
 }
 
 // ErrOutcomeUnknown reports a send that may or may not have reached the
@@ -95,6 +98,9 @@ func (a *Assistant) Send(ctx context.Context, id string) (sent *Sent, err error)
 	}
 	if d.Rate != nil {
 		return a.sendRate(ctx, d)
+	}
+	if d.Dock != nil {
+		return a.sendDock(ctx, d)
 	}
 	if a.Node == nil {
 		a.Drafts.Put(d)
@@ -167,6 +173,10 @@ func (a *Assistant) Report(ctx context.Context, c *Conversation, s *Sent) (Reply
 		note = notePrefix + "The user confirmed delay " + s.Draft.ID + " in the dialog, and our node published it. " +
 			"The outcome is below: tell the user which bookings got their signed alert and the new ETAs, in a sentence or two. " +
 			"Name any booking that got no alert; one marked applied was delayed anyway, so say not to publish the delay again.\n"
+	} else if k := s.Docked; k != nil {
+		result, err = json.Marshal(map[string]any{"draftId": s.Draft.ID, "appointment": k})
+		note = notePrefix + "The user confirmed moving the dock appointment " + s.Draft.ID + " in the dialog, and it was moved in our dock schedule (nothing was sent to anyone). " +
+			"The appointment as it stands is below: tell the user in a sentence or two.\n"
 	} else if r := s.Draft.Rate; r != nil {
 		result, err = json.Marshal(map[string]any{"draftId": s.Draft.ID, "order": r.OrderRef, "leg": r.Leg, "rate": r.Rate, "was": r.Was, "freightStatus": s.Rated})
 		note = notePrefix + "The user confirmed rate " + s.Draft.ID + " in the dialog, and our node set it on the order (nothing was sent to anyone). " +

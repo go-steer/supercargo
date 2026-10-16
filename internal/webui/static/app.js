@@ -1079,6 +1079,7 @@ function draftDialog(d, side) {
   else if (d.order) orderDraftDialog(d, chatVia(side));
   else if (d.proposal) proposalDraftDialog(d, chatVia(side));
   else if (d.rate) rateDraftDialog(d, chatVia(side));
+  else if (d.dock) dockDraftDialog(d, chatVia(side));
   else if (d.question) questionDraftDialog(d, chatVia(side));
   else bookingDialog(d, chatVia(side));
 }
@@ -1106,6 +1107,24 @@ function proposalDraftDialog(d, via) {
   const discard = discardLink(d, via, () => dlg.close());
   dlg = modal(`Amend leg ${p.leg} · ${p.carrierName}`, rows, `Send this amendment? Your node signs it and sends it to ${p.carrier}.`, 'Send amendment',
     () => via.send(d), [discard]);
+}
+
+// dockDraftDialog is a drafted move of one of our dock appointments: from
+// where to where, in the site's own time, in our own schedule.
+const siteTime = (iso) => {
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(iso || '');
+  if (!m) return iso || '';
+  const d = new Date(m[1] + 'T00:00:00Z');
+  return `${d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })} ${m[2]}`;
+};
+function dockDraftDialog(d, via) {
+  const k = d.dock;
+  let dlg = null;
+  const discard = discardLink(d, via, () => dlg.close());
+  dlg = modal(`Dock appointment ${k.appointmentId}`, [['Shipment:', k.shipperRef], ['Site:', `${k.site} · ${k.source}`],
+    ['Now:', `${k.wasDock} · ${siteTime(k.wasStart)}–${siteTime(k.wasEnd).slice(-5)}`], ['Move to:', `${k.dock} · ${siteTime(k.start)}–${siteTime(k.end).slice(-5)}`],
+    ['Not sent:', 'our dock schedule: no carrier or forwarder sees it', 'notsent']],
+  'Move this appointment? It changes in our dock schedule; nothing is sent.', 'Move appointment', () => via.send(d), [discard]);
 }
 
 // rateDraftDialog is a drafted freight rate: what it replaces, and the

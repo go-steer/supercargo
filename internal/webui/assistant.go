@@ -401,6 +401,9 @@ func (s *server) assistantSend(w http.ResponseWriter, r *http.Request, _ Persona
 			} else if strings.HasPrefix(req.DraftID, "PD-") {
 				_ = c.conv.Note("Confirming " + req.DraftID + " failed with an unknown outcome: the amendment may have reached the carrier. " +
 					"The draft is gone; tell the user to check the order's proposals before confirming again.")
+			} else if strings.HasPrefix(req.DraftID, "AD-") {
+				_ = c.conv.Note("Moving dock appointment " + req.DraftID + " failed with an unknown outcome: it may have moved (nothing goes to anyone either way). " +
+					"The draft is gone; tell the user to check the appointment before moving it again.")
 			} else if strings.HasPrefix(req.DraftID, "RD-") {
 				_ = c.conv.Note("Setting rate " + req.DraftID + " failed with an unknown outcome: it may have been set (nothing goes to anyone either way). " +
 					"The draft is gone; tell the user to check the leg's freight in the Orders tab.")
@@ -521,6 +524,9 @@ func sentOutcome(sent *assistant.Sent) string {
 	}
 	if a := sent.Asked; a != nil && sent.Draft.Question != nil {
 		return "Asked " + a.Operator + " about " + sent.Draft.Question.BookingRef + " (" + id + "), signed. It answered; the assistant reports it below."
+	}
+	if k := sent.Docked; k != nil {
+		return "Moved the dock appointment " + k.ID + " for " + k.ShipperRef + " (" + id + "; sent to no one): " + k.Dock + ", " + k.Start.Format("2006-01-02 15:04 -07:00") + "."
 	}
 	if r := sent.Draft.Rate; r != nil {
 		return fmt.Sprintf("Set the rate for leg %d of %s to R$ %.2f (%s; sent to no one). Freight: %s.", r.Leg, r.OrderRef, r.Rate, id, sent.Rated)

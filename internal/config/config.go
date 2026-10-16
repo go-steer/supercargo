@@ -86,6 +86,9 @@ type Config struct {
 	Simulator *Simulator `yaml:"simulator"` // operator only
 	Control   *Control   `yaml:"control"`
 	Business  *Business  `yaml:"business"` // shipper only
+	// Docks is the receiving site's dock schedule (shipper only, with a
+	// business file: its receiving slots are the appointments).
+	Docks *Docks `yaml:"docks"`
 	// AddressBook is the company's own list of the partners it knows
 	// (internal/directory); Directory is somewhere to search for new ones.
 	// Neither is trust: a partner's verified profile is.
@@ -595,6 +598,16 @@ type Business struct {
 	File string `yaml:"file"`
 }
 
+// Docks is a receiving site's dock schedule: for now the demo's mock,
+// named Mock where it's shown ("Agendamento (simulated)"), for Site's
+// Docks, in time zone Zone.
+type Docks struct {
+	Mock  string   `yaml:"mock"`
+	Site  string   `yaml:"site"`
+	Zone  string   `yaml:"zone"`
+	Docks []string `yaml:"docks"`
+}
+
 // AddressBook points at the company's address book file.
 type AddressBook struct {
 	File string `yaml:"file"`
@@ -961,6 +974,25 @@ func (c *Config) validate() error {
 	}
 	if c.Business != nil && (!c.Customer() || !filepath.IsAbs(c.Business.File)) {
 		return fmt.Errorf("business: for the shipper or receiver role only, with an absolute file path (got %q)", c.Business.File)
+	}
+	if d := c.Docks; d != nil {
+		if c.Business == nil || !c.Has(RoleShipper) {
+			return errors.New("docks: for the shipper role, with a business file (its receiving slots are the appointments)")
+		}
+		if !textOK(d.Mock, 64) || !textOK(d.Site, 64) || len(d.Docks) == 0 || len(d.Docks) > 8 {
+			return errors.New("docks: mock and site (1-64 characters of plain text) and 1-8 docks")
+		}
+		for i, n := range d.Docks {
+			if !textOK(n, 32) {
+				return fmt.Errorf("docks: dock %q must be 1-32 characters of plain text", n)
+			}
+			if slices.Contains(d.Docks[:i], n) {
+				return fmt.Errorf("docks: dock %q twice", n)
+			}
+		}
+		if _, err := time.LoadLocation(d.Zone); err != nil || d.Zone == "" || d.Zone == "Local" {
+			return fmt.Errorf("docks: zone %q must be an IANA time zone", d.Zone)
+		}
 	}
 	if c.AddressBook != nil && !filepath.IsAbs(c.AddressBook.File) {
 		return fmt.Errorf("addressBook: file %q must be an absolute path", c.AddressBook.File)
