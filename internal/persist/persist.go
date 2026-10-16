@@ -66,6 +66,12 @@ func Open(path string) (*DB, error) {
 	if err := os.Chmod(path, 0o600); err != nil {
 		return fail(fmt.Errorf("persist: %w", err))
 	}
+	// Its WAL and shared memory, if something (a restore) made them first.
+	for _, side := range []string{path + "-wal", path + "-shm"} {
+		if err := os.Chmod(side, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fail(fmt.Errorf("persist: %w", err))
+		}
+	}
 	// A URI, built so that a path with ?, # or % in it is still the path.
 	dsn := (&url.URL{Scheme: "file", OmitHost: true, Path: path,
 		RawQuery: "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"}).String()

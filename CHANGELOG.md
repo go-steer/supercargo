@@ -14,6 +14,12 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- Persistence on Cloud Run (`deploy/cloudrun/deploy.sh`, runbook step 3):
+  - **Where records live:** each company's node keeps its SQLite file on an in-memory volume. It runs under Litestream 0.5.17, pinned by digest and copied into the node image as a static binary.
+  - **What Litestream does:** it restores the file from the company's own bucket before the node starts, then copies every change there about a second behind.
+  - **Buckets:** one per company, reachable only by that company's service account.
+  - **Re-running the script** keeps the records. The runbook shows how to start over, and what a redeploy's brief overlap can lose.
+
 - Persistence, second step: the forwarder's and shipper's own state survives a restart too.
   - **Shipper:** orders awaiting a first answer, so a lost answer can still be taken up. Each is saved before the order is sent.
   - **EDI gateway:** instructions, cancellations and their answers. Each is saved before its file is written.

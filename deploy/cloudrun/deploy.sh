@@ -39,7 +39,7 @@
 # The scenarios' dates (Cymbal's deadlines) are set from today: re-run it
 # before a demo. Re-running is safe: it creates what's missing, adds a
 # secret version only when a file changed, never replaces a signing key,
-# and deploys a new revision of each service.
+# and replaces each service (a minute of downtime each: see replace).
 set -euo pipefail
 
 : "${PROJECT:?set PROJECT}" "${GOOGLE_CLIENT_ID:?set GOOGLE_CLIENT_ID}" "${MEMBERS:?set MEMBERS (emails or @domain, comma-separated)}"
@@ -122,6 +122,7 @@ web:
   auth: google
   personas:
     - $6
+persistence: { file: /var/lib/ulp/node.db }   # kept in the service's bucket by Litestream
 $7
 EOF
 }
@@ -210,7 +211,7 @@ services="ocean-blue cymbal-shoes meridian-forwarding serra-transportes"
 
 step "APIs"
 gc services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
-  secretmanager.googleapis.com aiplatform.googleapis.com
+  secretmanager.googleapis.com aiplatform.googleapis.com storage.googleapis.com
 
 step "Artifact Registry repository"
 gc artifacts repositories describe supercargo --location "$REGION" >/dev/null 2>&1 ||
@@ -223,6 +224,21 @@ for svc in $services; do
     gc iam service-accounts create "ulp-$svc" --display-name "supercargo $svc node"
   # A new account takes a while to be usable in IAM bindings.
   retry gc projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$sa" --role roles/aiplatform.user --condition None
+done
+
+# bucket SVC: the bucket SVC's node keeps its records in (Litestream).
+bucket() { echo "$PROJECT-ulp-$1-state"; }
+
+step "State buckets (one per company: each node's records, copied by Litestream)"
+for svc in $services; do
+  b="$(bucket "$svc")"
+  gc storage buckets describe "gs://$b" >/dev/null 2>&1 ||
+    gc storage buckets create "gs://$b" --location "$REGION" --uniform-bucket-level-access --public-access-prevention
+  # Its company's account is the only service account granted on it (the
+  # project's owners, and Cloud Build's account with its project-wide
+  # read, can read it too).
+  retry gc storage buckets add-iam-policy-binding "gs://$b" --member "serviceAccount:ulp-$svc@$PROJECT.iam.gserviceaccount.com" \
+    --role roles/storage.objectAdmin
 done
 
 step "Cloud Build's account (pushes the image, writes its logs)"
@@ -296,7 +312,10 @@ step "Image $image"
 mkdir -p "$work/image/skills"
 cp -R "$root/dev/demo/skills/." "$work/image/skills/"
 cat >"$work/image/Dockerfile" <<'EOF'
+# Litestream (a static binary) copies each node's SQLite file to its bucket.
+FROM litestream/litestream:0.5.17-scratch@sha256:f757c70d070ac278d45b8847d31a54ab2de24de5e77b09018c642eca263e3967 AS litestream
 FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
 COPY ulpnode /usr/local/bin/ulpnode
 COPY ulpmock /usr/local/bin/ulpmock
 COPY skills /etc/ulp/skills
@@ -306,21 +325,45 @@ EOF
 gc builds submit "$work/image" --tag "$image" --region "$REGION"
 
 # Every service: one instance, always on (the simulators run between
-# requests, and the stores and sessions are in memory), reachable without
-# IAM: people sign in with Google, partners send signed envelopes.
+# requests, and sessions are in memory), reachable without IAM: people
+# sign in with Google, partners send signed envelopes.
 service_flags=(--region "$REGION" --execution-environment gen2 --no-invoker-iam-check --min-instances 1 --max-instances 1 --no-cpu-throttling
   --timeout 3600 --concurrency 80)
-node_args="serve,--config,/etc/ulp/config/node.yaml,--log-format,json"
+# Each node runs under Litestream: it restores the node's file from the
+# bucket if the instance has none (a new revision, a restarted instance),
+# starts the node, copies every change to the bucket while it runs (about
+# a second behind), and passes the node its stop signal. The file lives on
+# an in-memory volume: the instance's own disk.
+state_volume=(--add-volume name=state,type=in-memory,size-limit=128Mi)
+state_mount=(--add-volume-mount volume=state,mount-path=/var/lib/ulp)
+# node_args SVC: the node's container arguments.
+node_args() {
+  echo "replicate,-restore-if-db-not-exists,-exec,/usr/local/bin/ulpnode serve --config /etc/ulp/config/node.yaml --log-format json,/var/lib/ulp/node.db,gs://$(bucket "$1")/node"
+}
 env="GOOGLE_CLOUD_PROJECT=$PROJECT,GOOGLE_CLOUD_LOCATION=$LLM_LOCATION"
 common="ULP_SIGNING_KEY=ulp-SHORT-signing-key:latest,GOOGLE_CLIENT_SECRET=ulp-google-client-secret:latest,/etc/ulp/config/node.yaml=ulp-SHORT-config:latest"
+
+# replace SVC: delete SVC if it runs, and give its instance time for its
+# last copy. A new revision would otherwise run beside the old one for a
+# while, both copying to the bucket: Litestream has no lease on Cloud
+# Storage, and two writers can leave a copy no restore can use. The
+# service's address is fixed (SVC-NUMBER.REGION.run.app), so deleting it
+# costs a minute of downtime and nothing else.
+replace() {
+  if gc run services describe "$1" --region "$REGION" >/dev/null 2>&1; then
+    gc run services delete "$1" --region "$REGION"
+    sleep 20 # SIGTERM, the node's shutdown, Litestream's last copy
+  fi
+}
 
 # deploy SVC SHORT [EXTRA_SECRETS]: one node, one container.
 deploy() {
   local svc=$1 secrets="${common//SHORT/$2}${3:+,$3}"
   step "Cloud Run service $svc"
+  replace "$svc"
   gc run deploy "$svc" "${service_flags[@]}" --service-account "ulp-$svc@$PROJECT.iam.gserviceaccount.com" \
-    --image "$image" --cpu 1 --memory 512Mi --port 8080 \
-    --set-env-vars "$env" --set-secrets "$secrets" --args "$node_args"
+    --image "$image" --cpu 1 --memory 512Mi --port 8080 "${state_volume[@]}" "${state_mount[@]}" \
+    --set-env-vars "$env" --set-secrets "$secrets" --command /usr/local/bin/litestream --args "$(node_args "$svc")"
 }
 deploy ocean-blue ob
 deploy cymbal-shoes cy "/etc/ulp/business/business.yaml=ulp-cy-business:latest,/etc/ulp/address-book/address-book.yaml=ulp-cy-address-book:latest,/etc/ulp/directory/directory.yaml=ulp-cy-directory:latest"
@@ -330,11 +373,12 @@ deploy serra-transportes sr
 # EDIFACT file drops the two share, each an in-memory volume. Both run as
 # the image's nonroot user, as the drops' ownership checks require.
 step "Cloud Run service meridian-forwarding (with Polder Haulage's EDI sidecar)"
+replace meridian-forwarding
 gc run deploy meridian-forwarding "${service_flags[@]}" --service-account "ulp-meridian-forwarding@$PROJECT.iam.gserviceaccount.com" \
-  --add-volume name=to-polder,type=in-memory,size-limit=32Mi --add-volume name=from-polder,type=in-memory,size-limit=32Mi \
+  --add-volume name=to-polder,type=in-memory,size-limit=32Mi --add-volume name=from-polder,type=in-memory,size-limit=32Mi "${state_volume[@]}" \
   --container node --image "$image" --cpu 1 --memory 512Mi --port 8080 \
-  --set-env-vars "$env" --set-secrets "${common//SHORT/mf}" --args "$node_args" \
-  --add-volume-mount volume=to-polder,mount-path=/edi/to-polder --add-volume-mount volume=from-polder,mount-path=/edi/from-polder \
+  --set-env-vars "$env" --set-secrets "${common//SHORT/mf}" --command /usr/local/bin/litestream --args "$(node_args meridian-forwarding)" \
+  --add-volume-mount volume=to-polder,mount-path=/edi/to-polder --add-volume-mount volume=from-polder,mount-path=/edi/from-polder "${state_mount[@]}" \
   --container polder --image "$image" --cpu 1 --memory 256Mi --command /usr/local/bin/ulpmock \
   --args "edifact,--id,polder-haulage,--partner,meridian-forwarding,--in,/edi/to-polder,--out,/edi/from-polder,--ecmr-prefix,ECMR-NL-2026,--zone,Europe/Amsterdam,--hours-per-second,$HPS,--clock,shared" \
   --add-volume-mount volume=to-polder,mount-path=/edi/to-polder --add-volume-mount volume=from-polder,mount-path=/edi/from-polder
