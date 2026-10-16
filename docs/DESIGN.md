@@ -629,6 +629,7 @@ The question is one line of free text, at most 1,000 characters. The answer is f
 **Delegation** (attachment on an inquiry from a receiver). A JWS in the same flattened JSON form as the envelope, signed by the issuer with protected header `{"alg": …, "kid": …, "typ": "ulp-delegation+jws"}`, adding the fields the docs list as missing. Its payload:
 ```json
 {
+  "tokenId": "7c1e4b2a-9d3f-4e8a-b6c5-2f0a1d9e8b7c",
   "issuer": "cymbal-shoes.example",
   "audience": "ocean-blue.example",
   "grantee": "cymbal-footwear.example",
@@ -639,6 +640,8 @@ The question is one line of free text, at most 1,000 characters. The answer is f
 }
 ```
 The `kid` resolves against the issuer's profile. The distinct `typ` means a delegation can never be accepted as an envelope, or the reverse.
+
+`pkg/delegation` implements it, as strictly as the envelope: exactly these members, a random v4 `tokenId` (it names the grant in logs, and a revocation later), three different parties' lowercase domains, `scope` one or both of `tnt:read` (ask about the booking: an inquiry, a status request) and `tnt:subscribe` (have its events and alerts pushed to the grantee's own endpoint), each once and in that order, a booking reference, and times in UTC whole seconds (written back exactly, so no fractional seconds or offsets), the life at most 31 days, since a token handed over can't be taken back short of rotating the issuer's key. `Parse` checks the form (an `alg` of `none` included). `Verify` looks up the key the claimed issuer publishes under the token's `kid` itself, so a caller can't pass another key by mistake (the grantee's, say, which would let a grantee sign its own grant), and the key's algorithm must be the token's. Only the `Verified` it returns has `Check`, which holds the grant to one request and names the issuer the caller expects, from its own record of the booking: a grant from anyone but the booking's shipper grants nothing; its audience is this node, its grantee the envelope's sender, its booking the header's, it carries the scope the intent needs, and it is valid now, allowing the same clock skew as `sentAt`. Golden vectors come from joserfc, as the envelope's do: `testdata/golden/delegation.json` (`dev/tools/gen-delegation-vectors`, each refusal with the reason it must fail for; regenerate, never edit), and joserfc verifies Go-sealed tokens (`verify-go`).
 
 <a id="road-bookings"></a>**Road bookings** (`ulp.road.booking.request`, `.confirmation`, `.amendment`; dialect `ULP_ROAD` `0.1`, ULP's own). A truck leg with a carrier that has a node ([the door-to-door proposal](proposals/door-to-door-forwarder.md)). The ULP payload specification has a road dialect for North America only (NMFTA DSDC, in pounds, with US addresses), so this one is ours: metric, with international addresses and parties, and references to the documents a country's law requires. Its schema URL is this document.
 ```json

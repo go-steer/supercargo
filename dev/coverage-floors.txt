@@ -42,6 +42,7 @@ github.com/go-steer/supercargo/pkg/internal/logsafe     100.0
 # for a validated domain, a body read that fails mid-stream, and eviction
 # skipping an entry whose fetch is in flight.
 github.com/go-steer/supercargo/pkg/intents              100.0
+github.com/go-steer/supercargo/pkg/delegation            97.0  # 98.2
 github.com/go-steer/supercargo/pkg/discovery             97.0  # 98.3
 github.com/go-steer/supercargo/pkg/internal/netguard     97.0  # 98.1
 
