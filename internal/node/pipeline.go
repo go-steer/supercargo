@@ -225,6 +225,9 @@ func (n *Node) admit(ctx context.Context, env *envelope.Envelope) (body intents.
 	if skew := n.cfg.Now().Sub(sent); skew > n.cfg.MaxSkew || skew < -n.cfg.MaxSkew {
 		return nil, &Rejection{Code: intents.CodeStale, Reason: fmt.Sprintf("sentAt is %v from now", skew.Round(time.Second))}
 	}
+	if sent.Before(n.cfg.Since) {
+		return nil, &Rejection{Code: intents.CodeStale, Retryable: true, Reason: "sent before this node started"}
+	}
 	switch err := n.cfg.Replay.Record(env.Header.Sender, env.Header.MessageID); {
 	case errors.Is(err, store.ErrReplay):
 		return nil, &Rejection{Code: intents.CodeReplay, Reason: "messageId already seen"}

@@ -253,7 +253,8 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 			b.Order.Legs = append(b.Order.Legs, *leg)
 			return nil
 		}); err != nil {
-			return nil, err
+			// Booked with the carrier but not recorded: not left with it.
+			return nil, o.withdraw(ctx, *leg, fmt.Errorf("forwarder: recording leg %d (%s): %w", i+1, leg.Ref, err))
 		}
 		b.Order.Legs = append(b.Order.Legs, *leg)
 		ready, containers = afterLeg(*leg, ready), leg.Containers

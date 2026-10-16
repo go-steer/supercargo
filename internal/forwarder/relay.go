@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -128,6 +130,31 @@ func (r *Relay) orderOf(leg store.Booking) (store.Booking, int, bool) {
 		}
 	}
 	return store.Booking{}, 0, false
+}
+
+// Resume numbers on after the IDs held (the order events and alerts
+// restored after a restart), so none is used twice.
+func (r *Relay) Resume(ids []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range ids {
+		parts := strings.Split(id, "-")
+		if len(parts) < 3 || strings.Join(parts[:len(parts)-2], "-") != r.Orders.RefPrefix {
+			continue
+		}
+		if n, ok := digits(parts[len(parts)-1]); ok && n > r.seq {
+			r.seq = n
+		}
+	}
+}
+
+// digits is s as a number, if s is digits alone.
+func digits(s string) (int, bool) {
+	if s == "" || strings.Trim(s, "0123456789") != "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	return n, err == nil
 }
 
 func (r *Relay) nextID(prefix string) string {

@@ -92,3 +92,4 @@ github.com/go-steer/supercargo/cmd/ulpchat               83.0  # 83.8: only main
 github.com/go-steer/supercargo/internal/forwarder       94.0  # 95.2: the order desk; a store error that isn't full or exists is untested
 github.com/go-steer/supercargo/cmd/ulpmock               85.0  # 85.7: only main, which waits for a signal, is uncovered
 github.com/go-steer/supercargo/internal/mockcarrier     89.0  # 90.5: the mock carriers; logging-only branches untested
+github.com/go-steer/supercargo/internal/persist         89.0  # 90.2: the SQLite file; chmod, flock and Scan failures untested

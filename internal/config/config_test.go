@@ -110,6 +110,16 @@ keys: [{kid: cy-1, privateKeyFile: k.pem}]}`
 	if _, err := Parse([]byte(operatorYAML + "business: { file: /etc/ulp/business.yaml }\n")); err == nil {
 		t.Error("an operator with a business file was accepted")
 	}
+	// Persistence: one file, at an absolute path.
+	c, err = Parse([]byte(strings.TrimSuffix(minimal, "}") + ", persistence: {file: /var/lib/ulp/node.db}}"))
+	if err != nil || c.Persistence.File != "/var/lib/ulp/node.db" {
+		t.Errorf("persistence: %+v, %v", c, err)
+	}
+	for _, bad := range []string{", persistence: {file: node.db}}", ", persistence: {}}"} {
+		if _, err := Parse([]byte(strings.TrimSuffix(minimal, "}") + bad)); err == nil {
+			t.Errorf("a config with %s was accepted", bad)
+		}
+	}
 	// The MCP endpoint: the shipper's, with its token from one place.
 	c, err = Parse([]byte(strings.TrimSuffix(minimal, "}") + `, mcp: {server: {tokenFile: /etc/ulp/mcp-token, uiURL: "https://cymbal-shoes.example/ui/"}}}`))
 	if err != nil || c.MCP.Server.TokenFile != "/etc/ulp/mcp-token" {

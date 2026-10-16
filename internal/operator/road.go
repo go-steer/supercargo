@@ -278,6 +278,17 @@ type TruckBookings struct {
 	next int
 }
 
+// Resume numbers on after the legs held (restored after a restart).
+func (t *TruckBookings) Resume(held []store.Booking) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, b := range held {
+		if n, ok := refNumber(t.RefPrefix, b.Ref); ok && n >= t.next {
+			t.next = n + 1
+		}
+	}
+}
+
 // CTeIssuer is the issuer of the mock CT-e: its CNPJ and its state's IBGE
 // code (35 for São Paulo). The access key has the real layout and check
 // digit; nothing is sent to the tax authority.

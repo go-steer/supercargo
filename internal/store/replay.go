@@ -63,6 +63,7 @@ type Replay struct {
 	count map[string]int          // entries per sender
 	queue []queued                // in recording order
 	head  int                     // first live element of queue
+	sv    Saver                   // nil: in memory only
 }
 
 type replayKey struct{ sender, messageID string }
@@ -99,13 +100,25 @@ func (r *Replay) Record(sender, messageID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.opts.Now()
-	r.expireLocked(now)
+	if err := r.expireLocked(now); err != nil {
+		return err
+	}
 	k := replayKey{sender, messageID}
 	if _, ok := r.seen[k]; ok {
 		return ErrReplay
 	}
 	if r.count[sender] >= r.opts.PerSender || len(r.seen) >= r.opts.Max {
 		return ErrFull
+	}
+	if r.sv != nil {
+		// Saved before the message is admitted: a restart mustn't let it in
+		// again (fail closed, as when full).
+		if err := r.sv.Put(replayEntryKey(k, now), struct {
+			Sender, MessageID string
+			At                time.Time
+		}{sender, messageID, now}); err != nil {
+			return err
+		}
 	}
 	r.seen[k] = now
 	r.count[sender]++
@@ -115,8 +128,16 @@ func (r *Replay) Record(sender, messageID string) error {
 
 // expireLocked drops entries recorded at least Retention ago, oldest first.
 // If the clock steps back, the queue is no longer in order and entries are
-// kept longer than needed, which is the safe direction.
-func (r *Replay) expireLocked(now time.Time) {
+// kept longer than needed, which is the safe direction. An entry the saver
+// can't forget is kept, and the error returned.
+func (r *Replay) expireLocked(now time.Time) error {
+	expiring := r.head < len(r.queue) && now.Sub(r.queue[r.head].at) >= r.opts.Retention
+	if expiring && r.sv != nil {
+		// One statement for all that expire: the keys are in time order.
+		if err := r.sv.DeleteBefore(replayCutoff(now, r.opts.Retention)); err != nil {
+			return err
+		}
+	}
 	for r.head < len(r.queue) && now.Sub(r.queue[r.head].at) >= r.opts.Retention {
 		q := r.queue[r.head]
 		r.queue[r.head] = queued{}
@@ -133,6 +154,7 @@ func (r *Replay) expireLocked(now time.Time) {
 		r.queue = append([]queued(nil), r.queue[r.head:]...)
 		r.head = 0
 	}
+	return nil
 }
 
 // Len is the number of entries held.

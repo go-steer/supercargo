@@ -108,6 +108,16 @@ type Config struct {
 	// (#39): the browser UI (web.auth: google) and the company's agents
 	// over MCP (mcp.server.auth: google, as Gemini Enterprise calls).
 	Google *Google `yaml:"google"`
+
+	// Persistence keeps the node's records across restarts in one SQLite
+	// file (docs/DESIGN.md, A.12). Absent: in memory only, as the tests
+	// and local demos run.
+	Persistence *Persistence `yaml:"persistence"`
+}
+
+// Persistence names the node's SQLite file.
+type Persistence struct {
+	File string `yaml:"file"`
 }
 
 // Sign-in modes.
@@ -803,6 +813,9 @@ func (c *Config) validate() error {
 		if strings.ContainsFunc(t.ServiceName, unsafeRune) || len(t.ServiceName) > 128 {
 			return fmt.Errorf("telemetry: serviceName %q is not a short plain name", t.ServiceName)
 		}
+	}
+	if c.Persistence != nil && !filepath.IsAbs(c.Persistence.File) {
+		return fmt.Errorf("persistence: an absolute file path (got %q)", c.Persistence.File)
 	}
 	if c.Business != nil && (!c.Customer() || !filepath.IsAbs(c.Business.File)) {
 		return fmt.Errorf("business: for the shipper or receiver role only, with an absolute file path (got %q)", c.Business.File)

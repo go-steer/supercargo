@@ -53,6 +53,7 @@ import (
 	"github.com/go-steer/supercargo/internal/mcpserver"
 	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/operator"
+	"github.com/go-steer/supercargo/internal/persist"
 	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/internal/skills"
 	"github.com/go-steer/supercargo/internal/store"
@@ -76,6 +77,10 @@ type App struct {
 	// Carrier is the operator role's records: the bookings it confirmed and
 	// the events and alerts it published. Nil without the operator role.
 	Carrier *Records
+	// DB is the node's persistence file (config persistence), or nil.
+	DB *persist.DB
+	// Replay is the node's replay window.
+	Replay *store.Replay
 	// Customer is the shipper and receiver roles' records: the bookings
 	// other carriers issued and the events and alerts received for them.
 	// Nil without either role. Nothing reads across Carrier and Customer
@@ -131,7 +136,7 @@ type App struct {
 }
 
 // New builds an App from cfg.
-func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
+func New(cfg *config.Config, logger *slog.Logger) (_ *App, failed error) {
 	var (
 		priv ed25519.PrivateKey
 		err  error
@@ -195,6 +200,24 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	if cfg.Customer() {
 		a.Customer = newRecords()
 	}
+	replay := store.NewReplay(store.ReplayOptions{Retention: cfg.Security.ReplayRetention})
+	a.Replay = replay
+	if p := cfg.Persistence; p != nil {
+		// Restored before anything runs: the handlers number on after what
+		// was booked, and a message seen before the restart is still a
+		// replay.
+		if a.DB, err = persist.Open(p.File); err != nil {
+			return nil, err
+		}
+		defer func() {
+			if failed != nil {
+				_ = a.DB.Close() // New failed: nothing holds the file
+			}
+		}()
+		if err := a.persist(replay); err != nil {
+			return nil, err
+		}
+	}
 	// The log is the activity stream's first reader: what the log says and
 	// what a live client sees are the same entries.
 	a.Activity.Sink(activity.SlogSink(logger))
@@ -248,8 +271,11 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	n, err := node.New(node.Config{
 		Domain: cfg.Domain, Name: cfg.Name, Roles: cfg.Roles,
 		KID: kid, Signer: signer, PublicJWK: jwk, RESTURL: restURL, A2AURL: a2aURL, AllowHTTP: insecure,
-		Keys:       cache,
-		Replay:     store.NewReplay(store.ReplayOptions{Retention: cfg.Security.ReplayRetention}),
+		Keys:   cache,
+		Replay: replay,
+		// Whatever the replay window lost in a restart, nothing sent before
+		// this start is admitted.
+		Since:      time.Now().Truncate(time.Second), // sentAt is in whole seconds
 		TrustTrace: trustTrace(cfg.Telemetry),
 		MaxSkew:    cfg.Security.MaxSkew,
 		Handlers:   handlers,
@@ -285,6 +311,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 			OnProposal: func(p forwarder.Proposal) {
 				a.Logger.Info("proposal", "id", p.ID, "order", p.OrderRef, "leg", p.Leg, "why", p.Why)
 			}}
+		a.Relay.Resume(a.Carrier.Events.IDs()) // restored after a restart: number on from them
 		if err := a.ediGateway(); err != nil {
 			a.closeDrops()
 			return nil, err
@@ -540,6 +567,26 @@ func newRecords() *Records {
 	return &Records{Bookings: store.NewBookings(), Events: store.NewEventLog(0)}
 }
 
+// persist restores each side's records and the replay window from the
+// node's file, and saves them there from now on.
+func (a *App) persist(replay *store.Replay) error {
+	for _, side := range []struct {
+		name string
+		r    *Records
+	}{{"carrier", a.Carrier}, {"customer", a.Customer}} {
+		if side.r == nil {
+			continue
+		}
+		if err := side.r.Bookings.Persist(a.DB.Bucket(side.name + ".bookings")); err != nil {
+			return err
+		}
+		if err := side.r.Events.Persist(a.DB.Bucket(side.name + ".events")); err != nil {
+			return err
+		}
+	}
+	return replay.Persist(a.DB.Bucket("replay"))
+}
+
 // merge adds a role's handlers to the node's, refusing an intent two
 // roles both claim.
 func merge(into, role map[string]node.Handler) error {
@@ -641,6 +688,9 @@ func (a *App) shutdown() {
 		_ = a.Control.Shutdown(ctx)
 	}
 	_ = a.Server.Shutdown(ctx)
+	if a.DB != nil {
+		_ = a.DB.Close()
+	}
 }
 
 // operatorRole sets up the booking service, the publisher and simulator
@@ -663,6 +713,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 		},
 		OnPublish: func(ref string, body intents.Body) { a.record(activity.ActionPublished, ref, body) },
 	}
+	a.Simulator.Resume(a.Carrier.Events.IDs()) // restored after a restart: number on from them
 	reg, err := telemetry.Gauges(otel.Meter("github.com/go-steer/supercargo/internal/app"), a.Publisher.Pending, a.Simulator.Active)
 	if err != nil {
 		return err
@@ -737,6 +788,7 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 		if r.CTe != nil {
 			trucks.CTe = &operator.CTeIssuer{CNPJ: r.CTe.CNPJ, State: r.CTe.State}
 		}
+		trucks.Resume(a.Carrier.Bookings.List()) // restored after a restart: number on from them
 		// Each leg plays out on the simulator, as a voyage does; an
 		// amendment re-plans it.
 		leg := func(b store.Booking, err error) {

@@ -1097,7 +1097,11 @@ google:                          # the company's own Google OAuth client, for we
 security:
   maxSkew: 5m
   replayRetention: 15m            # must exceed 2 × maxSkew
+persistence:
+  file: /var/lib/ulp/node.db       # optional: keep the records across restarts (one SQLite file, absolute path)
 ```
+
+<a id="persistence"></a>**Persistence** (`persistence.file`, `internal/persist`). Without it a node keeps everything in memory, as the tests and local demos run. With it, its records survive a restart: one SQLite file per node (the pure-Go driver, no cgo; WAL mode, one connection), a table of JSON values by namespace and key, created owner-only (0600, and so its WAL and shared-memory files) and locked to one process (`<file>.lock`, an advisory lock on Unix). The stores stay in memory and are the source of truth while the node runs; each loads its namespace when the node starts and writes every change through before the change takes effect, so a change the file refuses doesn't happen (for the replay window the message is refused: fail closed). A record's body is kept as the exact bytes it arrived with. What is kept so far: each side's bookings and their event logs, in the order recorded, and the replay window, its entries keyed by time so those past the retention go in one statement. Reference counters (bookings, truck legs, orders), container serials and event, alert and proposal IDs number on after the highest held, so nothing confirmed or recorded before a restart is numbered again (a number given only to a rejection, which isn't kept, may be). Writes are synchronous to the process but not to the disk (`synchronous=NORMAL`): a power loss, or on Cloud Run the instance's end before its copy catches up, can lose the last moments. **Nothing sent before a node started is admitted** (`node.Config.Since`: refused as `stale`, retryable, so a sender sends it anew), so a replay entry lost that way can't let a captured message in; after the clock skew the skew check refuses it anyway. Where a node acts and then records (an answer sent, then stored), a write the file refuses after the act is reported, not undone, except a leg booked with its carrier that can't be recorded, which the orchestrator withdraws. Not kept: the activity stream, the message log, assistant drafts, the simulator's voyages (a restarted node doesn't play on a voyage under way) and pushes still queued. Next: the forwarder's own state (the relay's re-issued events and proposals, the EDI gateway's instructions), the shipper's orders awaiting a first answer, then Cloud Run, where the file is to live on the instance's disk with a Litestream sidecar copying it to a bucket and restoring it at start (one instance per service, as deployed).
 
 Loading is strict: an unknown or misspelled key is an error, because a security setting that is silently ignored is worse than one that fails to load. The `llm`, `skills` and `mcp` sections are accepted now and used by later milestones.
 
@@ -1208,7 +1212,7 @@ What each milestone also carries:
 | Signed acknowledgements (B2B MDN equivalent) | Signed `ulp.ack` for pushes |
 | Production key management | Key rotation via multiple `kid`s in the profile; HSM/KMS-backed signing (a `sig.Signer` implementation) |
 | Post-quantum signatures | ML-DSA-65 (FIPS 204) as a second `alg` once Go exposes it publicly; see [A.2](#a2-identity-keys-and-trust-design-decisions) |
-| Persistence | Replace in-memory stores |
+| Persistence | In progress ([A.12](#persistence)): bookings, event logs and the replay window are kept; the forwarder's and shipper's own state and the Cloud Run sidecar follow |
 
 ### A.16 Telemetry (OpenTelemetry)
 

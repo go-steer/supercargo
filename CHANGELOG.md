@@ -14,6 +14,14 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- Persistence, first step (`persistence.file`, `internal/persist`):
+  - **What survives a restart:** with a SQLite file configured, each side's bookings, their event logs and the replay window. A message seen before the restart is still refused as a replay after it.
+  - **How:** the stores stay in memory and write every change through before it takes effect; if the file refuses the write, the change doesn't happen.
+  - **Counters:** booking, truck-leg and order references, and container serials, number on after the highest kept.
+  - **Driver:** pure Go (`modernc.org/sqlite`), no cgo.
+  - **Testing it:** `dev/smoke/restart` restarts two nodes and checks.
+  - **Default:** without a file, nothing changes.
+
 - The forwarder cancels legs:
   - **Rejecting an order with legs already booked** (a booking stopped part way) now cancels them first, last first, each with its carrier: a ULP booking cancellation, or an EDI cancellation for a carrier without a node. Each leg cancelled comes off the order and is kept as withdrawn. A carrier that keeps its leg (its cargo has moved) stops the rejection, and the order stays pending.
   - **A carrier plan that doesn't fit the journey** is withdrawn at once, since the person confirmed booking that journey.

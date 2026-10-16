@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,7 +87,9 @@ type BookingService struct {
 func (s *BookingService) backend() backend.Bookings {
 	s.once.Do(func() {
 		if s.Backend == nil {
-			s.Backend = &VoyageBookings{RefPrefix: s.RefPrefix, ContainerPrefix: s.ContainerPrefix, Voyage: s.Voyage}
+			v := &VoyageBookings{RefPrefix: s.RefPrefix, ContainerPrefix: s.ContainerPrefix, Voyage: s.Voyage}
+			v.Resume(s.Bookings.List()) // restored after a restart: number on from them
+			s.Backend = v
 		}
 	})
 	return s.Backend
@@ -183,6 +186,44 @@ type VoyageBookings struct {
 	mu     sync.Mutex
 	next   int
 	serial int
+}
+
+// Resume numbers on after the bookings held (restored after a restart):
+// references and container serials after the highest taken.
+func (s *VoyageBookings) Resume(held []store.Booking) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, b := range held {
+		if n, ok := refNumber(s.RefPrefix, b.Ref); ok && n >= s.next {
+			s.next = n + 1
+		}
+		for _, c := range b.EquipmentRefs() {
+			if n, ok := containerSerial(s.ContainerPrefix, c); ok && n >= s.serial {
+				s.serial = n + 1
+			}
+		}
+	}
+}
+
+// refNumber is the number of ref under prefix (1042 for "OB-BKG-1042"
+// under "OB-BKG"), if ref is one of prefix's.
+func refNumber(prefix, ref string) (int, bool) {
+	rest, ok := strings.CutPrefix(ref, prefix+"-")
+	if !ok || rest == "" || strings.Trim(rest, "0123456789") != "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rest)
+	return n, err == nil
+}
+
+// containerSerial is the serial of container number c under prefix (the
+// six digits after the owner code and category), if c is one of prefix's.
+func containerSerial(prefix, c string) (int, bool) {
+	rest, ok := strings.CutPrefix(c, prefix)
+	if !ok || len(rest) != 7 {
+		return 0, false
+	}
+	return refNumber("x", "x-"+rest[:6])
 }
 
 // Decide implements backend.Bookings: a reference, numbered and sealed
