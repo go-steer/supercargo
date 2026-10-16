@@ -15,6 +15,7 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 ### Added
 
 - Brazilian freight floors:
+  - **The forwarder's check:** a lane's truck leg can carry a rate (`freight`), checked against the ANTT floor through `forwarder.freight.qualp` when the plan is shown and when it's booked. Below the floor, or unchecked, nothing is booked. The Orders tab shows the route, tolls, floor and rate, with a "Change rate" dialog; the desk assistant's `check_freight` and `draft_rate` explain and draft, and only the dialog sets the rate. The rate never leaves the forwarder.
   - **The port:** `backend.FreightFloors` answers for a road leg with its distance, its toll plazas (whose fares go to the carrier as a Vale-Pedágio voucher), and the ANTT minimum freight for that distance.
   - **The client:** `internal/qualp` calls QualP's API 4.0 as its OpenAPI document describes it (`/rotas/v4`, `/tabela-frete/v1`, `Access-Token`). It checks what QualP answers before using it, and fails closed: a missing or zero floor, or one priced for another leg, is an error. It never follows a redirect, so the token stays with QualP.
   - **Third-party text:** `internal/safetext` is the one rule for text a partner wrote (EDI's names and errors, QualP's toll plazas): no controls, line breaks, format or invisible characters.

@@ -68,6 +68,9 @@ type OrderBooking struct {
 	// their carriers, in the order they were cancelled (the forwarder's
 	// record).
 	Withdrawn []LegRef
+	// Rates are freight rates a person set for this order's legs (by leg,
+	// from 1), in place of the lane's (the forwarder's record, never sent).
+	Rates map[int]float64 `json:",omitempty"`
 }
 
 // LegRef is one leg a forwarder booked for an order: with whom, under

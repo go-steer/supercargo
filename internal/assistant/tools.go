@@ -339,6 +339,8 @@ type DraftResult struct {
 	Proposal *ProposalDraft `json:"proposal,omitempty"`
 	// Question is a question to a booking's operator, To.
 	Question *QuestionDraft `json:"question,omitempty"`
+	// Rate is a forwarder's new freight rate for an order's leg.
+	Rate *RateDraft `json:"rate,omitempty"`
 	// Disruption is a carrier's drafted delay, instead of a booking.
 	Disruption *Disruption `json:"disruption,omitempty"`
 	// NotSent is the private part of the draft, which stays here.
@@ -431,6 +433,11 @@ func (d Draft) Result() DraftResult {
 		qd := *q
 		return DraftResult{DraftID: d.ID, To: q.Operator, Question: &qd,
 			Next: "Nothing has been sent. Tell the user the question is ready for them to read and send; only they can send it."}
+	}
+	if r := d.Rate; r != nil {
+		rd := *r
+		return DraftResult{DraftID: d.ID, Rate: &rd,
+			Next: "Nothing has changed. Tell the user the new rate is ready for them to review and confirm; only they can set it, and booking the leg is still their step."}
 	}
 	if p := d.Proposal; p != nil {
 		pd := *p

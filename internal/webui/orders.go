@@ -23,7 +23,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/forwarder"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
 
@@ -90,3 +92,15 @@ func rejection(r *http.Request, ref string) ([]byte, error) {
 }
 
 var errTooLong = errors.New("the reason is too long")
+
+// rate is a leg's freight rate for an order, as the person set it.
+func rate(r *http.Request, _ string) ([]byte, error) {
+	var req forwarder.RateRequest
+	if err := control.Decode(r, &req); err != nil {
+		return nil, err
+	}
+	if req.Leg < 1 || req.Leg > config.LaneMaxLegs || !(req.Rate > 0 && req.Rate <= config.MaxRate) {
+		return nil, errors.New("a leg (1-8) and a rate over 0, in reais")
+	}
+	return json.Marshal(req)
+}

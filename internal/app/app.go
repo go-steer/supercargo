@@ -54,6 +54,7 @@ import (
 	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/operator"
 	"github.com/go-steer/supercargo/internal/persist"
+	"github.com/go-steer/supercargo/internal/qualp"
 	"github.com/go-steer/supercargo/internal/shipper"
 	"github.com/go-steer/supercargo/internal/skills"
 	"github.com/go-steer/supercargo/internal/store"
@@ -311,6 +312,18 @@ func New(cfg *config.Config, logger *slog.Logger) (_ *App, failed error) {
 		// has (config requires it).
 		a.Orchestrator = &forwarder.Orchestrator{Orders: a.Orders, Legs: a.Shipper, Cancel: a.Shipper, Lanes: cfg.Forwarder.Lanes,
 			Name: cfg.Name, Endpoint: RESTURL(cfg), Now: time.Now}
+		if fs := cfg.Forwarder.Freight; fs != nil && fs.QualP != nil {
+			// The token from the environment, never the config file.
+			token := os.Getenv(fs.QualP.TokenEnv)
+			if token == "" {
+				return nil, fmt.Errorf("forwarder: freight: qualp: $%s is empty", fs.QualP.TokenEnv)
+			}
+			label := fs.QualP.Label
+			if label == "" {
+				label = "QualP"
+			}
+			a.Orchestrator.Floors = &qualp.Client{BaseURL: fs.QualP.URL, Token: token, Source: label}
+		}
 		// The legs' events, re-issued to the orders' shippers; a delay's
 		// proposals wait for a person.
 		a.Relay = &forwarder.Relay{Orders: a.Orders, Publish: a.Publisher, Amend: a.Shipper, Now: time.Now,

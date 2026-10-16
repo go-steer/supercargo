@@ -49,6 +49,9 @@ type Sent struct {
 	Proposed *forwarder.Proposal
 	// Asked is a drafted question's answer.
 	Asked *shipper.AskResponse
+	// Rated is a set rate's freight status on the plan, checked again
+	// (ok, below, unchecked).
+	Rated string
 }
 
 // ErrOutcomeUnknown reports a send that may or may not have reached the
@@ -89,6 +92,9 @@ func (a *Assistant) Send(ctx context.Context, id string) (sent *Sent, err error)
 	}
 	if d.Question != nil {
 		return a.sendQuestion(ctx, d)
+	}
+	if d.Rate != nil {
+		return a.sendRate(ctx, d)
 	}
 	if a.Node == nil {
 		a.Drafts.Put(d)
@@ -161,6 +167,10 @@ func (a *Assistant) Report(ctx context.Context, c *Conversation, s *Sent) (Reply
 		note = notePrefix + "The user confirmed delay " + s.Draft.ID + " in the dialog, and our node published it. " +
 			"The outcome is below: tell the user which bookings got their signed alert and the new ETAs, in a sentence or two. " +
 			"Name any booking that got no alert; one marked applied was delayed anyway, so say not to publish the delay again.\n"
+	} else if r := s.Draft.Rate; r != nil {
+		result, err = json.Marshal(map[string]any{"draftId": s.Draft.ID, "order": r.OrderRef, "leg": r.Leg, "rate": r.Rate, "was": r.Was, "freightStatus": s.Rated})
+		note = notePrefix + "The user confirmed rate " + s.Draft.ID + " in the dialog, and our node set it on the order (nothing was sent to anyone). " +
+			"The outcome is below: tell the user in a sentence or two, and that booking the leg is now their step in the Orders tab (if the status is ok).\n"
 	} else if s.Asked != nil {
 		result, err = json.Marshal(askedResult(s))
 		note = notePrefix + "The user sent question " + s.Draft.ID + " from the dialog, and our node asked it, signed. " +

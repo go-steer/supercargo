@@ -60,10 +60,14 @@ func carrierStep(msgs []llm.Message, user string, done []step) llm.GenerateRespo
 	switch {
 	case strings.HasPrefix(user, notePrefix) && strings.Contains(user, `"proposal"`):
 		return proposalReport(resultOf(user))
+	case strings.HasPrefix(user, notePrefix) && strings.Contains(user, `"freightStatus"`):
+		return rateReport(resultOf(user))
 	case strings.HasPrefix(user, notePrefix):
 		return disruptionReport(resultOf(user))
 	case ref != "" && advicePattern.MatchString(user):
 		return deskStep(id, ref, done)
+	case ref != "" && freightPattern.MatchString(user):
+		return freightStep(id, ref, user, done)
 	case delayWord.MatchString(user) && (ref != "" || voyagePattern.MatchString(user)):
 		if last != nil {
 			return disruptionDraftReply(last.result.Content)

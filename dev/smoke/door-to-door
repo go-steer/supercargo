@@ -20,7 +20,9 @@
 # Cymbal orders Tilburg to Cajamar; Meridian books Polder over EDI, Ocean
 # Blue and Serra over ULP, and answers; Polder's statuses reach Cymbal
 # marked unsigned; the ship's delay becomes Meridian's proposal, which,
-# confirmed, re-times Serra's truck.
+# confirmed, re-times Serra's truck. Serra's leg is checked against the
+# ANTT's freight floor through the QualP mock (ulpmock qualp): below it,
+# booking is refused until a person sets the leg's rate.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -30,7 +32,7 @@ chmod 700 "$work"
 
 demo_build "$work"
 base=$((10000 + RANDOM % 10000))
-CY=$base MF=$((base + 1)) OB=$((base + 2)) SR=$((base + 3))
+CY=$base MF=$((base + 1)) OB=$((base + 2)) SR=$((base + 3)) QP=$((base + 4))
 mkdir -p "$work/edi/to-polder" "$work/edi/from-polder"
 chmod 700 "$work/edi" "$work/edi/to-polder" "$work/edi/from-polder"
 for k in cy mf ob sr; do "$work/bin/ulpnode" keygen --kid "$k-1" --out "$work/$k.pem" >/dev/null; done
@@ -61,6 +63,7 @@ node cymbal cymbal-shoes.example "Cymbal Shoes" "$CY" cy "role: shipper"
 node meridian meridian-forwarding.example "Meridian Forwarding" "$MF" mf "roles: [operator, shipper]
 forwarder:
   refPrefix: MF
+  freight: { qualp: { url: \"http://127.0.0.1:$QP\", tokenEnv: QUALP_TOKEN, label: \"QualP (simulated)\" } }
   edi:
     - { carrier: polder-haulage.example, id: polder-haulage.example, outbox: $work/edi/to-polder, inbox: $work/edi/from-polder, transit: 3h }
   lanes:
@@ -69,7 +72,8 @@ forwarder:
       legs:
         - { mode: road, carrier: polder-haulage.example, name: Polder Haulage, to: NLRTM, facility: Euromax terminal, edi: true }
         - { mode: ocean, carrier: ocean-blue.example, name: Ocean Blue, to: BRSSZ, facility: Santos Brasil Tecon terminal }
-        - { mode: road, carrier: serra-transportes.example, name: Serra Transportes, to: BRSAO }"
+        - { mode: road, carrier: serra-transportes.example, name: Serra Transportes, to: BRSAO,
+            freight: { rate: 1050, axles: 5, loadType: conteineirizada, table: A, from: \"Santos, SP\" } }"
 node ocean ocean-blue.example "Ocean Blue" "$OB" ob "role: operator
 operator: { refPrefix: OB-BKG, containerPrefix: OCBU, vessel: Ocean Blue Aurora, voyage: 42W, departureHour: 18, transit: 380h }
 simulator: { hoursPerSecond: 20 }"
@@ -77,6 +81,10 @@ node serra serra-transportes.example "Serra Transportes" "$SR" sr "role: operato
 operator: { refPrefix: SR-BKG, road: { transit: 30h, cte: { cnpj: \"12345678000190\", state: 35 } } }
 simulator: { hoursPerSecond: 20 }"
 
+# The QualP mock, with the token Meridian sends (from its environment).
+export QUALP_TOKEN="smoke-$RANDOM"
+"$work/bin/ulpmock" qualp --listen "127.0.0.1:$QP" --token-env QUALP_TOKEN 2>"$work/qualp.log" &
+SMOKE_PIDS+=($!)
 for n in cymbal meridian ocean serra; do
   "$work/bin/ulpnode" serve --config "$work/$n.yaml" --log-format json 2>"$work/$n.log" &
   SMOKE_PIDS+=($!)
@@ -107,6 +115,17 @@ out="$(post cy /orders "$order")" || smoke_fail "$work" "ordering failed"
 grep -q '"status":"pending"' <<<"$out" || smoke_fail "$work" "the order wasn't taken as pending: $out"
 ref="$(sed -n 's/.*"forwarder_reference":"\([^"]*\)".*/\1/p' <<<"$out")"
 echo "order $ref pending"
+
+# Serra's leg is under the ANTT floor (QualP, simulated): booking is
+# refused before any leg is sent, until Meridian's person sets its rate.
+out="$(ctl mf "/orders/$ref/plan")" || smoke_fail "$work" "the plan failed"
+grep -q '"status":"below"' <<<"$out" && grep -q '"freight":1140.01' <<<"$out" && grep -q '"source":"QualP (simulated)"' <<<"$out" ||
+  smoke_fail "$work" "Serra's leg isn't below its floor: $out"
+if post mf "/orders/$ref/book" >/dev/null 2>&1; then smoke_fail "$work" "booked below the ANTT floor"; fi
+ctl mf "/orders/$ref" | grep -q '"legs":\[\]' || smoke_fail "$work" "a leg went out before the floor held"
+out="$(post mf "/orders/$ref/rate" '{"leg":3,"rate":1180}')" || smoke_fail "$work" "setting the rate failed"
+grep -q '"status":"ok"' <<<"$out" || smoke_fail "$work" "the rate doesn't hold: $out"
+echo "Serra's leg: R\$ 1050 refused under the R\$ 1140.01 floor, booked at R\$ 1180"
 
 # Meridian's person confirms the plan: the three legs are booked.
 out="$(post mf "/orders/$ref/book")" || smoke_fail "$work" "booking the legs failed"

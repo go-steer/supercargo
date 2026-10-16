@@ -327,12 +327,22 @@ dl.facts dd { margin: 0; }
 .late, .legstate .late { color: var(--orange); font-weight: 700; }
 .desk .actions { display: flex; gap: 8px; justify-content: flex-end; padding: 10px 12px 0; }
 .desk button.primary { border-color: var(--blue); color: var(--blue); }
+.desk button:disabled { opacity: .45; cursor: not-allowed; }
 .proposal { margin: 8px 12px; border: 1px solid var(--orange); border-radius: 6px; padding: 9px 12px; background: color-mix(in srgb, var(--orange) 7%, transparent); }
 .proposal.closed { border-color: var(--border); background: none; color: var(--text-dim); }
 .proposal-title { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--orange); margin-bottom: 4px; }
 .proposal.closed .proposal-title { color: var(--text-dim); }
 .proposal .fineprint { color: var(--text-dim); font-size: 11px; margin-top: 4px; }
 .proposal .actions { padding: 8px 0 0; }
+.freight { margin: 4px 12px 8px 64px; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; }
+.freight.below { border-color: var(--red); background: color-mix(in srgb, var(--red) 6%, transparent); }
+.freight.ok { border-color: color-mix(in srgb, var(--green) 60%, var(--border)); }
+.freight-head { display: flex; gap: 10px; align-items: center; }
+.freight-head .dim { margin-left: auto; font-size: 11px; }
+.freight dl.facts { margin: 6px 0 0; grid-template-columns: 90px 1fr; }
+.freight dd.bad { color: var(--red); font-weight: 600; }
+.freight .actions { padding: 6px 0 0; }
+.freight .fineprint { color: var(--text-dim); font-size: 11px; margin-top: 4px; }
 .diff { display: grid; grid-template-columns: 100px auto 16px auto; justify-content: start; gap: 2px 8px; margin: 6px 0; font-size: 12px; }
 .diff .now { color: var(--orange); font-weight: 600; }
 .send { border: 1px solid var(--border); border-radius: 6px; margin: 8px 0; }

@@ -32,7 +32,15 @@ type AnswerRequest struct {
 	Answer   intents.ForwardingConfirmationBody `json:"answer"`
 }
 
-// PlanResponse is the answer to GET /orders/{ref}/plan.
+// RateRequest is the body of POST /orders/{ref}/rate: a leg's freight
+// rate for this order, which a person has confirmed.
+type RateRequest struct {
+	Leg  int     `json:"leg"`
+	Rate float64 `json:"rate"`
+}
+
+// PlanResponse is the answer to GET /orders/{ref}/plan and POST
+// /orders/{ref}/rate.
 type PlanResponse struct {
 	Steps []Step `json:"steps,omitempty"`
 	Error string `json:"error,omitempty"`
@@ -106,6 +114,8 @@ func RegisterControl(mux *http.ServeMux, o *Orders, orch *Orchestrator, relay *R
 		if orch != nil {
 			if v.Steps, err = orch.plan(b); err != nil {
 				v.PlanError = err.Error()
+			} else if b.Order.Confirmation.Status == intents.StatusPending {
+				orch.checkFreight(r.Context(), b, v.Steps)
 			}
 		}
 		var recs []store.Record
@@ -152,12 +162,33 @@ func RegisterControl(mux *http.ServeMux, o *Orders, orch *Orchestrator, relay *R
 	}
 	if orch != nil {
 		mux.HandleFunc("GET /orders/{ref}/plan", func(w http.ResponseWriter, r *http.Request) {
-			steps, err := orch.Plan(r.PathValue("ref"))
+			steps, err := orch.PlanChecked(r.Context(), r.PathValue("ref"))
 			switch {
 			case errors.Is(err, ErrUnknownOrder):
 				control.Answer(w, http.StatusNotFound, PlanResponse{Error: err.Error()})
 			case err != nil:
 				control.Answer(w, http.StatusUnprocessableEntity, PlanResponse{Error: err.Error()})
+			default:
+				control.Answer(w, http.StatusOK, PlanResponse{Steps: steps})
+			}
+		})
+		// The person at the forwarder confirmed a leg's rate for an order.
+		mux.HandleFunc("POST /orders/{ref}/rate", func(w http.ResponseWriter, r *http.Request) {
+			var req RateRequest
+			if err := control.Decode(r, &req); err != nil {
+				control.Answer(w, http.StatusBadRequest, PlanResponse{Error: err.Error()})
+				return
+			}
+			steps, err := orch.SetRate(r.Context(), r.PathValue("ref"), req.Leg, req.Rate)
+			switch {
+			case errors.Is(err, ErrUnknownOrder):
+				control.Answer(w, http.StatusNotFound, PlanResponse{Error: err.Error()})
+			case errors.Is(err, ErrAnswered):
+				control.Answer(w, http.StatusConflict, PlanResponse{Error: err.Error()})
+			case errors.Is(err, ErrNoFreight), errors.Is(err, ErrNoLane):
+				control.Answer(w, http.StatusUnprocessableEntity, PlanResponse{Error: err.Error()})
+			case err != nil:
+				control.Answer(w, http.StatusInternalServerError, PlanResponse{Error: err.Error()})
 			default:
 				control.Answer(w, http.StatusOK, PlanResponse{Steps: steps})
 			}
@@ -169,13 +200,14 @@ func RegisterControl(mux *http.ServeMux, o *Orders, orch *Orchestrator, relay *R
 			// Detached from the request: a client going away mid-leg must
 			// not leave a leg confirmed by its carrier but not recorded.
 			answer, err := orch.Book(context.WithoutCancel(r.Context()), ref)
-			steps, _ := orch.Plan(ref)
+			steps, _ := orch.PlanChecked(r.Context(), ref)
 			switch {
 			case errors.Is(err, ErrUnknownOrder):
 				control.Answer(w, http.StatusNotFound, BookResponse{Error: err.Error()})
 			case errors.Is(err, ErrAnswered), errors.Is(err, ErrCancelPending):
 				control.Answer(w, http.StatusConflict, BookResponse{Error: err.Error(), Steps: steps})
-			case errors.Is(err, ErrNoLane), errors.Is(err, ErrEDILeg), errors.Is(err, ErrInvalidAnswer), errors.Is(err, ErrPlanUnfit), errors.Is(err, ErrPlanChanged):
+			case errors.Is(err, ErrNoLane), errors.Is(err, ErrEDILeg), errors.Is(err, ErrInvalidAnswer), errors.Is(err, ErrPlanUnfit), errors.Is(err, ErrPlanChanged),
+				errors.Is(err, ErrBelowFloor):
 				control.Answer(w, http.StatusUnprocessableEntity, BookResponse{Error: err.Error(), Steps: steps})
 			case err != nil:
 				control.Answer(w, http.StatusBadGateway, BookResponse{Error: err.Error(), Steps: steps})
