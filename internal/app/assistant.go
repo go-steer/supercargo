@@ -53,7 +53,7 @@ func ShipperAssistant(cfg *config.Config, node assistant.Node) (*assistant.Assis
 	if err != nil {
 		return nil, err
 	}
-	a.Model, a.Skills, a.Own = model, agentSkills, true
+	a.Model, a.Skills, a.Own, a.Language = model, agentSkills, true, cfg.LLM.Language
 	// The company's own assistant, unlike an outside agent's, reads the
 	// private business context and orders between the company's places.
 	if cfg.Business != nil {
@@ -125,7 +125,7 @@ func CarrierAssistant(cfg *config.Config, node assistant.CarrierNode) (*assistan
 			return nil, err
 		}
 	}
-	a := &assistant.Assistant{Model: model, Carrier: node, Drafts: &assistant.Drafts{}, Skills: agentSkills,
+	a := &assistant.Assistant{Model: model, Carrier: node, Drafts: &assistant.Drafts{}, Skills: agentSkills, Language: cfg.LLM.Language,
 		Self: assistant.Self{Domain: cfg.Domain, Name: cfg.Name}}
 	// A forwarder's: its desk too (its orders and their proposals).
 	if d, ok := node.(assistant.Desk); ok && cfg.Forwarder != nil {

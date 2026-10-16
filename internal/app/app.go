@@ -885,7 +885,11 @@ func (a *App) shipperRole(handlers map[string]node.Handler) error {
 	if model != nil {
 		a.Logger.Info("alert summarizer", "model", model.Name(), "skills", skillIDs(agentSkills))
 	}
-	a.Summarizer = &shipper.Summarizer{Log: a.Customer.Events, Business: a.Business, Model: model, Skills: agentSkills, Name: cfg.Name,
+	var lang string
+	if cfg.LLM != nil {
+		lang = cfg.LLM.Language
+	}
+	a.Summarizer = &shipper.Summarizer{Log: a.Customer.Events, Business: a.Business, Model: model, Skills: agentSkills, Name: cfg.Name, Language: lang,
 		OnSummary: func(s activity.Summary) {
 			a.Activity.Publish(activity.Entry{Side: activity.SideCustomer, Kind: activity.KindSummary, Summary: &s})
 		},

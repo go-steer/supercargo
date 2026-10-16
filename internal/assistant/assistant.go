@@ -102,6 +102,8 @@ type Assistant struct {
 	// seen is what the model has learned of our dock appointments: as
 	// private as the business file.
 	seen privateSet
+	// Language is the language it answers in (llm.Languages; "" English).
+	Language string
 	// Carrier, if set, makes this the carrier's assistant (the operator
 	// role's): its tools read the carrier's bookings and draft
 	// disruptions, which a person confirms; Node and the partner fields
@@ -424,6 +426,7 @@ func (a *Assistant) system() string {
 	if a.Carrier == nil && a.Docks != nil {
 		s += docksPrompt
 	}
+	s += llm.LanguageRule(a.Language)
 	if len(a.Skills) == 0 {
 		return s
 	}

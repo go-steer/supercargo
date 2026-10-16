@@ -14,6 +14,7 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- `llm.language` (`pt-BR`, `es`): the node's own assistants and alert summarizer answer its people in that language; anything they draft for another company stays English.
 - The receiving site's dock schedule (`docks:`, `backend.DockAppointments`, the demo's mock in `internal/docks`): the shipper's own assistant reads a shipment's dock appointment and the free slots, and drafts moving it after a delay ("What can we do?"); a person confirms the move in a dialog. The schedule never leaves the shipper.
 - Behind a Brazilian road carrier's node: a risk manager clears each leg before it's confirmed and a toll voucher is issued (`backend.RiskClearances`, `backend.TollVouchers`, with the demo's mocks under `operator.road.risk` and `tollVoucher`), the mock TMS issues the MDF-e beside the CT-e (`cte.mdfe`), and the carrier's people see what its systems did in a "Behind this node" view. The shipper sees only the signed confirmation and the documents' keys. `web.brand` adds a line beside the company's name, such as the platform it runs on.
 - Brazilian freight floors:

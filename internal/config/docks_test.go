@@ -50,6 +50,7 @@ docks: { mock: "Agendamento (simulated)", site: Cajamar DC, zone: America/Sao_Pa
 		"a made-up zone": {"zone: America/Sao_Paulo", "zone: Mars/Olympus"},
 		"local":          {"zone: America/Sao_Paulo", "zone: Local"},
 		"a dock twice":   {"docks: [Dock 1, Dock 2]", "docks: [Dock 1, Dock 1]"},
+		"a language":     {"tls: { mode: insecure-dev }", "tls: { mode: insecure-dev }\nllm: { provider: fake, language: fr }"},
 	} {
 		in := strings.Replace(base, edit[0], edit[1], 1)
 		if in == base {

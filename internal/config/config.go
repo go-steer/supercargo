@@ -42,6 +42,7 @@ import (
 
 	"github.com/go-steer/supercargo/internal/antt"
 	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/sig"
 )
@@ -583,6 +584,10 @@ type LLM struct {
 	// on top of its own limit; 0 the default, negative no thinking
 	// settings (a model without them).
 	ThinkingBudget int `yaml:"thinkingBudget"`
+	// Language is the language the node's own models answer its people
+	// in (llm.Languages: en, the default, pt-BR or es). A partner's
+	// inquiry is answered in English.
+	Language string `yaml:"language"`
 }
 
 // Model backends.
@@ -968,6 +973,18 @@ func (c *Config) validate() error {
 		if strings.ContainsFunc(t.ServiceName, unsafeRune) || len(t.ServiceName) > 128 {
 			return fmt.Errorf("telemetry: serviceName %q is not a short plain name", t.ServiceName)
 		}
+	}
+	if c.LLM != nil && c.LLM.Language != "" {
+		tag := ""
+		for k := range llm.Languages {
+			if strings.EqualFold(k, c.LLM.Language) {
+				tag = k // BCP 47 tags are case-insensitive: pt-br is pt-BR
+			}
+		}
+		if tag == "" {
+			return fmt.Errorf("llm: language %q is not one of en, pt-BR, es", c.LLM.Language)
+		}
+		c.LLM.Language = tag
 	}
 	if c.Persistence != nil && !filepath.IsAbs(c.Persistence.File) {
 		return fmt.Errorf("persistence: an absolute file path (got %q)", c.Persistence.File)
