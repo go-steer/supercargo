@@ -93,3 +93,7 @@ github.com/go-steer/supercargo/internal/forwarder       94.0  # 95.2: the order 
 github.com/go-steer/supercargo/cmd/ulpmock               85.0  # 85.7: only main, which waits for a signal, is uncovered
 github.com/go-steer/supercargo/internal/mockcarrier     89.0  # 90.5: the mock carriers; logging-only branches untested
 github.com/go-steer/supercargo/internal/persist         89.0  # 90.2: the SQLite file; chmod, flock and Scan failures untested
+github.com/go-steer/supercargo/internal/antt            100.0
+github.com/go-steer/supercargo/internal/safetext        100.0  # 100.0
+github.com/go-steer/supercargo/internal/qualp           94.0  # 95.5
+github.com/go-steer/supercargo/internal/qualpmock       94.0  # 95.1

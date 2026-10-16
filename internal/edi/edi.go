@@ -38,8 +38,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
+
+	"github.com/go-steer/supercargo/internal/safetext"
 )
 
 // Limits on what is parsed.
@@ -398,7 +399,7 @@ var (
 // characters among them), private-use and unassigned code points,
 // noncharacters, variation selectors (which can carry hidden bytes),
 // letters and symbols that show as blank (the Hangul fillers, the blank
-// braille pattern), runs of more than maxMarks nonspacing marks (which
+// braille pattern), runs of more than safetext.MaxMarks nonspacing marks (which
 // can draw over other text), and line and paragraph separators. A script
 // that needs a zero-width joiner, a variation selector or long stacks of
 // marks can't be written; EDIFACT text rarely is.
@@ -406,26 +407,8 @@ func checkText(field, v string, required bool, max int) error {
 	if required && v == "" {
 		return contentErr("%s is missing", field)
 	}
-	if !utf8.ValidString(v) {
-		return contentErr("%s is not valid UTF-8", field)
-	}
-	if utf8.RuneCountInString(v) > max {
-		return contentErr("%s is over %d characters", field, max)
-	}
-	marks := 0
-	for _, r := range v {
-		if !unicode.In(r, unicode.L, unicode.M, unicode.N, unicode.P, unicode.S, unicode.Zs) ||
-			unicode.In(r, unicode.Noncharacter_Code_Point, unicode.Variation_Selector) || invisible[r] {
-			return contentErr("%s has a control, format, invisible or unassigned character (%U)", field, r)
-		}
-		if unicode.Is(unicode.Mn, r) {
-			marks++
-			if marks > maxMarks {
-				return contentErr("%s has more than %d combining marks in a row", field, maxMarks)
-			}
-		} else {
-			marks = 0
-		}
+	if p := safetext.Problem(v, max); p != "" {
+		return contentErr("%s %s", field, p)
 	}
 	return nil
 }
@@ -457,12 +440,6 @@ func validContainer(n string) bool {
 	d := sum % 11 % 10
 	return n[10] == byte('0'+d)
 }
-
-// maxMarks is the most nonspacing marks checkText allows in a row.
-const maxMarks = 4
-
-// invisible are letters and symbols that show as blank.
-var invisible = map[rune]bool{0x115F: true, 0x1160: true, 0x3164: true, 0xFFA0: true, 0x2800: true}
 
 // Years a DTM time may fall in.
 const (

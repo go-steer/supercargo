@@ -14,6 +14,13 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Added
 
+- Brazilian freight floors:
+  - **The port:** `backend.FreightFloors` answers for a road leg with its distance, its toll plazas (whose fares go to the carrier as a Vale-Pedágio voucher), and the ANTT minimum freight for that distance.
+  - **The client:** `internal/qualp` calls QualP's API 4.0 as its OpenAPI document describes it (`/rotas/v4`, `/tabela-frete/v1`, `Access-Token`). It checks what QualP answers before using it, and fails closed: a missing or zero floor, or one priced for another leg, is an error. It never follows a redirect, so the token stays with QualP.
+  - **Third-party text:** `internal/safetext` is the one rule for text a partner wrote (EDI's names and errors, QualP's toll plazas): no controls, line breaks, format or invisible characters.
+  - **The method:** `internal/antt` computes the floor from the coefficients of Resolução ANTT nº 6.034 (2024), and reproduces QualP's documented example exactly.
+  - **The mock:** `ulpmock qualp` serves both endpoints in QualP's shapes, with simulated routes and tolls, so the demo runs without a QualP account.
+
 - Persistence on Cloud Run (`deploy/cloudrun/deploy.sh`, runbook step 3):
   - **Where records live:** each company's node keeps its SQLite file on an in-memory volume. It runs under Litestream 0.5.17, pinned by digest and copied into the node image as a static binary.
   - **What Litestream does:** it restores the file from the company's own bucket before the node starts, then copies every change there about a second behind.
