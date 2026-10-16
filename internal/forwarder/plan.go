@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-steer/supercargo/internal/backend"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/edi"
 	"github.com/go-steer/supercargo/internal/node"
@@ -43,6 +44,9 @@ type Step struct {
 	EDI          bool   `json:"edi,omitempty"`
 	// Booked is the leg's booking reference once booked.
 	Booked string `json:"booked,omitempty"`
+	// Freight is a Brazilian road leg's rate against the ANTT's floor
+	// (filled in by a checked plan).
+	Freight *LegFreight `json:"freight,omitempty"`
 }
 
 // LegBooker sends the legs' bookings: the forwarder's shipper side.
@@ -77,6 +81,11 @@ type Orchestrator struct {
 	Name     string
 	Endpoint string
 	Now      func() time.Time
+	// Floors checks a road leg's freight against the ANTT's floor (nil:
+	// a lane leg with a freight section can't be booked).
+	Floors backend.FreightFloors
+
+	floors floorCache
 }
 
 // Handover is how long after a ship's planned arrival a container is
@@ -123,32 +132,26 @@ func (o *Orchestrator) Plan(ref string) ([]Step, error) {
 func (o *Orchestrator) plan(b store.Booking) ([]Step, error) {
 	req := b.Order.Request
 	from, to := req.PlaceOfReceipt.UNLocationCode, req.PlaceOfDelivery.UNLocationCode
-	for _, l := range o.Lanes {
-		if l.From != from || l.To != to {
-			continue
-		}
-		// A door is reached by truck: a lane starting or ending at sea
-		// can't serve a door at that end.
-		if req.PlaceOfReceipt.Type == intents.PlaceDoor && l.Legs[0].Mode != intents.ModeRoad ||
-			req.PlaceOfDelivery.Type == intents.PlaceDoor && l.Legs[len(l.Legs)-1].Mode != intents.ModeRoad {
-			continue
-		}
-		steps := make([]Step, len(l.Legs))
-		at, facility := from, placeName(req.PlaceOfReceipt)
-		for i, leg := range l.Legs {
-			s := Step{Mode: leg.Mode, Carrier: leg.Carrier, Name: leg.Name, From: at, To: leg.To, FromFacility: facility, ToFacility: leg.Facility, EDI: leg.EDI}
-			if i == len(l.Legs)-1 {
-				s.ToFacility = placeName(req.PlaceOfDelivery)
-			}
-			if i < len(b.Order.Legs) {
-				s.Booked = b.Order.Legs[i].Ref
-			}
-			steps[i] = s
-			at, facility = leg.To, leg.Facility
-		}
-		return steps, nil
+	// A door is reached by truck: a lane starting or ending at sea can't
+	// serve a door at that end (lane).
+	l := o.lane(b)
+	if l == nil {
+		return nil, fmt.Errorf("%w: %s → %s", ErrNoLane, from, to)
 	}
-	return nil, fmt.Errorf("%w: %s → %s", ErrNoLane, from, to)
+	steps := make([]Step, len(l.Legs))
+	at, facility := from, placeName(req.PlaceOfReceipt)
+	for i, leg := range l.Legs {
+		s := Step{Mode: leg.Mode, Carrier: leg.Carrier, Name: leg.Name, From: at, To: leg.To, FromFacility: facility, ToFacility: leg.Facility, EDI: leg.EDI}
+		if i == len(l.Legs)-1 {
+			s.ToFacility = placeName(req.PlaceOfDelivery)
+		}
+		if i < len(b.Order.Legs) {
+			s.Booked = b.Order.Legs[i].Ref
+		}
+		steps[i] = s
+		at, facility = leg.To, leg.Facility
+	}
+	return steps, nil
 }
 
 // placeName names a place for a truck's stop: its facility, or its street.
@@ -191,6 +194,12 @@ func (o *Orchestrator) Book(ctx context.Context, ref string) (*intents.Forwardin
 		if s.EDI && i >= len(b.Order.Legs) && (o.EDI == nil || o.EDI.Partners[s.Carrier] == nil) {
 			return nil, fmt.Errorf("%w (leg %d, %s)", ErrEDILeg, i+1, s.Name)
 		}
+	}
+	// Every leg's freight holds before any leg is sent: a journey isn't
+	// left half booked for a truck that can't be contracted.
+	o.checkFreight(ctx, b, steps)
+	if err := freightHolds(steps); err != nil {
+		return nil, err
 	}
 	req := b.Order.Request
 	// available is when the cargo can go (the order's ready time, then

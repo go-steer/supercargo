@@ -42,6 +42,7 @@ func TestDeskRoutes(t *testing.T) {
 		{http.MethodGet, "/ui/api/orders/MF-0007", "", "/orders/MF-0007"},
 		{http.MethodPost, "/ui/api/orders/MF-0007/book", "{}", "/orders/MF-0007/book"},
 		{http.MethodPost, "/ui/api/orders/MF-0007/reject", `{"reason":"no capacity"}`, "/orders/answer"},
+		{http.MethodPost, "/ui/api/orders/MF-0007/rate", `{"leg":3,"rate":1180}`, "/orders/MF-0007/rate"},
 		{http.MethodPost, "/ui/api/proposals/MF-PR-000001/confirm", "{}", "/proposals/MF-PR-000001/confirm"},
 		{http.MethodPost, "/ui/api/proposals/MF-PR-000001/dismiss", "{}", "/proposals/MF-PR-000001/dismiss"},
 	} {
@@ -141,6 +142,23 @@ func TestRejection(t *testing.T) {
 		ctl.got = nil
 		if rec := do(h, http.MethodPost, "/ui/api/orders/MF-0007/reject", body, sam); rec.Code != http.StatusBadRequest || ctl.got != nil {
 			t.Errorf("%.40s: HTTP %d, reached %v", body, rec.Code, ctl.got)
+		}
+	}
+}
+
+// TestRate: the browser names a leg and a rate; anything else, or out of
+// range, is refused before the node.
+func TestRate(t *testing.T) {
+	h, ctl := deskUI(t)
+	sam := login(t, h, "sam")
+	if rec := do(h, http.MethodPost, "/ui/api/orders/MF-0007/rate", `{"leg":3,"rate":1180.5}`, sam); rec.Code != http.StatusOK || string(ctl.body) != `{"leg":3,"rate":1180.5}` {
+		t.Errorf("HTTP %d, sent %s", rec.Code, ctl.body)
+	}
+	for _, body := range []string{`{"leg":0,"rate":1180}`, `{"leg":9,"rate":1180}`, `{"leg":3,"rate":0}`, `{"leg":3,"rate":-5}`, `{"leg":3,"rate":1e9}`,
+		`{"leg":3,"rate":1180,"booked":"x"}`, `{"leg":"3","rate":1180}`} {
+		ctl.got = nil
+		if rec := do(h, http.MethodPost, "/ui/api/orders/MF-0007/rate", body, sam); rec.Code != http.StatusBadRequest || ctl.got != nil {
+			t.Errorf("%s: HTTP %d, reached %v", body, rec.Code, ctl.got)
 		}
 	}
 }

@@ -36,6 +36,8 @@ type desk struct {
 	confirmed []string
 	answer    *forwarder.ProposalsResponse
 	err       error
+	rates     []forwarder.RateRequest
+	rateErr   error
 }
 
 func (d *desk) Order(_ context.Context, ref string) (*forwarder.OrderView, error) {

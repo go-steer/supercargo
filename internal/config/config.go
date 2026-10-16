@@ -40,6 +40,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/go-steer/supercargo/internal/antt"
 	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/sig"
@@ -279,7 +280,48 @@ type Forwarder struct {
 	// EDIID is its own EDI identity (the UNB sender, an..35): by default
 	// its domain, which may be too long (a Cloud Run address).
 	EDIID string `yaml:"ediId"`
+	// Freight is where a road leg's legal floor comes from (a lane leg
+	// with a freight section needs it).
+	Freight *FreightSource `yaml:"freight"`
 }
+
+// FreightSource is where the forwarder checks a road leg's freight floor
+// and tolls (docs/DESIGN.md, freight floors): QualP's API.
+type FreightSource struct {
+	QualP *QualPSource `yaml:"qualp"`
+}
+
+// QualPSource is QualP's API: its base URL (https, or http to this
+// machine for the mock) and the environment variable holding the access
+// token.
+type QualPSource struct {
+	URL      string `yaml:"url"`
+	TokenEnv string `yaml:"tokenEnv"`
+	// Label names the source where a floor is shown (default "QualP"):
+	// "QualP (simulated)" for the mock.
+	Label string `yaml:"label"`
+}
+
+// LaneFreight is what the forwarder pays a road leg's carrier, and what
+// the leg is priced as under the ANTT's minimum freight (Brazil): the
+// rate stays with the forwarder, never in an envelope.
+type LaneFreight struct {
+	// Rate is the agreed freight for the leg, in reais, before tolls (paid
+	// separately, as a Vale-Pedágio).
+	Rate float64 `yaml:"rate"`
+	// Axles, LoadType (QualP's load_type) and Table (A to D) are how the
+	// ANTT prices it.
+	Axles    int    `yaml:"axles"`
+	LoadType string `yaml:"loadType"`
+	Table    string `yaml:"table"`
+	// From and To name the leg's ends for the route ("Santos, SP"): by
+	// default the order's door's town for a door, else the UN/LOCODE.
+	From string `yaml:"from"`
+	To   string `yaml:"to"`
+}
+
+// MaxRate bounds a leg's freight rate, in reais.
+const MaxRate = 10_000_000
 
 // SelfEDIID is the forwarder's own EDI identity: EDIID, else the domain.
 func (c *Config) SelfEDIID() string {
@@ -321,6 +363,9 @@ type LaneLeg struct {
 	Facility string `yaml:"facility"`
 	// EDI marks a road carrier without a ULP node, booked over EDIFACT.
 	EDI bool `yaml:"edi"`
+	// Freight, on a road leg in Brazil, is its rate, checked against the
+	// ANTT's floor before the leg is booked.
+	Freight *LaneFreight `yaml:"freight"`
 }
 
 // LaneMaxLegs bounds a lane: a planned journey has at most 8 legs.
@@ -384,9 +429,64 @@ func (l *Lane) validate(self string) error {
 		if last && leg.Facility != "" {
 			return fmt.Errorf("%s: the last leg ends where the order says; no facility", at)
 		}
+		if f := leg.Freight; f != nil {
+			if err := f.validate(leg.Mode); err != nil {
+				return fmt.Errorf("%s: freight: %w", at, err)
+			}
+			// A UN/LOCODE isn't a place a routing service finds: an end
+			// that isn't the order's door is named here.
+			if i > 0 && f.From == "" || !last && f.To == "" {
+				return fmt.Errorf("%s: freight: name the leg's ends that aren't the order's doors (from, to: \"Santos, SP\")", at)
+			}
+		}
 		from = leg.To
 	}
 	return nil
+}
+
+func (f *LaneFreight) validate(mode string) error {
+	switch {
+	case mode != "road":
+		return errors.New("only a road leg has a freight floor")
+	case !(f.Rate > 0 && f.Rate <= MaxRate):
+		return fmt.Errorf("rate %v must be over 0 and at most %d reais", f.Rate, MaxRate)
+	case !slices.Contains(antt.Tables, f.Table):
+		return fmt.Errorf("table %q is not one of %s", f.Table, strings.Join(antt.Tables, ", "))
+	case !slices.Contains(antt.LoadTypes, f.LoadType):
+		return fmt.Errorf("loadType %q is not one of the ANTT's (%s)", f.LoadType, strings.Join(antt.LoadTypes, ", "))
+	case f.From != "" && !textOK(f.From, 128), f.To != "" && !textOK(f.To, 128):
+		return errors.New("from and to are 1-128 characters of plain text")
+	}
+	if _, _, err := antt.Floor(f.Table, f.LoadType, f.Axles, 0); err != nil {
+		return fmt.Errorf("axles %d: the ANTT doesn't price %s on %d axles", f.Axles, f.LoadType, f.Axles)
+	}
+	return nil
+}
+
+func (q *QualPSource) validate() error {
+	u, err := url.Parse(q.URL)
+	switch {
+	case err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "":
+		return fmt.Errorf("url %q must be an https URL with no user, query or fragment", q.URL)
+	case u.Scheme == "http" && !loopbackHost(u.Hostname()):
+		return fmt.Errorf("url %q: http only to this machine (the mock); QualP is https", q.URL)
+	case u.Scheme != "https" && u.Scheme != "http":
+		return fmt.Errorf("url %q must be https", q.URL)
+	case !envName.MatchString(q.TokenEnv):
+		return fmt.Errorf("tokenEnv %q must name an environment variable", q.TokenEnv)
+	case q.Label != "" && !textOK(q.Label, 64):
+		return errors.New("label is 1-64 characters of plain text")
+	}
+	return nil
+}
+
+// loopbackHost is localhost or a loopback address.
+func loopbackHost(h string) bool {
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 // textOK is a one-line display text of 1-max characters, plain (no
@@ -708,11 +808,22 @@ func (c *Config) validate() error {
 			}
 			ediCarriers[p.Carrier] = true
 		}
+		if f.Freight != nil {
+			if f.Freight.QualP == nil {
+				return errors.New("forwarder: freight: a qualp section is required")
+			}
+			if err := f.Freight.QualP.validate(); err != nil {
+				return fmt.Errorf("forwarder: freight: qualp: %w", err)
+			}
+		}
 		seen := map[[2]string]bool{}
 		for i, l := range f.Lanes {
 			for j, leg := range l.Legs {
 				if leg.EDI && !ediCarriers[leg.Carrier] {
 					return fmt.Errorf("forwarder: lanes[%d].legs[%d]: an EDI leg with %s, which forwarder.edi doesn't list", i, j, leg.Carrier)
+				}
+				if leg.Freight != nil && f.Freight == nil {
+					return fmt.Errorf("forwarder: lanes[%d].legs[%d]: a freight floor to check, and no forwarder.freight to check it with", i, j)
 				}
 			}
 			if err := l.validate(c.Domain); err != nil {

@@ -606,6 +606,9 @@ const dayTime = (iso) => {
   return isNaN(d) ? (iso || '') : d.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'UTC' });
 };
 const MODE = { road: 'ROAD', ocean: 'SEA', rail: 'RAIL' };
+const brl = (n) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(n);
+// A rate round and above the floor: what a person would offer.
+const aboveFloor = (floor) => Math.ceil(floor / 10) * 10 + 30;
 const place = (p) => p ? [p.facility, p.address && [p.address.street, p.address.locality, p.address.country].filter(Boolean).join(', '), p.un_location_code].filter(Boolean).join(' · ') : '';
 const party = (p) => p ? [p.name, ...(p.identifiers || []).map((i) => `${i.scheme} ${i.value}`)].filter(Boolean).join(' · ') : '';
 const equipment = (eq) => (eq || []).map((c) => `${c.count} × ${c.equipment_size_type}`).join(', ');
@@ -683,9 +686,11 @@ function orderDetail(v) {
     out.push(section('Plan', v.planError ? 'no lane serves this order'
       : booked ? `${booked} of ${v.steps.length} legs booked · booking again resumes after them` : 'from the routing guide (forwarder.lanes) · nothing booked yet'));
     if (v.planError) out.push(el('div', 'empty', v.planError));
-    for (const s of v.steps || []) {
+    (v.steps || []).forEach((s, i) => {
       out.push(legRow(s.mode, s.name, s.carrier, s.edi, `${s.from} → ${s.to}`, `${s.fromFacility} → ${s.toFacility}`, s.booked ? { state: s.booked + ' · booked', docs: '' } : null));
-    }
+      if (s.freight && !s.booked) out.push(freightCard(v, s, i + 1));
+    });
+    const blocked = (v.steps || []).find((s) => s.freight && !s.booked && s.freight.status !== 'ok');
     const act = el('div', 'actions');
     const reject = el('button', null, 'Reject order…');
     reject.onclick = () => rejectDialog(v, booked);
@@ -693,6 +698,10 @@ function orderDetail(v) {
     if ((v.steps || []).length) {
       const book = el('button', 'primary', `${booked ? 'Resume booking' : 'Confirm plan & book'} ${v.steps.length - booked} leg${v.steps.length - booked === 1 ? '' : 's'}…`);
       book.onclick = () => bookOrderDialog(v);
+      if (blocked) {
+        book.disabled = true;
+        book.dataset.tip = blocked.freight.status === 'below' ? `${blocked.name}'s rate is below the ANTT floor: change it first.` : `${blocked.name}'s floor couldn't be checked: try again shortly.`;
+      }
       act.appendChild(book);
     }
     out.push(act);
@@ -734,6 +743,54 @@ function legRow(mode, name, carrier, edi, route, sub, booked) {
     row.appendChild(st);
   }
   return row;
+}
+
+// freightCard is a Brazilian truck leg's rate against the ANTT's floor:
+// the route, its tolls (a Vale-Pedágio, apart from the freight), the
+// floor and its source, and the rate's change behind a dialog.
+function freightCard(v, s, leg) {
+  const f = s.freight, fl = f.floor;
+  const box = el('div', 'freight ' + f.status);
+  const head = el('div', 'freight-head');
+  const chip = { ok: ['fam-tnt', 'at or above the ANTT floor'], below: ['fam-error', `${brl(f.shortfall)} below the ANTT floor`], unchecked: ['pending', 'floor not checked'] }[f.status] || ['pending', f.status];
+  head.append(el('b', null, `Freight · leg ${leg}`), el('span', 'chip ' + chip[0], chip[1]));
+  if (fl) head.appendChild(el('span', 'dim', 'source: ' + fl.source));
+  box.appendChild(head);
+  const grid = el('dl', 'facts');
+  const fact = (k, val, cls) => { if (val) { grid.append(el('dt', null, k)); grid.append(el('dd', cls || null, val)); } };
+  fact('Route', `${f.route.join(' → ')}` + (fl ? ` · ${fl.distanceKm.toLocaleString('pt-BR')} km · ${Math.round(fl.duration / 36e11 * 10) / 10} h` : ''));
+  fact('Priced as', `${f.axles} axles · ${f.loadType.replace(/_/g, ' ')} · table ${f.table}`);
+  if (fl) {
+    fact('ANTT floor', `${brl(fl.freight)} (of which ${brl(fl.loadUnload)} loading and unloading) · ${fl.resolution}`);
+    const tolls = fl.tolls || [];
+    fact('Tolls', tolls.length ? `${brl(fl.tollTotal)} · ${tolls.length} plaza${tolls.length === 1 ? '' : 's'}: ${tolls.map((t) => t.name).join(', ')} · paid ahead as a Vale-Pedágio` : 'none on this route');
+  }
+  fact('Our rate', brl(f.rate) + (f.laneRate ? ` (set for this order; the lane's is ${brl(f.laneRate)})` : ' (the lane’s, from the routing guide)'), f.status === 'below' ? 'bad' : null);
+  if (f.error) fact('Why', f.error);
+  box.appendChild(grid);
+  if (fl) {
+    const act = el('div', 'actions');
+    const change = el('button', f.status === 'below' ? 'primary' : null, 'Change rate…');
+    change.onclick = () => rateDialog(v, s, leg);
+    act.appendChild(change);
+    box.appendChild(act);
+  }
+  box.appendChild(el('div', 'fineprint', 'The rate stays with us: no carrier or customer sees it.'));
+  return box;
+}
+
+function rateDialog(v, s, leg) {
+  const f = s.freight, input = el('input');
+  input.type = 'number'; input.step = '0.01'; input.min = '0';
+  input.value = String(Math.max(f.rate, aboveFloor(f.floor.freight)));
+  const r = el('div', 'row');
+  r.append(el('span', 'k', 'New rate (R$):'), input);
+  modal(`Freight · leg ${leg} · ${s.name}`, [['Order:', v.orderRef], ['Route:', f.route.join(' → ')], ['ANTT floor:', `${brl(f.floor.freight)} · ${f.floor.resolution}`],
+    ['Tolls:', `${brl(f.floor.tollTotal)} as a Vale-Pedágio, on top`], ['Now:', brl(f.rate)]],
+  'Set this rate for the order? It stays with us; booking the leg is still your step.', 'Set rate', async () => {
+    await api(`orders/${encodeURIComponent(v.orderRef)}/rate`, { method: 'POST', body: JSON.stringify({ leg, rate: Number(input.value) }) });
+    loadOrders();
+  }, [r]);
 }
 
 // The orders' sends: each needs a person's yes in a dialog.
@@ -996,6 +1053,7 @@ function draftDialog(d, side) {
   if (d.disruption) disruptionDraftDialog(d, side);
   else if (d.order) orderDraftDialog(d, chatVia(side));
   else if (d.proposal) proposalDraftDialog(d, chatVia(side));
+  else if (d.rate) rateDraftDialog(d, chatVia(side));
   else if (d.question) questionDraftDialog(d, chatVia(side));
   else bookingDialog(d, chatVia(side));
 }
@@ -1023,6 +1081,18 @@ function proposalDraftDialog(d, via) {
   const discard = discardLink(d, via, () => dlg.close());
   dlg = modal(`Amend leg ${p.leg} · ${p.carrierName}`, rows, `Send this amendment? Your node signs it and sends it to ${p.carrier}.`, 'Send amendment',
     () => via.send(d), [discard]);
+}
+
+// rateDraftDialog is a drafted freight rate: what it replaces, and the
+// floor and tolls it was checked against.
+function rateDraftDialog(d, via) {
+  const r = d.rate;
+  let dlg = null;
+  const discard = discardLink(d, via, () => dlg.close());
+  dlg = modal(`Freight · leg ${r.leg} · ${r.carrierName}`, [['Order:', r.orderRef], ['Route:', r.route], ['Now:', brl(r.was)],
+    ['New rate:', brl(r.rate)], ['ANTT floor:', `${brl(r.floor)} · ${r.resolution} · ${r.source}`], ['Tolls:', `${brl(r.tollTotal)} as a Vale-Pedágio, on top`],
+    ['Not sent:', 'the rate stays with us: no carrier or customer sees it', 'notsent']],
+  'Set this rate for the order? Booking the leg is still your step, in the Orders tab.', 'Set rate', () => via.send(d), [discard]);
 }
 
 // orderDraftDialog is a drafted door-to-door order's confirmation: all

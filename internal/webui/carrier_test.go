@@ -155,6 +155,8 @@ func TestSentOutcome(t *testing.T) {
 			Draft: assistant.Draft{ID: "PD-0001"}, Proposed: &forwarder.Proposal{ID: "MF-PR-000008", Carrier: "serra-transportes.example", Status: "confirmed"}},
 		"Sent order OD-0003 to meridian-forwarding.example, signed. Answer: pending MF-0007": {Draft: assistant.Draft{ID: "OD-0003",
 			Order: &assistant.OrderDraft{Forwarder: "meridian-forwarding.example"}}, Ordered: &intents.ForwardingConfirmationBody{Status: "pending", OrderRef: "MF-0007"}},
+		"Set the rate for leg 3 of MF-0007 to R$ 1180.00 (RD-0002; sent to no one). Freight: ok.": {Draft: assistant.Draft{ID: "RD-0002",
+			Rate: &assistant.RateDraft{OrderRef: "MF-0007", Leg: 3, Rate: 1180}}, Rated: "ok"},
 	} {
 		if got := sentOutcome(s); got != want {
 			t.Errorf("%q, want %q", got, want)

@@ -50,7 +50,10 @@ type Draft struct {
 	// Question, if set, makes this a question to a booking's operator,
 	// for a person to send.
 	Question *QuestionDraft
-	Created  time.Time
+	// Rate, if set, makes this a forwarder's new freight rate for an
+	// order's leg (set on the node, sent to no one).
+	Rate    *RateDraft
+	Created time.Time
 }
 
 // Drafts holds a session's drafts. Taking one removes it, so a draft is
@@ -93,6 +96,11 @@ func (d *Drafts) add(dr Draft) (Draft, error) {
 	}
 	if dr.Proposal != nil {
 		dr.ID = fmt.Sprintf("PD-%04d", d.next)
+		d.drafts[dr.ID] = dr
+		return dr, nil
+	}
+	if dr.Rate != nil {
+		dr.ID = fmt.Sprintf("RD-%04d", d.next)
 		d.drafts[dr.ID] = dr
 		return dr, nil
 	}

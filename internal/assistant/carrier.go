@@ -210,7 +210,7 @@ func (a *Assistant) runCarrier(ctx context.Context, call llm.ToolCall) (any, err
 		return r, nil
 	case ToolDraftDisruption:
 		return a.draftDisruption(ctx, call.Input)
-	case ToolListOrders, ToolGetOrder, ToolDraftProposal:
+	case ToolListOrders, ToolGetOrder, ToolDraftProposal, ToolCheckFreight, ToolDraftRate:
 		if a.Desk != nil {
 			return a.runDesk(ctx, call)
 		}

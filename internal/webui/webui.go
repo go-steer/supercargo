@@ -227,6 +227,7 @@ func Handler(cfg Config) http.Handler {
 		mux.HandleFunc("GET /ui/api/orders/{ref}", s.authed(s.forward("/orders/{ref}", desk)))
 		mux.HandleFunc("POST /ui/api/orders/{ref}/book", s.authed(s.role(desk, s.deskPost("/orders/{ref}/book", "ref", nil))))
 		mux.HandleFunc("POST /ui/api/orders/{ref}/reject", s.authed(s.role(desk, s.deskPost("/orders/answer", "ref", rejection))))
+		mux.HandleFunc("POST /ui/api/orders/{ref}/rate", s.authed(s.role(desk, s.deskPost("/orders/{ref}/rate", "ref", rate))))
 		mux.HandleFunc("POST /ui/api/proposals/{id}/confirm", s.authed(s.role(desk, s.deskPost("/proposals/{id}/confirm", "id", nil))))
 		mux.HandleFunc("POST /ui/api/proposals/{id}/dismiss", s.authed(s.role(desk, s.deskPost("/proposals/{id}/dismiss", "id", nil))))
 	}
