@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/business"
+	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
 
@@ -75,6 +76,57 @@ type RoadAmendment struct {
 	Request   *intents.RoadBookingRequestBody
 	Current   *intents.RoadBookingConfirmationBody
 	Amendment *intents.RoadBookingAmendmentBody
+}
+
+// RiskClearances is a road carrier's risk manager (in Brazil, the
+// gerenciadora de risco its insurer requires): before a leg is accepted,
+// it clears the vehicle and driver for the route and cargo, under a
+// monitoring protocol. A leg it doesn't clear is refused.
+type RiskClearances interface {
+	Clear(ctx context.Context, r RiskRequest) (*Clearance, error)
+}
+
+// RiskRequest is a verified, authorized leg to clear.
+type RiskRequest struct {
+	BookingRef string
+	Body       *intents.RoadBookingRequestBody
+	Pickup     time.Time
+}
+
+// Clearance is the risk manager's answer: approved or not, under which
+// protocol, for which vehicle and driver (the carrier's own people's
+// data: it stays with the carrier).
+type Clearance struct {
+	Approved bool
+	Protocol string
+	Vehicle  string
+	Driver   string
+	Source   string
+}
+
+// TollVouchers issues a leg's toll voucher (in Brazil, the Vale-Pedágio
+// obrigatório, paid ahead and not part of the freight).
+type TollVouchers interface {
+	Issue(ctx context.Context, r VoucherRequest) (*Voucher, error)
+}
+
+// VoucherRequest is a cleared leg's voucher to issue.
+type VoucherRequest struct {
+	BookingRef string
+	Body       *intents.RoadBookingRequestBody
+	Vehicle    string
+}
+
+// Voucher is an issued toll voucher.
+type Voucher struct {
+	Number string
+	Source string
+}
+
+// BackOffice is a road booking system that says what its systems did for
+// each leg it confirmed (optional, beside RoadBookings).
+type BackOffice interface {
+	BackOffice(ref string) []store.BackOfficeStep
 }
 
 // FreightFloors is a road leg's freight floor and tolls: in Brazil, the

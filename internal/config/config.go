@@ -164,6 +164,9 @@ type Web struct {
 	// Presenter, if set, serves /ui/presenter: the listed UIs side by side,
 	// each in its own frame, each signed in by itself.
 	Presenter *Presenter `yaml:"presenter"`
+	// Brand is a line shown beside the company's name, such as the
+	// platform it runs on ("on nstech TNS"): at most 64 characters.
+	Brand string `yaml:"brand"`
 }
 
 // Presenter lists the UIs the presenter page shows.
@@ -512,13 +515,29 @@ type Road struct {
 	CTe *CTe `yaml:"cte"`
 	// ECMRPrefix numbers an e-CMR for each leg, e.g. "ECMR-NL-2026".
 	ECMRPrefix string `yaml:"ecmrPrefix"`
+	// TMS names the system behind the node that issues the fiscal
+	// documents, as the carrier's people see it (default "TMS").
+	TMS string `yaml:"tms"`
+	// Risk clears each leg with a risk manager before it's accepted;
+	// TollVoucher issues its toll voucher (Vale-Pedágio). Each, for now,
+	// is the demo's mock, named as shown.
+	Risk        *BackOfficeMock `yaml:"risk"`
+	TollVoucher *BackOfficeMock `yaml:"tollVoucher"`
+}
+
+// BackOfficeMock is one of the demo's in-memory systems behind a node:
+// Mock is how it's named where it's shown, e.g. "Trafegus (simulated)".
+type BackOfficeMock struct {
+	Mock string `yaml:"mock"`
 }
 
 // CTe is the mock CT-e's issuer: its CNPJ (14 characters, bare; the first
 // 12 may be letters) and its state's IBGE code (11-53; 35 is São Paulo).
+// MDFe issues each leg's MDF-e too.
 type CTe struct {
 	CNPJ  string `yaml:"cnpj"`
 	State int    `yaml:"state"`
+	MDFe  bool   `yaml:"mdfe"`
 }
 
 var (
@@ -876,6 +895,18 @@ func (c *Config) validate() error {
 			if r.ECMRPrefix != "" && !refPrefix.MatchString(r.ECMRPrefix) {
 				return fmt.Errorf("operator: road.ecmrPrefix %q must be 1-40 of [A-Za-z0-9-], starting with a letter or digit", r.ECMRPrefix)
 			}
+			if r.TMS != "" && !textOK(r.TMS, 64) {
+				return errors.New("operator: road.tms is 1-64 characters of plain text")
+			}
+			if r.CTe == nil && (r.Risk != nil || r.TollVoucher != nil || r.TMS != "") {
+				return errors.New("operator: road.tms, risk and tollVoucher are a Brazilian carrier's systems: they need road.cte")
+			}
+			if r.Risk != nil && !textOK(r.Risk.Mock, 64) {
+				return errors.New("operator: road.risk.mock names the mock: 1-64 characters of plain text")
+			}
+			if r.TollVoucher != nil && !textOK(r.TollVoucher.Mock, 64) {
+				return errors.New("operator: road.tollVoucher.mock names the mock: 1-64 characters of plain text")
+			}
 		}
 		for _, d := range o.Deny {
 			if !envelope.ValidDomain(d) || d == c.Domain {
@@ -1038,6 +1069,9 @@ func (c *Config) validateWeb() error {
 	w := c.Web
 	if w == nil {
 		return nil
+	}
+	if w.Brand != "" && !textOK(w.Brand, 64) {
+		return errors.New("web: brand is 1-64 characters of plain text")
 	}
 	switch w.Auth {
 	case AuthDemo:

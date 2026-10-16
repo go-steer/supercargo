@@ -334,6 +334,16 @@ dl.facts dd { margin: 0; }
 .proposal.closed .proposal-title { color: var(--text-dim); }
 .proposal .fineprint { color: var(--text-dim); font-size: 11px; margin-top: 4px; }
 .proposal .actions { padding: 8px 0 0; }
+#brand { margin-left: 8px; font-size: 11px; font-weight: 600; letter-spacing: .04em; padding: 1px 8px; border-radius: 10px;
+  color: var(--blue); border: 1px solid color-mix(in srgb, var(--blue) 50%, transparent); }
+.backoffice { margin: 8px 0 2px; border: 1px dashed var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; }
+.backoffice-head { display: flex; gap: 10px; align-items: baseline; margin-bottom: 4px; }
+.backoffice-head b { white-space: nowrap; }
+.backoffice-head .dim { font-size: 11px; }
+.bo-row { display: grid; grid-template-columns: 52px 190px 1fr; gap: 8px; align-items: start; padding: 3px 0; }
+.bo-row .mode { font-size: 10px; letter-spacing: .1em; color: var(--text-dim); text-align: center; border: 1px solid var(--border); border-radius: 3px; padding: 1px 0; }
+.bo-row .bo-source { font-weight: 600; }
+.bo-row .sub { display: block; color: var(--text-dim); font-size: 11px; font-family: var(--mono, monospace); word-break: break-all; }
 .freight { margin: 4px 12px 8px 64px; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; }
 .freight.below { border-color: var(--red); background: color-mix(in srgb, var(--red) 6%, transparent); }
 .freight.ok { border-color: color-mix(in srgb, var(--green) 60%, var(--border)); }

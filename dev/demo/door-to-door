@@ -167,7 +167,14 @@ forwarder:
 operator: { refPrefix: OB-BKG, containerPrefix: OCBU, vessel: Ocean Blue Aurora, voyage: 42W, departureHour: 18, transit: 380h }
 simulator: { hoursPerSecond: $hps, clock: shared }"
   node serra serra-transportes.example "Serra Transportes" "$SR" sr '{ id: rita, name: Rita, title: "Dispatch", roles: [operator] }' "role: operator
-operator: { refPrefix: SR-BKG, road: { transit: 30h, cte: { cnpj: \"12345678000190\", state: 35 } } }
+operator:
+  refPrefix: SR-BKG
+  road:
+    transit: 30h
+    cte: { cnpj: \"12345678000190\", state: 35, mdfe: true }
+    tms: \"TMS (simulated)\"                         # the systems behind Serra's node: mocks
+    risk: { mock: \"Risk manager (simulated)\" }
+    tollVoucher: { mock: \"Vale-Pedágio (simulated)\" }
 simulator: { hoursPerSecond: $hps, clock: shared }"
 }
 
