@@ -195,7 +195,7 @@ func TestCTeAccessKey(t *testing.T) {
 		t.Error("mod11 doesn't weigh letters")
 	}
 	for _, cnpj := range []string{"12345678000190", "12ABC34501DE35"} {
-		key, err := (&CTeIssuer{CNPJ: cnpj, State: 35}).accessKey(roadNow, 913)
+		key, err := (&CTeIssuer{CNPJ: cnpj, State: 35}).accessKey(roadNow, 913, "57")
 		if err != nil || len(key) != 44 || int(key[43]-'0') != mod11(key[:43]) {
 			t.Fatalf("%s: %s, %v", cnpj, key, err)
 		}
@@ -206,7 +206,7 @@ func TestCTeAccessKey(t *testing.T) {
 			t.Errorf("%s: %v", cnpj, err)
 		}
 	}
-	if _, err := (&CTeIssuer{CNPJ: "12345678000190", State: 99}).accessKey(roadNow, 1); err == nil {
+	if _, err := (&CTeIssuer{CNPJ: "12345678000190", State: 99}).accessKey(roadNow, 1, "57"); err == nil {
 		t.Error("state 99")
 	}
 }

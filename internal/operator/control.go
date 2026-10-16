@@ -47,6 +47,12 @@ type DisruptResponse struct {
 	Error   string                `json:"error,omitempty"`
 }
 
+// BackOfficeResponse is the answer to GET /bookings/{ref}/backoffice.
+type BackOfficeResponse struct {
+	Steps []store.BackOfficeStep `json:"steps"`
+	Error string                 `json:"error,omitempty"`
+}
+
 // ControlHandler is the operator's control API (internal/control): ulpctl
 // drives the simulator through it, and the presenter's views read the
 // operator's bookings and what it published.
@@ -88,6 +94,22 @@ func RegisterControl(mux *http.ServeMux, sim *Simulator, bookings *store.Booking
 			}
 		}
 		control.Answer(w, http.StatusNotFound, JourneyResponse{Error: "no booking " + ref})
+	})
+	// What the carrier's systems behind the node did for a truck leg: its
+	// people's view (the shipper never sees it).
+	mux.HandleFunc("GET /bookings/{ref}/backoffice", func(w http.ResponseWriter, r *http.Request) {
+		ref := r.PathValue("ref")
+		for _, b := range bookings.List() {
+			if b.Ref == ref {
+				out := BackOfficeResponse{Steps: []store.BackOfficeStep{}}
+				if b.Road != nil && b.Road.BackOffice != nil {
+					out.Steps = b.Road.BackOffice
+				}
+				control.Answer(w, http.StatusOK, out)
+				return
+			}
+		}
+		control.Answer(w, http.StatusNotFound, BackOfficeResponse{Error: "no booking " + ref})
 	})
 	mux.HandleFunc("POST /disrupt", func(w http.ResponseWriter, r *http.Request) {
 		var req DisruptRequest

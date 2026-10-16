@@ -85,7 +85,9 @@ func (p Persona) Sides() []string {
 // Config is what the UI needs from its node.
 type Config struct {
 	Company, Domain string
-	Personas        []Persona
+	// Brand is a line shown beside the company's name ("on nstech TNS").
+	Brand    string
+	Personas []Persona
 	// Control is the node's control API (trusted): the UI reaches it only
 	// after authorizing each request.
 	Control http.Handler
@@ -207,6 +209,7 @@ func Handler(cfg Config) http.Handler {
 	mux.HandleFunc("GET /ui/api/bookings/{ref}/events", s.authed(s.forward("/bookings/{ref}/events", []string{RoleOperator})))
 	mux.HandleFunc("GET /ui/api/shipments/{operator}/{ref}/journey", s.authed(s.forward("/shipments/{operator}/{ref}/journey", shipper)))
 	mux.HandleFunc("GET /ui/api/bookings/{ref}/journey", s.authed(s.forward("/bookings/{ref}/journey", []string{RoleOperator})))
+	mux.HandleFunc("GET /ui/api/bookings/{ref}/backoffice", s.authed(s.forward("/bookings/{ref}/backoffice", []string{RoleOperator})))
 	// The assistant is the shipper role's (a receiver's comes later, #75).
 	// The assistant routes take ?side= (customer, the default, or
 	// operator): the side's role is required.
@@ -550,12 +553,14 @@ type MeResponse struct {
 	Assistants []string `json:"assistants"`
 	// Orders: the persona works the forwarder's desk (its orders).
 	Orders bool `json:"orders"`
+	// Brand is the line beside the company's name.
+	Brand string `json:"brand,omitempty"`
 }
 
 func (s *server) me(w http.ResponseWriter, _ *http.Request, p Persona) {
 	sides := s.assistantSides(p)
 	control.Answer(w, http.StatusOK, MeResponse{Company: s.cfg.Company, Domain: s.cfg.Domain, Persona: p, Sides: p.Sides(), Demo: s.cfg.Google == nil,
-		Assistant: slices.Contains(sides, SideCustomer), Assistants: sides, Orders: s.cfg.Orders && slices.Contains(p.Roles, RoleOperator)})
+		Assistant: slices.Contains(sides, SideCustomer), Assistants: sides, Orders: s.cfg.Orders && slices.Contains(p.Roles, RoleOperator), Brand: s.cfg.Brand})
 }
 
 // assistantSides are the sides p has an assistant on: the customer side's

@@ -215,6 +215,8 @@ func TestRoleGates(t *testing.T) {
 		{sam, "/ui/api/shipments/ocean-blue.example/OB-1/journey", http.StatusForbidden},
 		{alex, "/ui/api/shipments/ocean-blue.example/OB-1/journey", http.StatusOK},
 		{alex, "/ui/api/bookings/OB-1/journey", http.StatusForbidden},
+		{sam, "/ui/api/bookings/SR-1/backoffice", http.StatusOK},
+		{alex, "/ui/api/bookings/SR-1/backoffice", http.StatusForbidden},
 		{sam, "/ui/api/shipments", http.StatusForbidden},
 		{jo, "/ui/api/bookings", http.StatusOK},
 		{jo, "/ui/api/shipments", http.StatusOK},

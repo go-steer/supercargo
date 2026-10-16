@@ -499,7 +499,7 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 			panels = append(panels, webui.Panel{Name: p.Name, URL: p.URL})
 		}
 	}
-	mux.Handle(webui.Prefix, webui.Handler(webui.Config{Company: a.Config.Name, Domain: a.Config.Domain, Personas: personas, NewAssistant: newAssistant,
+	mux.Handle(webui.Prefix, webui.Handler(webui.Config{Company: a.Config.Name, Domain: a.Config.Domain, Brand: w.Brand, Personas: personas, NewAssistant: newAssistant,
 		AssistantSides: assistantSides, FrameAncestors: w.FrameAncestors, Panels: panels, Inbox: a.inbox, Orders: a.Orders != nil, Google: a.webGoogle(), Control: a.controlAPI,
 		Secure: a.Config.TLS.Mode != config.TLSInsecureDev || strings.HasPrefix(publicURL(a.Config), "https://"),
 		Hosts:  slices.Concat(listenHosts(a.Config.Listen), publicHost(a.Config), w.Hosts)}))
@@ -812,7 +812,14 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 		}
 		trucks := &operator.TruckBookings{RefPrefix: prefix, Transit: r.Transit, Lead: r.Lead, ECMRPrefix: r.ECMRPrefix, Now: time.Now}
 		if r.CTe != nil {
-			trucks.CTe = &operator.CTeIssuer{CNPJ: r.CTe.CNPJ, State: r.CTe.State}
+			trucks.CTe = &operator.CTeIssuer{CNPJ: r.CTe.CNPJ, State: r.CTe.State, MDFe: r.CTe.MDFe}
+		}
+		trucks.TMS = r.TMS
+		if r.Risk != nil {
+			trucks.Risk = &operator.MockRisk{Source: r.Risk.Mock}
+		}
+		if r.TollVoucher != nil {
+			trucks.Vouchers = &operator.MockVouchers{Source: r.TollVoucher.Mock}
 		}
 		trucks.Resume(a.Carrier.Bookings.List()) // restored after a restart: number on from them
 		// Each leg plays out on the simulator, as a voyage does; an

@@ -583,6 +583,11 @@ const loadLeft = latest(async () => {
       const counts = el('div', 'summary-line dim', `${s.events} events · ${s.alerts} alerts${s.lastEvent ? ' · last: ' + s.lastEvent : ''}`);
       if (s.alerts) counts.classList.add('has-alert');
       card.appendChild(counts);
+      if (state.activeSide === 'operator' && s.kind === 'road') {
+        const bo = el('div');
+        card.appendChild(bo);
+        api(base + '/backoffice').then((r) => renderBackOffice(bo, r.steps || [])).catch(() => {});
+      }
       if (state.activeSide === 'operator') {
         const act = el('div', 'actions');
         const b = el('button', null, 'Disrupt…');
@@ -863,6 +868,26 @@ function proposalCard(v, p) {
     box.appendChild(el('div', 'fineprint', p.outcome));
   }
   return box;
+}
+
+// renderBackOffice is what the carrier's own systems behind its node did
+// for a truck leg: its people's view, never sent to the shipper.
+const SYSTEM = { tms: 'TMS', risk: 'RISK', tolls: 'TOLLS' };
+function renderBackOffice(box, steps) {
+  if (!steps.length) return;
+  const wrap = el('div', 'backoffice');
+  const head = el('div', 'backoffice-head');
+  head.append(el('b', null, 'Behind this node'), el('span', 'dim', 'our systems · the shipper sees only the signed confirmation and the document keys'));
+  wrap.appendChild(head);
+  for (const s of steps) {
+    const row = el('div', 'bo-row');
+    row.append(el('span', 'mode', SYSTEM[s.system] || String(s.system || '').toUpperCase()), el('span', 'bo-source', s.source || ''));
+    const what = el('span', 'bo-what', s.action || '');
+    if (s.reference) what.appendChild(el('span', 'sub', s.reference + (s.detail ? ' · ' + s.detail : '')));
+    row.appendChild(what);
+    wrap.appendChild(row);
+  }
+  box.replaceChildren(wrap);
 }
 
 // ── a door-to-door shipment: the journey, leg by leg, and each event's
@@ -1504,6 +1529,8 @@ async function start() {
   state.initialSeq = null; state.alertCounts = {}; state.summaries = []; state.inbox = []; state.openedLink = false; $('banner').hidden = true;
   const { me } = state;
   $('company').textContent = me.company;
+  $('brand').textContent = me.brand || '';
+  $('brand').hidden = !me.brand;
   $('domain').textContent = me.domain;
   $('persona').textContent = me.persona.name + (me.persona.title ? ', ' + me.persona.title.split(',')[0] : '');
   $('persona-roles').textContent = `(${me.persona.roles.join(' + ')})`;

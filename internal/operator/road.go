@@ -26,6 +26,7 @@ import (
 
 	"github.com/go-steer/supercargo/internal/backend"
 	"github.com/go-steer/supercargo/internal/node"
+	"github.com/go-steer/supercargo/internal/safetext"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -68,6 +69,11 @@ func (s *RoadBookingService) Handle(ctx context.Context, req *node.Request) (*no
 	h := req.Envelope.Header
 	b := req.Body.(*intents.RoadBookingRequestBody)
 	conf, err := s.Backend.Decide(ctx, backend.RoadBookingRequest{Shipper: h.Sender, Operator: h.Receiver, Body: b})
+	var steps []store.BackOfficeStep
+	if bo, ok := s.Backend.(backend.BackOffice); ok && conf != nil {
+		// Taken at once, whatever happens next: none is left behind.
+		steps = bo.BackOffice(conf.BookingRef)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +85,7 @@ func (s *RoadBookingService) Handle(ctx context.Context, req *node.Request) (*no
 	}
 	if err := s.Bookings.Add(store.Booking{
 		Ref: conf.BookingRef, Shipper: h.Sender, Operator: h.Receiver,
-		Road:      &store.RoadBooking{Request: *b, Confirmation: *conf},
+		Road:      &store.RoadBooking{Request: *b, Confirmation: *conf, BackOffice: steps},
 		CreatedAt: s.Now(),
 	}); errors.Is(err, store.ErrFull) {
 		return &node.Reply{BookingRef: conf.BookingRef, Body: &intents.RoadBookingConfirmationBody{
@@ -273,9 +279,49 @@ type TruckBookings struct {
 	// (Europe), e.g. "ECMR-NL-2026".
 	ECMRPrefix string
 	Now        func() time.Time
+	// The systems behind the node, for a Brazilian carrier (each
+	// optional): TMS names the system that issues the fiscal documents
+	// (default "TMS"); Risk clears each leg before it's accepted;
+	// Vouchers issues its toll voucher.
+	TMS      string
+	Risk     backend.RiskClearances
+	Vouchers backend.TollVouchers
 
-	mu   sync.Mutex
-	next int
+	mu    sync.Mutex
+	next  int
+	steps map[string][]store.BackOfficeStep
+}
+
+// maxSteps bounds the back-office records kept for legs not yet stored.
+const maxSteps = 1000
+
+// BackOffice implements backend.BackOffice: what the systems did for the
+// leg ref (taken: the booking keeps them).
+func (t *TruckBookings) BackOffice(ref string) []store.BackOfficeStep {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s := t.steps[ref]
+	delete(t.steps, ref)
+	return s
+}
+
+func (t *TruckBookings) record(ref string, steps []store.BackOfficeStep) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.steps == nil {
+		t.steps = map[string][]store.BackOfficeStep{}
+	}
+	if len(t.steps) >= maxSteps {
+		// Never taken (a caller that doesn't): the oldest goes.
+		var oldest string
+		for k, s := range t.steps {
+			if oldest == "" || s[0].At.Before(t.steps[oldest][0].At) {
+				oldest = k
+			}
+		}
+		delete(t.steps, oldest)
+	}
+	t.steps[ref] = steps
 }
 
 // Resume numbers on after the legs held (restored after a restart).
@@ -291,14 +337,16 @@ func (t *TruckBookings) Resume(held []store.Booking) {
 
 // CTeIssuer is the issuer of the mock CT-e: its CNPJ and its state's IBGE
 // code (35 for São Paulo). The access key has the real layout and check
-// digit; nothing is sent to the tax authority.
+// digit; nothing is sent to the tax authority. MDFe also issues the leg's
+// MDF-e (the trip's manifest, model 58).
 type CTeIssuer struct {
 	CNPJ  string // 14 characters, bare
 	State int
+	MDFe  bool
 }
 
 // Decide implements backend.RoadBookings.
-func (t *TruckBookings) Decide(_ context.Context, r backend.RoadBookingRequest) (*intents.RoadBookingConfirmationBody, error) {
+func (t *TruckBookings) Decide(ctx context.Context, r backend.RoadBookingRequest) (*intents.RoadBookingConfirmationBody, error) {
 	t.mu.Lock()
 	if t.next == 0 {
 		t.next = 913
@@ -311,12 +359,52 @@ func (t *TruckBookings) Decide(_ context.Context, r backend.RoadBookingRequest) 
 	if msg != nil {
 		return &intents.RoadBookingConfirmationBody{BookingRef: ref, Status: intents.StatusRejected, Messages: []intents.Message{*msg}}, nil
 	}
+	now := t.Now()
+	var steps []store.BackOfficeStep
+	var vehicle string
+	if t.Risk != nil {
+		pickup, _ := parseTime(conf.PlannedPickup)
+		c, err := t.Risk.Clear(ctx, backend.RiskRequest{BookingRef: ref, Body: r.Body, Pickup: pickup})
+		if err == nil {
+			err = checkClearance(c)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("operator: risk clearance: %w", err)
+		}
+		if !c.Approved {
+			// The reason stays here: the shipper learns only that it's refused.
+			return &intents.RoadBookingConfirmationBody{BookingRef: ref, Status: intents.StatusRejected,
+				Messages: []intents.Message{{Code: "risk_not_cleared", Detail: "This carrier can't clear the leg with its risk manager."}}}, nil
+		}
+		vehicle = c.Vehicle
+		steps = append(steps, store.BackOfficeStep{System: "risk", Source: c.Source, Action: "Vehicle and driver cleared for the route",
+			Reference: c.Protocol, Detail: strings.TrimSpace(c.Vehicle + " · " + c.Driver), At: now})
+	}
 	if t.CTe != nil {
-		key, err := t.CTe.accessKey(t.Now(), n)
+		key, err := t.CTe.accessKey(now, n, "57")
 		if err != nil {
 			return nil, err
 		}
 		conf.FiscalDocuments = []intents.DocumentRef{{Type: "CT-e", AccessKey: key}}
+		steps = append(steps, store.BackOfficeStep{System: "tms", Source: t.tms(), Action: "CT-e issued (authorized by SEFAZ)", Reference: key, At: now})
+		if t.CTe.MDFe {
+			mk, _ := t.CTe.accessKey(now, n, "58") // the same issuer: it passed above
+			conf.FiscalDocuments = append(conf.FiscalDocuments, intents.DocumentRef{Type: "MDF-e", AccessKey: mk})
+			steps = append(steps, store.BackOfficeStep{System: "tms", Source: t.tms(), Action: "MDF-e issued (the trip's manifest)", Reference: mk, At: now})
+		}
+	}
+	if t.Vouchers != nil {
+		v, err := t.Vouchers.Issue(ctx, backend.VoucherRequest{BookingRef: ref, Body: r.Body, Vehicle: vehicle})
+		if err == nil && (v == nil || !backOfficeText(v.Number, true) || !backOfficeText(v.Source, false)) {
+			err = errors.New("the voucher system's answer is missing or malformed")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("operator: toll voucher: %w", err)
+		}
+		steps = append(steps, store.BackOfficeStep{System: "tolls", Source: v.Source, Action: "Toll voucher issued (Vale-Pedágio)", Reference: v.Number, At: now})
+	}
+	if len(steps) > 0 {
+		t.record(ref, steps)
 	}
 	if t.ECMRPrefix != "" {
 		conf.TransportDocuments = []intents.DocumentRef{{Type: "e-CMR", Number: fmt.Sprintf("%s-%06d", t.ECMRPrefix, n)}}
@@ -383,16 +471,39 @@ func parseTime(s string) (time.Time, bool) {
 	return t, err == nil
 }
 
-// accessKey is a CT-e access key in the real layout: the state (2), the
-// year and month (4), the issuer's CNPJ (14), the model 57 (2), the series
+// accessKey is a CT-e (model 57) or MDF-e (58) access key in the real
+// layout: the state (2), the year and month (4), the issuer's CNPJ (14),
+// the model (2), the series
 // (3), the number (9), the emission type (1), a numeric code (8) and a
 // mod-11 check digit (1).
-func (c *CTeIssuer) accessKey(at time.Time, n int) (string, error) {
+func (c *CTeIssuer) accessKey(at time.Time, n int, model string) (string, error) {
 	if c.State < 11 || c.State > 53 || len(c.CNPJ) != 14 {
 		return "", fmt.Errorf("operator: CT-e issuer state %d / CNPJ %q", c.State, c.CNPJ)
 	}
-	body := fmt.Sprintf("%02d%s%s57001%09d1%08d", c.State, at.In(brasilia).Format("0601"), strings.ToUpper(c.CNPJ), n%1_000_000_000, (n*7919+1)%100_000_000)
+	body := fmt.Sprintf("%02d%s%s%s001%09d1%08d", c.State, at.In(brasilia).Format("0601"), strings.ToUpper(c.CNPJ), model, n%1_000_000_000, (n*7919+1)%100_000_000)
 	return body + strconv.Itoa(mod11(body)), nil
+}
+
+// checkClearance holds a risk manager's answer to what's recorded: an
+// approval names its protocol; every field is short plain text.
+func checkClearance(c *backend.Clearance) error {
+	if c == nil || !backOfficeText(c.Protocol, c.Approved) || !backOfficeText(c.Vehicle, false) || !backOfficeText(c.Driver, false) || !backOfficeText(c.Source, false) {
+		return errors.New("the risk manager's answer is missing or malformed")
+	}
+	return nil
+}
+
+// backOfficeText is a system's text as kept: at most 128 characters,
+// safe to show (internal/safetext), and present if required.
+func backOfficeText(s string, required bool) bool {
+	return (s != "" || !required) && safetext.Problem(s, 128) == ""
+}
+
+func (t *TruckBookings) tms() string {
+	if t.TMS == "" {
+		return "TMS"
+	}
+	return t.TMS
 }
 
 // brasilia is Brasília time, the year and month of a CT-e issued in São

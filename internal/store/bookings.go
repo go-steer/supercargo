@@ -99,6 +99,21 @@ type LegRef struct {
 type RoadBooking struct {
 	Request      intents.RoadBookingRequestBody
 	Confirmation intents.RoadBookingConfirmationBody
+	// BackOffice is what the carrier's own systems behind its node did for
+	// the leg (the carrier's record, for its people; never sent).
+	BackOffice []BackOfficeStep `json:",omitempty"`
+}
+
+// BackOfficeStep is one thing a carrier's system did for a booking: its
+// TMS issuing a fiscal document, its risk manager clearing the truck, a
+// toll voucher issued.
+type BackOfficeStep struct {
+	System    string    `json:"system"` // tms, risk, tolls
+	Source    string    `json:"source"` // who did it, e.g. "Trafegus (simulated)"
+	Action    string    `json:"action"`
+	Reference string    `json:"reference,omitempty"`
+	Detail    string    `json:"detail,omitempty"`
+	At        time.Time `json:"at"`
 }
 
 // Subscription is the booking's subscription, or nil.

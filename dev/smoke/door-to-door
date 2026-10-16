@@ -78,7 +78,8 @@ node ocean ocean-blue.example "Ocean Blue" "$OB" ob "role: operator
 operator: { refPrefix: OB-BKG, containerPrefix: OCBU, vessel: Ocean Blue Aurora, voyage: 42W, departureHour: 18, transit: 380h }
 simulator: { hoursPerSecond: 20 }"
 node serra serra-transportes.example "Serra Transportes" "$SR" sr "role: operator
-operator: { refPrefix: SR-BKG, road: { transit: 30h, cte: { cnpj: \"12345678000190\", state: 35 } } }
+operator: { refPrefix: SR-BKG, road: { transit: 30h, cte: { cnpj: \"12345678000190\", state: 35, mdfe: true }, tms: \"TMS (simulated)\",
+  risk: { mock: \"Risk manager (simulated)\" }, tollVoucher: { mock: \"Vale-Pedágio (simulated)\" } } }
 simulator: { hoursPerSecond: 20 }"
 
 # The QualP mock, with the token Meridian sends (from its environment).
@@ -133,6 +134,16 @@ for carrier in "Polder Haulage" "Ocean Blue" "Serra Transportes"; do
   grep -q "\"carrier\":\"$carrier\"" <<<"$out" || smoke_fail "$work" "the journey lacks $carrier: $out"
 done
 echo "booked: Polder (EDI), Ocean Blue, Serra"
+
+# Behind Serra's node, its systems cleared the truck and issued the CT-e,
+# the MDF-e and the toll voucher; Meridian got only the documents' keys.
+sr_ref="$(ctl sr /bookings | grep -o '"bookingRef":"SR-BKG-[0-9]*"' | head -1 | cut -d'"' -f4)"
+out="$(ctl sr "/bookings/$sr_ref/backoffice")" || smoke_fail "$work" "Serra's back office failed"
+for s in '"system":"risk"' 'CT-e issued' 'MDF-e issued' '"system":"tolls"'; do
+  grep -q "$s" <<<"$out" || smoke_fail "$work" "Serra's back office lacks $s: $out"
+done
+ctl mf "/orders/$ref" | grep -q '"Vale-Pedágio\|SM-20' && smoke_fail "$work" "Serra's back office reached Meridian"
+echo "behind Serra's node: cleared, CT-e and MDF-e issued, toll voucher issued"
 
 # Cymbal asks Meridian where the order stands, by its own reference: the
 # signed answer names the order, confirmed with its journey.
