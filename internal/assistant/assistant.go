@@ -96,6 +96,12 @@ type Assistant struct {
 	// Desk, on a forwarder, is its orders, for the operator side's
 	// assistant (list_orders, get_order, draft_proposal).
 	Desk Desk
+	// Docks is the shipper's dock schedule, for its own assistant (nil:
+	// none, or an outside agent's).
+	Docks Docks
+	// seen is what the model has learned of our dock appointments: as
+	// private as the business file.
+	seen privateSet
 	// Carrier, if set, makes this the carrier's assistant (the operator
 	// role's): its tools read the carrier's bookings and draft
 	// disruptions, which a person confirms; Node and the partner fields
@@ -414,6 +420,9 @@ func (a *Assistant) system() string {
 	s := fmt.Sprintf(prompt, name, a.Self.Domain, a.now().UTC().Format(time.DateOnly))
 	if a.Carrier != nil && a.Desk != nil {
 		s += deskPrompt
+	}
+	if a.Carrier == nil && a.Docks != nil {
+		s += docksPrompt
 	}
 	if len(a.Skills) == 0 {
 		return s

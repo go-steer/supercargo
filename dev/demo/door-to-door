@@ -114,7 +114,7 @@ EOF
 shipments:
   - shipperRef: CY-PO-55120
     requiredBy: $launch
-    receivingSlot: { date: $launch, window: "08:00-12:00", warehouse: "Brazil launch stock" }
+    receivingSlot: { date: $launch, window: "08:00-12:00", warehouse: "Brazil launch stock, dock 2" }
     notes: "Brazil launch: the São Paulo stores open with this stock"
 notes:
   - "Tell the launch team about any delay that puts the launch at risk"
@@ -140,7 +140,8 @@ places:
 EOF
   node cymbal cymbal-shoes.example "Cymbal Shoes" "$CY" cy '{ id: alex, name: Alex, title: "Logistics", roles: [shipper] }' "role: shipper
 addressBook: { file: $dir/address-book.yaml }
-business: { file: $dir/business.yaml }   # private: never in an envelope"
+business: { file: $dir/business.yaml }   # private: never in an envelope
+docks: { mock: \"Dock scheduling (simulated)\", site: Cajamar DC, zone: America/Sao_Paulo, docks: [Dock 1, Dock 2, Dock 3] }"
   node meridian meridian-forwarding.example "Meridian Forwarding" "$MF" mf '{ id: mia, name: Mia, title: "Forwarding desk", roles: [operator, shipper] }' "  presenter:
     panels:
       - { name: \"Cymbal Shoes · shipper\", url: \"$(ui "$CY")\" }

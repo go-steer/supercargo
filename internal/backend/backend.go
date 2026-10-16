@@ -175,6 +175,36 @@ type Toll struct {
 	Amount   float64 `json:"amount"`
 }
 
+// DockAppointments is a receiving site's dock schedule (a yard or dock
+// scheduling system): a shipment's appointment, the free slots, and moving
+// an appointment to one. It is the shipper's own: what it holds never goes
+// in an envelope. Only a person's confirmation moves an appointment.
+type DockAppointments interface {
+	Appointment(ctx context.Context, shipperRef string) (*Appointment, error)
+	Slots(ctx context.Context, from time.Time, days int) ([]DockSlot, error)
+	// Move moves appointment id from its start from (a stale draft's
+	// from is refused) to a free slot.
+	Move(ctx context.Context, id string, from time.Time, to DockSlot) (*Appointment, error)
+}
+
+// Appointment is a shipment's dock appointment at the receiving site.
+type Appointment struct {
+	ID         string    `json:"id"`
+	ShipperRef string    `json:"shipperRef"`
+	Site       string    `json:"site"`
+	Dock       string    `json:"dock"`
+	Start      time.Time `json:"start"`
+	End        time.Time `json:"end"`
+	Source     string    `json:"source"`
+}
+
+// DockSlot is a free slot at a dock.
+type DockSlot struct {
+	Dock  string    `json:"dock"`
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
+}
+
 // PrivateContext is a shipper's private context for its own shipments:
 // what its ERP and warehouse systems own (delivery deadlines, receiving
 // slots, notes). It is read by the shipper's own models and guards, and

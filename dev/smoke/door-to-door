@@ -59,7 +59,16 @@ control: { socket: $work/$5.sock }
 $6
 EOF
 }
-node cymbal cymbal-shoes.example "Cymbal Shoes" "$CY" cy "role: shipper"
+launch="$(date -u -d '+23 days' +%F)"
+cat >"$work/business.yaml" <<EOF
+shipments:
+  - shipperRef: CY-PO-55120
+    requiredBy: $launch
+    receivingSlot: { date: $launch, window: "08:00-12:00", warehouse: "Brazil launch stock, dock 2" }
+EOF
+node cymbal cymbal-shoes.example "Cymbal Shoes" "$CY" cy "role: shipper
+business: { file: $work/business.yaml }
+docks: { mock: \"Dock scheduling (simulated)\", site: Cajamar DC, zone: America/Sao_Paulo, docks: [Dock 1, Dock 2, Dock 3] }"
 node meridian meridian-forwarding.example "Meridian Forwarding" "$MF" mf "roles: [operator, shipper]
 forwarder:
   refPrefix: MF
@@ -144,6 +153,10 @@ for s in '"system":"risk"' 'CT-e issued' 'MDF-e issued' '"system":"tolls"'; do
 done
 ctl mf "/orders/$ref" | grep -q '"Vale-Pedágio\|SM-20' && smoke_fail "$work" "Serra's back office reached Meridian"
 echo "behind Serra's node: cleared, CT-e and MDF-e issued, toll voucher issued"
+
+# Cymbal's dock schedule holds the launch stock's appointment at dock 2.
+ctl cy /docks/appointments/CY-PO-55120 | grep -q "\"dock\":\"Dock 2\",\"start\":\"${launch}T08:00:00-03:00\"" ||
+  smoke_fail "$work" "Cymbal's dock appointment: $(ctl cy /docks/appointments/CY-PO-55120)"
 
 # Cymbal asks Meridian where the order stands, by its own reference: the
 # signed answer names the order, confirmed with its journey.

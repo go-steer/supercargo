@@ -147,7 +147,7 @@ func (a *Assistant) draftOrder(ctx context.Context, c *Conversation, raw json.Ra
 	// its deliver-by: the forwarder would learn it. Nor does any private
 	// date or note in its free text, however written ("Nov 7").
 	for _, d := range []string{in.ReadyFrom, in.DeliverBy} {
-		if slices.Contains(a.Private, d) {
+		if slices.Contains(a.private(), d) {
 			return nil, refuse("%s is a date in our private business context: the order must not carry it. Choose a date with slack, or ask the user", d)
 		}
 	}

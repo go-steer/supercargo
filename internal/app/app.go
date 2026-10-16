@@ -41,9 +41,11 @@ import (
 
 	"github.com/go-steer/supercargo/internal/activity"
 	"github.com/go-steer/supercargo/internal/assistant"
+	"github.com/go-steer/supercargo/internal/backend"
 	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/config"
 	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/docks"
 	"github.com/go-steer/supercargo/internal/edi"
 	"github.com/go-steer/supercargo/internal/forwarder"
 	"github.com/go-steer/supercargo/internal/googleauth"
@@ -97,6 +99,8 @@ type App struct {
 	Logger   *slog.Logger
 	// Business is the shipper's private business context (nil if none).
 	Business *business.Context
+	// Docks is the receiving site's dock schedule (the shipper's own).
+	Docks backend.DockAppointments
 	// Activity is the node's activity stream: the log's source, served live
 	// on the control API at /events.
 	Activity *activity.Bus
@@ -252,6 +256,14 @@ func New(cfg *config.Config, logger *slog.Logger) (_ *App, failed error) {
 		}
 		guard = customerGuard(a.Business.Guard())
 	}
+	if d := cfg.Docks; d != nil {
+		zone, _ := time.LoadLocation(d.Zone) // config checked it
+		m := &docks.Mock{Source: d.Mock, Site: d.Site, Docks: d.Docks, Zone: zone, Now: time.Now}
+		if err := m.Seed(a.Business); err != nil {
+			return nil, err
+		}
+		a.Docks = m
+	}
 	if cfg.Customer() {
 		role := map[string]node.Handler{}
 		if err := a.shipperRole(role); err != nil {
@@ -363,6 +375,9 @@ func New(cfg *config.Config, logger *slog.Logger) (_ *App, failed error) {
 		}
 		if a.Shipper != nil {
 			roles = append(roles, func(m *http.ServeMux) { shipper.RegisterControl(m, a.Shipper, cache) })
+		}
+		if a.Docks != nil {
+			roles = append(roles, func(m *http.ServeMux) { docks.RegisterControl(m, a.Docks) })
 		}
 		if a.Orders != nil {
 			roles = append(roles, func(m *http.ServeMux) {

@@ -52,7 +52,10 @@ type Draft struct {
 	Question *QuestionDraft
 	// Rate, if set, makes this a forwarder's new freight rate for an
 	// order's leg (set on the node, sent to no one).
-	Rate    *RateDraft
+	Rate *RateDraft
+	// Dock, if set, makes this a move of one of our dock appointments
+	// (done on our own schedule, sent to no one).
+	Dock    *DockDraft
 	Created time.Time
 }
 
@@ -96,6 +99,11 @@ func (d *Drafts) add(dr Draft) (Draft, error) {
 	}
 	if dr.Proposal != nil {
 		dr.ID = fmt.Sprintf("PD-%04d", d.next)
+		d.drafts[dr.ID] = dr
+		return dr, nil
+	}
+	if dr.Dock != nil {
+		dr.ID = fmt.Sprintf("AD-%04d", d.next)
 		d.drafts[dr.ID] = dr
 		return dr, nil
 	}

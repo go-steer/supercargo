@@ -68,6 +68,10 @@ func ShipperAssistant(cfg *config.Config, node assistant.Node) (*assistant.Assis
 		}
 		a.Places = f.Places()
 	}
+	// And its dock schedule, through the node (an outside agent's doesn't).
+	if d, ok := node.(assistant.Docks); ok && cfg.Docks != nil {
+		a.Docks = d
+	}
 	return a, nil
 }
 
