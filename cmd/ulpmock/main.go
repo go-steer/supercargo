@@ -21,6 +21,12 @@
 // edifact is a road carrier on a file drop: it acknowledges each transport
 // instruction (IFTMIN) with an APERAK and reports the trip as IFTSTA
 // statuses, on an accelerated clock.
+//
+//	ulpmock qualp --listen 127.0.0.1:8090 [--token-env QUALP_TOKEN]
+//
+// qualp is a stand-in for QualP, the Brazilian routing service: its route
+// and ANTT freight-floor endpoints, in its own wire format, with simulated
+// routes and the ANTT's published coefficients (internal/qualpmock).
 package main
 
 import (
@@ -30,6 +36,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
@@ -38,6 +46,7 @@ import (
 
 	"github.com/go-steer/supercargo/internal/edi"
 	"github.com/go-steer/supercargo/internal/mockcarrier"
+	"github.com/go-steer/supercargo/internal/qualpmock"
 )
 
 func main() {
@@ -51,7 +60,8 @@ func main() {
 }
 
 const usage = `usage:
-  ulpmock edifact --id ID --partner ID --in DIR --out DIR [--ecmr-prefix P] [--zone ZONE] [--hours-per-second N] [--tick D] [--clock trip|shared]`
+  ulpmock edifact --id ID --partner ID --in DIR --out DIR [--ecmr-prefix P] [--zone ZONE] [--hours-per-second N] [--tick D] [--clock trip|shared]
+  ulpmock qualp --listen ADDR [--token-env NAME]`
 
 var prefixPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,39}$`)
 
@@ -62,6 +72,8 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	switch args[0] {
 	case "edifact":
 		return edifact(ctx, args[1:], stderr)
+	case "qualp":
+		return qualp(ctx, args[1:], stderr)
 	default:
 		return fmt.Errorf("unknown command %q\n%s", args[0], usage)
 	}
@@ -111,4 +123,40 @@ func edifact(ctx context.Context, args []string, stderr io.Writer) error {
 	c.Shared = *clock == "shared"
 	log.Info("ulpmock edifact", "id", *id, "partner", *partner, "in", *in, "out", *out)
 	return c.Run(ctx, *tick)
+}
+
+// qualp serves the mock QualP until ctx is done. The token, if any, is read
+// from an environment variable, never a flag (flags show in ps).
+func qualp(ctx context.Context, args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("qualp", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	listen := fs.String("listen", "127.0.0.1:8090", "address to listen on")
+	tokenEnv := fs.String("token-env", "", "environment variable holding the only Access-Token accepted (default: any non-empty one)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	srv := &qualpmock.Server{}
+	if *tokenEnv != "" {
+		if srv.Token = os.Getenv(*tokenEnv); srv.Token == "" {
+			return fmt.Errorf("qualp: %s is empty", *tokenEnv)
+		}
+	}
+	l, err := net.Listen("tcp", *listen)
+	if err != nil {
+		return err
+	}
+	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
+		WriteTimeout: 10 * time.Second, IdleTimeout: time.Minute}
+	log := slog.New(slog.NewTextHandler(stderr, nil))
+	log.Info("ulpmock qualp", "listen", l.Addr().String(), "router", qualpmock.Router)
+	errc := make(chan error, 1)
+	go func() { errc <- hs.Serve(l) }()
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+	}
+	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return hs.Shutdown(sctx) //nolint:contextcheck // the shutdown outlives the cancelled ctx
 }

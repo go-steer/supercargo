@@ -28,6 +28,7 @@ package backend
 
 import (
 	"context"
+	"time"
 
 	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -74,6 +75,52 @@ type RoadAmendment struct {
 	Request   *intents.RoadBookingRequestBody
 	Current   *intents.RoadBookingConfirmationBody
 	Amendment *intents.RoadBookingAmendmentBody
+}
+
+// FreightFloors is a road leg's freight floor and tolls: in Brazil, the
+// ANTT minimum freight (Lei nº 13.703/2018) and the toll plazas whose fares
+// go to the carrier as a Vale-Pedágio voucher, from a routing service
+// (QualP). It is for a forwarder to check a leg's agreed freight against
+// before booking it; what it answers is a third party's, checked before
+// use.
+type FreightFloors interface {
+	Floor(ctx context.Context, r FloorRequest) (*Floor, error)
+}
+
+// FloorRequest is a leg to price: its places in order (free text, e.g.
+// "Santos, SP"), the vehicle's loaded axles, and the ANTT load type and
+// table (A: the carrier's own tractor and trailer).
+type FloorRequest struct {
+	Locations []string
+	Axles     int
+	LoadType  string
+	Table     string
+}
+
+// Floor is a leg's floor: the distance and duration, the toll plazas and
+// their total for the axles asked, the ANTT floor for the distance (the
+// freight, of which LoadUnload is the loading and unloading part, in
+// reais), the resolution it comes from, and who answered ("qualp", or
+// "simulated qualp").
+type Floor struct {
+	DistanceKm    float64       `json:"distanceKm"`
+	Duration      time.Duration `json:"duration"`
+	Tolls         []Toll        `json:"tolls"`
+	TollTotal     float64       `json:"tollTotal"`
+	Freight       float64       `json:"freight"`
+	LoadUnload    float64       `json:"loadUnload"`
+	Resolution    string        `json:"resolution"`
+	ResolutionURL string        `json:"resolutionUrl,omitempty"`
+	Source        string        `json:"source"`
+}
+
+// Toll is a toll plaza on a leg, with its fare for the leg's axles.
+type Toll struct {
+	Name     string  `json:"name"`
+	Operator string  `json:"operator"`
+	Road     string  `json:"road"`
+	State    string  `json:"state"`
+	Amount   float64 `json:"amount"`
 }
 
 // PrivateContext is a shipper's private context for its own shipments:
