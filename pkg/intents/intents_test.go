@@ -223,7 +223,7 @@ func TestSupported(t *testing.T) {
 			t.Errorf("Supported(%s) = false", in)
 		}
 	}
-	for _, in := range []string{DelegationGrant, "ulp.nope", ""} {
+	for _, in := range []string{"ulp.delegation.revoke", "ulp.nope", ""} {
 		if Supported(in) {
 			t.Errorf("Supported(%s) = true", in)
 		}
@@ -232,9 +232,9 @@ func TestSupported(t *testing.T) {
 
 func TestDecodeUnsupported(t *testing.T) {
 	e := request(`{}`)
-	e.Header.Intent = DelegationGrant
+	e.Header.Intent = "ulp.delegation.revoke"
 	if _, err := Decode(e); !errors.Is(err, ErrUnsupportedIntent) {
-		t.Errorf("Decode(%s) = %v, want ErrUnsupportedIntent", DelegationGrant, err)
+		t.Errorf("Decode(%s) = %v, want ErrUnsupportedIntent", e.Header.Intent, err)
 	}
 }
 

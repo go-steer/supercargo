@@ -27,6 +27,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/go-steer/supercargo/internal/store"
+	"github.com/go-steer/supercargo/pkg/delegation"
 	"github.com/go-steer/supercargo/pkg/discovery"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -95,7 +96,14 @@ func (n *Node) Process(ctx context.Context, msg []byte) (res rest.Result) {
 	if rej != nil {
 		return n.refuse(ctx, &h, ev, rej)
 	}
-	req := &Request{Envelope: env, Body: body}
+	req := &Request{Envelope: env, Body: body, now: n.cfg.Now(), skew: n.cfg.MaxSkew}
+	if len(env.Attachments.Delegation) > 0 {
+		// A delegation is verified with its issuer's own key before any
+		// handler sees it; what it grants is the handler's to check.
+		if req.Delegation, rej = n.verifyDelegation(ctx, env.Attachments.Delegation); rej != nil {
+			return n.refuse(ctx, &h, ev, rej)
+		}
+	}
 	handler := n.cfg.Handlers[h.Intent]
 	if rej := n.authorize(ctx, handler, req); rej != nil {
 		return n.refuse(ctx, &h, ev, rej)
@@ -122,6 +130,30 @@ func (n *Node) Process(ctx context.Context, msg []byte) (res rest.Result) {
 		return rest.Result{Status: http.StatusInternalServerError}
 	}
 	return rest.Result{Response: out}
+}
+
+// badDelegation is the one refusal for a delegation that isn't well formed
+// or isn't signed by its issuer.
+var badDelegation = Reject(intents.CodeForbidden, "The attached delegation is not valid.", "")
+
+// verifyDelegation parses an attached delegation token and verifies it
+// with the key its claimed issuer publishes under its kid.
+func (n *Node) verifyDelegation(ctx context.Context, raw []byte) (v *delegation.Verified, rej *Rejection) {
+	ctx, span := n.start(ctx, "ulp.delegation")
+	defer func() {
+		if rej != nil {
+			span.SetStatus(codes.Error, bounded(rej.Reason))
+		}
+		span.End()
+	}()
+	u, err := delegation.Parse(raw)
+	if err == nil {
+		v, err = u.Verify(ctx, n.cfg.Keys.Key)
+	}
+	if err != nil {
+		return nil, &Rejection{Code: badDelegation.Code, Detail: badDelegation.Detail, Reason: "delegation: " + err.Error()}
+	}
+	return v, nil
 }
 
 // authorize runs the handler's authorization in its span, which ends even

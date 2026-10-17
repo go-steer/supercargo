@@ -42,6 +42,10 @@ func (s *Shipper) Cancel(ctx context.Context, carrier, ref string) (*intents.Boo
 	if s.InOrder != nil && s.InOrder(carrier, ref) {
 		return nil, fmt.Errorf("%w: %s with %s", ErrLegOfOrder, ref, carrier)
 	}
+	if b, err := s.Bookings.Get(carrier, ref); err == nil && b.Delegated != nil {
+		// Followed by another company's grant: only its shipper cancels it.
+		return nil, fmt.Errorf("%w: %s with %s is followed by delegation", ErrNotOurBooking, ref, carrier)
+	}
 	return s.CancelLeg(ctx, carrier, ref)
 }
 

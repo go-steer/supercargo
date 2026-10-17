@@ -62,6 +62,7 @@ import (
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/internal/telemetry"
 	"github.com/go-steer/supercargo/internal/webui"
+	"github.com/go-steer/supercargo/pkg/delegation"
 	"github.com/go-steer/supercargo/pkg/discovery"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -128,6 +129,8 @@ type App struct {
 	Publisher *operator.Publisher
 	Simulator *operator.Simulator
 	Control   *http.Server
+	// grants takes the delegations other companies hand this node.
+	grants *shipper.Grants
 	// Orders is a forwarder's order desk, and Orchestrator plans and books
 	// its orders' legs (nil unless configured).
 	Orders       *forwarder.Orders
@@ -309,7 +312,10 @@ func New(cfg *config.Config, logger *slog.Logger) (_ *App, failed error) {
 	}
 	if a.Customer != nil {
 		a.Shipper = &shipper.Shipper{Node: n, Bookings: a.Customer.Bookings, Events: a.Customer.Events, Now: time.Now,
-			NoBooking: !cfg.Has(config.RoleShipper)}
+			NoBooking: !cfg.Has(config.RoleShipper), Endpoint: RESTURL(cfg)}
+		if a.grants != nil {
+			a.grants.Shipper = a.Shipper
+		}
 		if a.DB != nil {
 			a.Shipper.OnSaveError = func(err error) { a.Logger.Error("shipper state not saved", "error", err) }
 			if err := a.Shipper.PersistSent(a.DB.Bucket("shipper.sent")); err != nil {
@@ -778,6 +784,12 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 		log.Info("inquiry responder", "model", model.Name(), "skills", skillIDs(agentSkills))
 	}
 	handlers[intents.OceanTnTRequest] = &operator.StatusService{Bookings: a.Carrier.Bookings, Log: a.Carrier.Events}
+	// A company the booking's shipper delegated it to subscribes to its
+	// events (milestone 7).
+	handlers[intents.TnTSubscriptionRequest] = &operator.SubscriptionService{Bookings: a.Carrier.Bookings, Now: time.Now,
+		OnSubscribed: func(b store.Booking, d store.Delegate) {
+			a.Logger.Info("delegated subscription", "booking", b.Ref, "grantee", d.Grantee, "granted_by", b.Shipper, "token", d.TokenID, "until", d.Expires)
+		}}
 	handlers[intents.TnTInquiry] = &operator.InquiryService{Bookings: a.Carrier.Bookings, Log: a.Carrier.Events, Model: model, Name: cfg.Name, Skills: agentSkills,
 		// A forwarder's relay (made later, before the node serves) knows each
 		// re-issued record's leg.
@@ -911,6 +923,31 @@ func (a *App) shipperRole(handlers map[string]node.Handler) error {
 	}
 	handlers[intents.TnTEvent] = inbound
 	handlers[intents.TnTAlert] = inbound
+	// A booking another company's shipper granted us (milestone 7): kept,
+	// then subscribed to with its carrier, off the request.
+	endpoint := RESTURL(cfg)
+	from := map[string]bool{}
+	if cfg.Grants != nil {
+		for _, d := range cfg.Grants.From {
+			from[d] = true
+		}
+	}
+	a.grants = &shipper.Grants{Endpoint: endpoint, From: from, OnGranted: func(b store.Booking) {
+		a.Logger.Info("delegation received", "booking", b.Ref, "carrier", b.Operator, "granted_by", b.Delegated.Issuer, "until", b.Delegated.Expires)
+		if !slices.Contains(b.Delegated.Scope, delegation.ScopeSubscribe) {
+			return
+		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), shipper.GrantTimeout)
+			defer cancel()
+			if c, err := a.Shipper.Subscribe(ctx, b.Operator, b.Ref, endpoint); err != nil {
+				a.Logger.Warn("delegated subscription failed", "booking", b.Ref, "carrier", b.Operator, "error", err)
+			} else {
+				a.Logger.Info("delegated subscription", "booking", b.Ref, "carrier", b.Operator, "status", c.Status)
+			}
+		}()
+	}}
+	handlers[intents.DelegationGrant] = a.grants
 	// A forwarder's final answer to an order taken as pending.
 	handlers[intents.ForwardingConfirmation] = &shipper.OrderAnswers{Bookings: a.Customer.Bookings,
 		OnAnswer: func(b store.Booking) { a.orderEntry(b, "answered by its forwarder") }}

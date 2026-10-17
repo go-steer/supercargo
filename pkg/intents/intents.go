@@ -128,6 +128,12 @@ var specs = map[string]spec{
 	// answered with the order's reference in the header when found.
 	ForwardingStatusRequest:  {bookingRef: forbidden, inReplyTo: forbidden, delegation: forbidden, newBody: func() Body { return &ForwardingStatusRequestBody{} }},
 	ForwardingStatusResponse: {bookingRef: optional, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &ForwardingStatusResponseBody{} }},
+	// Delegated access (milestone 7): a grant handed by the booking's
+	// shipper to its grantee, and the grantee's subscription with the
+	// carrier, each carrying the token.
+	DelegationGrant:             {bookingRef: required, inReplyTo: forbidden, delegation: required, newBody: func() Body { return &DelegationGrantBody{} }},
+	TnTSubscriptionRequest:      {bookingRef: required, inReplyTo: forbidden, delegation: required, newBody: func() Body { return &TnTSubscriptionRequestBody{} }},
+	TnTSubscriptionConfirmation: {bookingRef: required, inReplyTo: required, delegation: forbidden, newBody: func() Body { return &TnTSubscriptionConfirmationBody{} }},
 }
 
 // Supported reports whether Decode has a body type for intent.

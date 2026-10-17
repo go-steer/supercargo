@@ -89,6 +89,11 @@ type push struct {
 	booking store.Booking
 	body    intents.Body // a private copy
 	id      string
+	// to and endpoint are whom it goes to: the booking's shipper, or a
+	// delegate (a company the shipper granted the booking's events), whose
+	// pushes stop at until (its grant's end; zero for the shipper).
+	to, endpoint string
+	until        time.Time
 }
 
 var defaultBackoff = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second}
@@ -153,10 +158,16 @@ func (p *Publisher) Publish(b store.Booking, body intents.Body) error {
 		p.mu.Unlock()
 		return ErrClosed
 	}
+	// The delegates are the booking's as stored now: a caller's copy (the
+	// simulator's, from when the voyage started) may predate them.
+	delegates := b.Delegates
 	if p.Bookings != nil {
-		if cur, err := p.Bookings.Get(b.Operator, b.Ref); err == nil && cur.Cancelled() {
-			p.mu.Unlock()
-			return fmt.Errorf("%w: %s", ErrCancelled, b.Ref)
+		if cur, err := p.Bookings.Get(b.Operator, b.Ref); err == nil {
+			if cur.Cancelled() {
+				p.mu.Unlock()
+				return fmt.Errorf("%w: %s", ErrCancelled, b.Ref)
+			}
+			delegates = cur.Delegates
 		}
 	}
 	added, err := p.Log.Add(b.Operator, b.Ref, store.Record{ID: id, Intent: body.Intent(), Body: raw, At: p.Now()})
@@ -168,17 +179,54 @@ func (p *Publisher) Publish(b store.Booking, body intents.Body) error {
 		p.mu.Unlock()
 		return fmt.Errorf("%w: %s", ErrDuplicate, id)
 	}
-	sub := b.Subscription()
-	if sub == nil || !slices.Contains(sub.Intents, body.Intent()) {
-		p.mu.Unlock()
-		return nil // recorded; nobody asked for it
+	// Whom it goes to: the shipper's subscription, then each delegate's
+	// still in force (its grant not expired).
+	var targets []push
+	if sub := b.Subscription(); sub != nil && slices.Contains(sub.Intents, body.Intent()) {
+		targets = append(targets, push{booking: b, body: own, id: id, to: b.Shipper, endpoint: sub.Endpoint})
 	}
-	key := b.Shipper + "/" + b.Ref
+	now := p.Now()
+	for _, d := range delegates {
+		if d.Active(now) && slices.Contains(d.Subscription.Intents, body.Intent()) {
+			dc, err := copyBody(body, raw) // each queue its own copy
+			if err != nil {
+				p.mu.Unlock()
+				return err
+			}
+			targets = append(targets, push{booking: b, body: dc, id: id, to: d.Grantee, endpoint: d.Subscription.Endpoint, until: d.Expires})
+		}
+	}
+	var shipperErr error
+	var delegateErrs []error
+	for _, t := range targets {
+		if err := p.enqueue(t); err != nil {
+			if t.to == b.Shipper && t.until.IsZero() {
+				shipperErr = err
+			} else {
+				delegateErrs = append(delegateErrs, err)
+			}
+		}
+	}
+	p.mu.Unlock()
+	// A delegate's push not queued is OnDrop's to report; the caller hears
+	// only whether the shipper's was.
+	for _, err := range delegateErrs {
+		p.drop(b.Ref, id, err)
+	}
+	if shipperErr != nil {
+		return p.dropped(b.Ref, id, shipperErr)
+	}
+	return nil // recorded, and queued for whoever asked for it
+}
+
+// enqueue queues t on its subscriber's queue, starting its worker; p.mu
+// is held.
+func (p *Publisher) enqueue(t push) error {
+	key := t.to + "/" + t.booking.Ref
 	q, ok := p.queues[key]
 	if !ok {
 		if len(p.queues) >= p.MaxWorkers {
-			p.mu.Unlock()
-			return p.dropped(b.Ref, id, errors.New("too many subscriptions with pushes in flight"))
+			return errors.New("too many subscriptions with pushes in flight")
 		}
 		q = make(chan push, p.QueueLen)
 		p.queues[key] = q
@@ -186,12 +234,10 @@ func (p *Publisher) Publish(b store.Booking, body intents.Body) error {
 		go p.work(key, q)
 	}
 	select {
-	case q <- push{booking: b, body: own, id: id}:
-		p.mu.Unlock()
+	case q <- t:
 		return nil
 	default:
-		p.mu.Unlock()
-		return p.dropped(b.Ref, id, errors.New("subscription queue full"))
+		return errors.New("subscription queue full")
 	}
 }
 
@@ -262,10 +308,14 @@ func (p *Publisher) deliver(item push) {
 	b := item.booking
 	var err error
 	for attempt := 0; ; attempt++ {
-		h := envelope.NewHeader(item.body.Intent(), p.Domain, b.Shipper, p.Now())
+		if !item.until.IsZero() && !p.Now().Before(item.until) {
+			err = errors.New("the delegation ended before delivery")
+			break
+		}
+		h := envelope.NewHeader(item.body.Intent(), p.Domain, item.to, p.Now())
 		ref := b.Ref
 		h.BookingRef = &ref
-		err = p.Pusher.Push(p.ctx, h, item.body, b.Subscription().Endpoint)
+		err = p.Pusher.Push(p.ctx, h, item.body, item.endpoint)
 		if err == nil || !retryable(err) || attempt >= len(p.Backoff) {
 			break
 		}

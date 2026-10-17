@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/go-steer/supercargo/pkg/delegation"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/transport/a2a"
@@ -107,6 +108,31 @@ func (n *Node) Push(ctx context.Context, h envelope.Header, body intents.Body, e
 	return err
 }
 
+type delegationKey struct{}
+
+// WithDelegation attaches token (a delegation token, as delegation.Seal
+// made it) to the envelopes sent with ctx: a grant handed to its grantee,
+// or a grantee's request to the carrier.
+func WithDelegation(ctx context.Context, token []byte) context.Context {
+	return context.WithValue(ctx, delegationKey{}, append([]byte(nil), token...))
+}
+
+func delegationOf(ctx context.Context) json.RawMessage {
+	t, _ := ctx.Value(delegationKey{}).([]byte)
+	if len(t) == 0 {
+		return nil
+	}
+	return json.RawMessage(t)
+}
+
+// SealDelegation signs g as this node, its issuer.
+func (n *Node) SealDelegation(g *delegation.Grant) ([]byte, error) {
+	if g.Issuer != n.cfg.Domain {
+		return nil, fmt.Errorf("node: a grant issued by %q, not this node", g.Issuer)
+	}
+	return delegation.Seal(g, n.cfg.KID, n.cfg.Signer)
+}
+
 func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Body, expect []string, post func(context.Context, []byte) ([]byte, string, error)) (res *Request, err error) {
 	ctx, span := n.start(ctx, "ulp.egress", trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(AttrIntent.String(h.Intent), AttrReceiver.String(h.Receiver), AttrMessageID.String(h.MessageID)))
@@ -142,7 +168,7 @@ func (n *Node) exchange(ctx context.Context, h envelope.Header, body intents.Bod
 	}
 	// The header names the payload schema the intent requires (or none).
 	intents.SetDialect(&h)
-	out := &envelope.Envelope{Header: h, Body: b}
+	out := &envelope.Envelope{Header: h, Body: b, Attachments: envelope.Attachments{Delegation: delegationOf(ctx)}}
 	msg, err := envelope.Seal(out, n.cfg.KID, n.cfg.Signer)
 	if err != nil {
 		return nil, err
