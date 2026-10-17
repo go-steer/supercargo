@@ -112,6 +112,7 @@ main { flex: 1; display: grid; grid-template-columns: minmax(340px, 1fr) minmax(
 .sev-medium { color: var(--yellow); font-weight: 400 !important; }
 .sev-low { color: var(--text-dim); font-weight: 400 !important; }
 .chip.model { border-image: var(--aurora) 1; border-radius: 0; }
+.chip.deleg { border-color: color-mix(in srgb, var(--blue) 60%, transparent); color: var(--blue); }
 .verdict { font-size: 11px; }
 .verdict.ok { color: var(--green); }
 .verdict.warn { color: var(--yellow); }

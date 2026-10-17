@@ -39,6 +39,20 @@ type BookRequest struct {
 	Request  intents.BookingRequestBody `json:"request"`
 }
 
+// RoadBookRequest is the body of POST /book/road: a truck leg to book with
+// Carrier, which a person has confirmed.
+type RoadBookRequest struct {
+	Carrier string                         `json:"carrier"`
+	Request intents.RoadBookingRequestBody `json:"request"`
+}
+
+// RoadBookResponse is its answer: the carrier's confirmation, or why
+// there is none.
+type RoadBookResponse struct {
+	Confirmation *intents.RoadBookingConfirmationBody `json:"confirmation,omitempty"`
+	Error        string                               `json:"error,omitempty"`
+}
+
 // BookResponse is its answer: the operator's confirmation, or why there is
 // none.
 type BookResponse struct {
@@ -185,6 +199,8 @@ func RegisterControl(mux *http.ServeMux, s *Shipper, profiles rest.Profiles) {
 			control.Answer(w, http.StatusNotFound, GrantResponse{Error: err.Error()})
 		case errors.Is(err, delegation.ErrMalformed):
 			control.Answer(w, http.StatusBadRequest, GrantResponse{Error: err.Error()})
+		case errors.Is(err, business.ErrLeak):
+			control.Answer(w, http.StatusUnprocessableEntity, GrantResponse{Error: leakMessage})
 		case err != nil:
 			control.Answer(w, http.StatusBadGateway, GrantResponse{Error: err.Error()})
 		default:
@@ -220,6 +236,36 @@ func RegisterControl(mux *http.ServeMux, s *Shipper, profiles rest.Profiles) {
 			return
 		}
 		control.Answer(w, http.StatusOK, ProfileResponse{Profile: SummarizeProfile(doc)})
+	})
+	// A truck leg booked directly (a truckload), after a person confirmed it.
+	mux.HandleFunc("POST /book/road", func(w http.ResponseWriter, r *http.Request) {
+		var req RoadBookRequest
+		if err := control.Decode(r, &req); err != nil {
+			control.Answer(w, http.StatusBadRequest, RoadBookResponse{Error: err.Error()})
+			return
+		}
+		if !envelope.ValidDomain(req.Carrier) || req.Carrier == s.Node.Domain() {
+			control.Answer(w, http.StatusBadRequest, RoadBookResponse{Error: "carrier must be another party's lowercase domain"})
+			return
+		}
+		if err := req.Request.Validate(); err != nil {
+			control.Answer(w, http.StatusBadRequest, RoadBookResponse{Error: "request: " + err.Error()})
+			return
+		}
+		conf, err := s.BookRoad(context.WithoutCancel(r.Context()), req.Carrier, &req.Request)
+		switch {
+		case errors.Is(err, ErrNoShipperRole):
+			control.Answer(w, http.StatusForbidden, RoadBookResponse{Error: err.Error()})
+		case errors.Is(err, business.ErrLeak):
+			control.Answer(w, http.StatusUnprocessableEntity, RoadBookResponse{Error: leakMessage})
+		case errors.Is(err, ErrPlanMismatch):
+			// Confirmed by the carrier, not recorded here: take it up with it.
+			control.Answer(w, http.StatusConflict, RoadBookResponse{Error: err.Error() + "; the carrier may hold the booking: check with it"})
+		case err != nil:
+			control.Answer(w, http.StatusBadGateway, RoadBookResponse{Error: err.Error()})
+		default:
+			control.Answer(w, http.StatusOK, RoadBookResponse{Confirmation: conf})
+		}
 	})
 	mux.HandleFunc("POST /book", func(w http.ResponseWriter, r *http.Request) {
 		var req BookRequest

@@ -102,6 +102,10 @@ type Assistant struct {
 	// seen is what the model has learned of our dock appointments: as
 	// private as the business file.
 	seen privateSet
+	// NoBooking is a receiver's assistant: its node books nothing, so it
+	// offers no booking tools.
+	NoBooking bool
+
 	// Language is the language it answers in (llm.Languages; "" English).
 	Language string
 	// Carrier, if set, makes this the carrier's assistant (the operator

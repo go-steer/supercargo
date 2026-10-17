@@ -31,8 +31,8 @@ import (
 // ulpchat, in process for the browser UI. Each caller gets its own, with
 // its own drafts: one assistant per role, one conversation each (#75).
 func ShipperAssistant(cfg *config.Config, node assistant.Node) (*assistant.Assistant, error) {
-	if !cfg.Has(config.RoleShipper) {
-		return nil, fmt.Errorf("%s has roles %v; the assistant is the shipper's so far, and needs the shipper role (#75)", cfg.Domain, cfg.Roles)
+	if !cfg.Customer() {
+		return nil, fmt.Errorf("%s has roles %v; the assistant is the customer side's, and needs the shipper or receiver role (#75)", cfg.Domain, cfg.Roles)
 	}
 	if cfg.LLM == nil {
 		return nil, errors.New("the configuration has no llm section: the assistant needs a model (provider: fake needs no key)")
@@ -80,14 +80,14 @@ func ShipperAssistant(cfg *config.Config, node assistant.Node) (*assistant.Assis
 // over MCP (internal/mcpserver). Its business dates and notes are private,
 // as for the assistant: no question to a carrier may carry them.
 func ToolAssistant(cfg *config.Config, node assistant.Node) (*assistant.Assistant, error) {
-	if !cfg.Has(config.RoleShipper) {
-		return nil, fmt.Errorf("%s has roles %v; the shipper's tools need the shipper role", cfg.Domain, cfg.Roles)
+	if !cfg.Customer() {
+		return nil, fmt.Errorf("%s has roles %v; the shipper's tools need the shipper or receiver role", cfg.Domain, cfg.Roles)
 	}
 	book, dir, err := Partners(cfg)
 	if err != nil {
 		return nil, err
 	}
-	a := &assistant.Assistant{Node: node, Drafts: &assistant.Drafts{},
+	a := &assistant.Assistant{Node: node, Drafts: &assistant.Drafts{}, NoBooking: !cfg.Has(config.RoleShipper),
 		Self: assistant.Self{Domain: cfg.Domain, Name: cfg.Name, Endpoint: RESTURL(cfg)}, AddressBook: book}
 	if dir != nil {
 		a.Directory = dir

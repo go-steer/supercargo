@@ -79,8 +79,10 @@ type Place struct {
 	FacilityCode   string   `json:"facility_code,omitempty"`
 	UNLocationCode string   `json:"un_location_code"`
 	Address        *Address `json:"address,omitempty"`
-	Earliest       string   `json:"earliest,omitempty"` // UTC, whole seconds
-	Latest         string   `json:"latest,omitempty"`
+	// PlusCode pins the place where an address can't, as a road stop's.
+	PlusCode string `json:"plus_code,omitempty"`
+	Earliest string `json:"earliest,omitempty"` // UTC, whole seconds
+	Latest   string `json:"latest,omitempty"`
 }
 
 // ForwardingRequestBody is the body of ulp.forwarding.request: move these
@@ -164,6 +166,9 @@ func (p *Place) validate(field string) error {
 	}
 	if p.Facility != "" {
 		errs = append(errs, text(field+".facility", p.Facility, 128, false))
+	}
+	if p.PlusCode != "" {
+		errs = append(errs, match(field+".plus_code", p.PlusCode, plusCodePattern))
 	}
 	if p.FacilityCode != "" {
 		errs = append(errs, match(field+".facility_code", p.FacilityCode, facilityCodePattern))

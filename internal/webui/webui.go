@@ -571,7 +571,7 @@ func (s *server) assistantSides(p Persona) []string {
 		return out
 	}
 	for _, side := range s.cfg.AssistantSides {
-		if slices.Contains(p.Roles, assistantRoles[side]) {
+		if slices.ContainsFunc(p.Roles, func(r string) bool { return slices.Contains(assistantRoles[side], r) }) {
 			out = append(out, side)
 		}
 	}
@@ -585,7 +585,7 @@ const (
 )
 
 // assistantRoles is the role each side's assistant needs.
-var assistantRoles = map[string]string{SideCustomer: RoleShipper, SideOperator: RoleOperator}
+var assistantRoles = map[string][]string{SideCustomer: {RoleShipper, RoleReceiver}, SideOperator: {RoleOperator}}
 
 // sideOf is the side an assistant request is for: ?side=operator, or the
 // customer side.
@@ -600,7 +600,7 @@ func sideOf(r *http.Request) string {
 // assistant.
 func (s *server) assistantRole(h func(http.ResponseWriter, *http.Request, Persona)) func(http.ResponseWriter, *http.Request, Persona) {
 	return func(w http.ResponseWriter, r *http.Request, p Persona) {
-		s.role([]string{assistantRoles[sideOf(r)]}, h)(w, r, p)
+		s.role(assistantRoles[sideOf(r)], h)(w, r, p)
 	}
 }
 

@@ -82,8 +82,12 @@ type Stop struct {
 	FacilityCode   string   `json:"facility_code,omitempty"`
 	UNLocationCode string   `json:"un_location_code"`
 	Address        *Address `json:"address,omitempty"`
-	Earliest       string   `json:"earliest,omitempty"` // UTC, whole seconds
-	Latest         string   `json:"latest,omitempty"`
+	// PlusCode pins the stop where an address can't (a farm's loading
+	// silo): a full Open Location Code, e.g. "58V75885+8J", ten or eleven
+	// digits (a square of about 14 m, or 3 m).
+	PlusCode string `json:"plus_code,omitempty"`
+	Earliest string `json:"earliest,omitempty"` // UTC, whole seconds
+	Latest   string `json:"latest,omitempty"`
 }
 
 // DocumentRef points at a document a law or a platform keeps: a CT-e or
@@ -250,6 +254,9 @@ func (s *Stop) validate(field string) error {
 	}
 	if s.FacilityCode != "" {
 		errs = append(errs, match(field+".facility_code", s.FacilityCode, facilityCodePattern))
+	}
+	if s.PlusCode != "" {
+		errs = append(errs, match(field+".plus_code", s.PlusCode, plusCodePattern))
 	}
 	if s.Address != nil {
 		errs = append(errs, s.Address.validate(field+".address"), countryOf(field, s.UNLocationCode, s.Address))

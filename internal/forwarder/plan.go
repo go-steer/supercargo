@@ -427,12 +427,12 @@ func (o *Orchestrator) bookLeg(ctx context.Context, b store.Booking, i int, s St
 			Equipment:  req.Equipment, Cargo: req.Cargo, Subscription: sub,
 		}
 		if i == 0 {
-			r.Pickup.Address = req.PlaceOfReceipt.Address
+			r.Pickup.Address, r.Pickup.PlusCode = req.PlaceOfReceipt.Address, req.PlaceOfReceipt.PlusCode
 		}
 		if last {
 			consignee := req.Consignee
 			r.Consignee = &consignee
-			r.Delivery.Address, r.Delivery.Latest = req.PlaceOfDelivery.Address, req.PlaceOfDelivery.Latest
+			r.Delivery.Address, r.Delivery.Latest, r.Delivery.PlusCode = req.PlaceOfDelivery.Address, req.PlaceOfDelivery.Latest, req.PlaceOfDelivery.PlusCode
 		}
 		if len(containers) <= totalContainers(req.Equipment) {
 			r.EquipmentReferences = containers

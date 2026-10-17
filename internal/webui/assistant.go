@@ -401,6 +401,12 @@ func (s *server) assistantSend(w http.ResponseWriter, r *http.Request, _ Persona
 			} else if strings.HasPrefix(req.DraftID, "PD-") {
 				_ = c.conv.Note("Confirming " + req.DraftID + " failed with an unknown outcome: the amendment may have reached the carrier. " +
 					"The draft is gone; tell the user to check the order's proposals before confirming again.")
+			} else if strings.HasPrefix(req.DraftID, "TD-") {
+				_ = c.conv.Note("Sending truckload " + req.DraftID + " failed with an unknown outcome: it may have reached the carrier. " +
+					"The draft is gone; tell the user to check the shipments before booking again.")
+			} else if strings.HasPrefix(req.DraftID, "GD-") {
+				_ = c.conv.Note("Sharing " + req.DraftID + " failed with an unknown outcome: the company may have the grant. " +
+					"The draft is gone; tell the user to check before sharing again.")
 			} else if strings.HasPrefix(req.DraftID, "AD-") {
 				_ = c.conv.Note("Moving dock appointment " + req.DraftID + " failed with an unknown outcome: it may have moved (nothing goes to anyone either way). " +
 					"The draft is gone; tell the user to check the appointment before moving it again.")
@@ -524,6 +530,12 @@ func sentOutcome(sent *assistant.Sent) string {
 	}
 	if a := sent.Asked; a != nil && sent.Draft.Question != nil {
 		return "Asked " + a.Operator + " about " + sent.Draft.Question.BookingRef + " (" + id + "), signed. It answered; the assistant reports it below."
+	}
+	if c := sent.Trucked; c != nil {
+		return strings.TrimSpace("Sent truckload " + id + " to " + sent.Draft.Road.Carrier + ", signed. Answer: " + c.Status + " " + c.BookingRef)
+	}
+	if g := sent.Granted; g != nil {
+		return "Shared " + sent.Draft.Grant.BookingRef + " with " + g.Grantee + " (" + id + "), signed, until " + g.Expires.UTC().Format("2006-01-02") + "."
 	}
 	if k := sent.Docked; k != nil {
 		return "Moved the dock appointment " + k.ID + " for " + k.ShipperRef + " (" + id + "; sent to no one): " + k.Dock + ", " + k.Start.Format("2006-01-02 15:04 -07:00") + "."

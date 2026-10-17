@@ -141,6 +141,10 @@ func (a *Assistant) tools() []llm.Tool {
 	// The company's own assistant reads its private context, and orders
 	// between its places; an outside agent's (ToolAssistant) does neither.
 	out := Tools
+	if a.NoBooking {
+		// A receiver: it follows and asks; it books nothing.
+		out = slices.DeleteFunc(slices.Clone(out), func(t llm.Tool) bool { return t.Name == ToolDraftBooking })
+	}
 	if a.Own {
 		// A drafted question goes to a dialog in the company's own UI; an
 		// outside agent's session has none.
@@ -149,8 +153,11 @@ func (a *Assistant) tools() []llm.Tool {
 	if a.Business != nil {
 		out = append(slices.Clone(out), BusinessTool)
 	}
-	if len(a.Places) > 0 {
-		out = append(slices.Clone(out), DraftOrderTool)
+	if len(a.Places) > 0 && !a.NoBooking {
+		out = append(slices.Clone(out), DraftOrderTool, DraftRoadTool)
+	}
+	if a.Own {
+		out = append(slices.Clone(out), DraftGrantTool)
 	}
 	if a.Docks != nil {
 		out = append(slices.Clone(out), DockTools...)

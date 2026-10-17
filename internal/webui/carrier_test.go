@@ -158,6 +158,10 @@ func TestSentOutcome(t *testing.T) {
 			Order: &assistant.OrderDraft{Forwarder: "meridian-forwarding.example"}}, Ordered: &intents.ForwardingConfirmationBody{Status: "pending", OrderRef: "MF-0007"}},
 		"Set the rate for leg 3 of MF-0007 to R$ 1180.00 (RD-0002; sent to no one). Freight: ok.": {Draft: assistant.Draft{ID: "RD-0002",
 			Rate: &assistant.RateDraft{OrderRef: "MF-0007", Leg: 3, Rate: 1180}}, Rated: "ok"},
+		"Sent truckload TD-0004 to serra-transportes.example, signed. Answer: confirmed SR-BKG-0913": {Draft: assistant.Draft{ID: "TD-0004",
+			Road: &assistant.RoadDraft{Carrier: "serra-transportes.example"}}, Trucked: &intents.RoadBookingConfirmationBody{Status: "confirmed", BookingRef: "SR-BKG-0913"}},
+		"Shared SR-BKG-0913 with mercado-aurora.example (GD-0005), signed, until 2026-11-01.": {Draft: assistant.Draft{ID: "GD-0005",
+			Grant: &assistant.GrantDraft{BookingRef: "SR-BKG-0913"}}, Granted: &store.IssuedGrant{Grantee: "mercado-aurora.example", Expires: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)}},
 		"Moved the dock appointment AG-1 for CY-PO-55120 (AD-0003; sent to no one): Dock 1, 2026-11-11 14:00 +00:00.": {Draft: assistant.Draft{ID: "AD-0003"},
 			Docked: &backend.Appointment{ID: "AG-1", ShipperRef: "CY-PO-55120", Dock: "Dock 1", Start: time.Date(2026, 11, 11, 14, 0, 0, 0, time.UTC)}},
 	} {

@@ -549,7 +549,17 @@ const loadLeft = latest(async () => {
     for (const s of list) {
       const card = el('div', 'booking');
       const top = el('div', 'booking-top');
-      top.append(el('b', null, s.bookingRef), el('span', 'dim', state.activeSide === 'operator' ? s.shipper : s.operator), el('span', 'chip fam-tnt', s.status || 'booked'));
+      top.append(el('b', null, s.bookingRef), el('span', 'dim', state.activeSide === 'operator' ? s.shipper : s.operator), el('span', 'chip fam-tnt', s.status || (s.delegatedBy ? 'followed' : 'booked')));
+      if (s.delegatedBy) {
+        const chip = el('span', 'chip deleg', 'delegated by ' + s.delegatedBy);
+        chip.dataset.tip = `Followed by ${s.delegatedBy}'s signed delegation, until ${day(s.delegatedUntil)}: its carrier checks it on every request.`;
+        top.appendChild(chip);
+      }
+      if ((s.sharedWith || []).length) {
+        const chip = el('span', 'chip deleg', 'shared with ' + s.sharedWith.join(', '));
+        chip.dataset.tip = 'Delegated by you: they follow this booking by your signed grant.';
+        top.appendChild(chip);
+      }
       card.appendChild(top);
       const route = `${s.origin?.unLocode || ''} ${s.origin?.name || ''} → ${s.destination?.unLocode || ''} ${s.destination?.name || ''}`;
       card.appendChild(el('div', 'summary-line', route));
@@ -1080,6 +1090,8 @@ function draftDialog(d, side) {
   else if (d.proposal) proposalDraftDialog(d, chatVia(side));
   else if (d.rate) rateDraftDialog(d, chatVia(side));
   else if (d.dock) dockDraftDialog(d, chatVia(side));
+  else if (d.road) roadDraftDialog(d, chatVia(side));
+  else if (d.grant) grantDraftDialog(d, chatVia(side));
   else if (d.question) questionDraftDialog(d, chatVia(side));
   else bookingDialog(d, chatVia(side));
 }
@@ -1107,6 +1119,45 @@ function proposalDraftDialog(d, via) {
   const discard = discardLink(d, via, () => dlg.close());
   dlg = modal(`Amend leg ${p.leg} · ${p.carrierName}`, rows, `Send this amendment? Your node signs it and sends it to ${p.carrier}.`, 'Send amendment',
     () => via.send(d), [discard]);
+}
+
+// stopText is a truck's stop: its facility, address and UN/LOCODE (its
+// Plus Code has a row of its own).
+const stopText = (s) => [s.facility, s.address && [s.address.street, s.address.locality, s.address.region].filter(Boolean).join(', '),
+  s.un_location_code].filter(Boolean).join(' · ');
+
+// roadDraftDialog is a drafted truckload: all that goes to the carrier,
+// and what stays here.
+function roadDraftDialog(d, via) {
+  const q = d.road;
+  const rows = [['Carrier:', d.to], ...(d.newPartner ? [['', 'A new partner: not in your address book, and never booked with before. Check the domain.', 'newpartner']] : []),
+    ['Pickup:', stopText(q.pickup) + (q.pickup.earliest ? ' · from ' + dayTime(q.pickup.earliest) : '')]];
+  if (q.pickup.plus_code) rows.push(['Plus Code:', q.pickup.plus_code + ' (Google Open Location Code: the loading point, no street address needed)', 'sent']);
+  rows.push(['Delivery:', stopText(q.delivery) + (q.delivery.latest ? ' · by ' + dayTime(q.delivery.latest) : '')]);
+  if (q.delivery.plus_code) rows.push(['Plus Code:', q.delivery.plus_code + ' (the delivery point)', 'sent']);
+  if (q.consignee) rows.push(['Consignee:', party(q.consignee)]);
+  rows.push(['Goods:', `${equipment(q.containers)}, ${(q.containers[0] || {}).gross_weight_kg} kg · ${q.cargo.description} · HS ${q.cargo.hs_code}`]);
+  rows.push(['Reference:', q.shipper_reference]);
+  if (q.subscription) rows.push(['Updates:', `${(q.subscription.intents || []).join(', ')} → ${q.subscription.endpoint}`]);
+  for (const [k, v] of Object.entries(d.notSent || {})) rows.push(['Not sent:', `${NOT_SENT[k] || k}, ${v} (it stays with us)`, 'notsent']);
+  let dlg = null;
+  const discard = discardLink(d, via, () => dlg.close());
+  dlg = modal(`Truckload draft ${d.draftId}`, rows, `Book this truck? It is signed by your node and sent to ${d.to}.`, 'Book truck', () => via.send(d), [discard]);
+}
+
+// grantDraftDialog is a drafted delegation: who may follow which booking,
+// how, until when.
+function grantDraftDialog(d, via) {
+  const g = d.grant;
+  const what = { 'tnt:read': 'ask the carrier about it', 'tnt:subscribe': 'receive its signed events and alerts' };
+  const rows = [['Booking:', `${g.bookingRef} with ${g.carrier}`], ['Share with:', g.grantee],
+    ...(d.newPartner ? [['', 'Not in your address book: check the domain.', 'newpartner']] : []),
+    ['It may:', g.scope.map((s) => what[s] || s).join(' and ')], ['For:', `${g.days} day${g.days === 1 ? '' : 's'}`]];
+  if (g.note) rows.push(['Note:', g.note]);
+  rows.push(['Not shared:', 'your private dates, notes and everything else you hold', 'notsent']);
+  let dlg = null;
+  const discard = discardLink(d, via, () => dlg.close());
+  dlg = modal(`Share ${g.bookingRef}`, rows, `Grant ${g.grantee} this? Your node signs the delegation; ${g.carrier} checks it on every use.`, 'Grant access', () => via.send(d), [discard]);
 }
 
 // dockDraftDialog is a drafted move of one of our dock appointments: from
