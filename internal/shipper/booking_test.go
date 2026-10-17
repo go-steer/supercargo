@@ -30,6 +30,7 @@ import (
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
 	"github.com/go-steer/supercargo/pkg/sig"
+	"github.com/go-steer/supercargo/pkg/transport/rest"
 )
 
 type keys map[string]sig.Verifier
@@ -51,6 +52,12 @@ func (p poster) PostTo(ctx context.Context, r, _ string, m []byte) ([]byte, erro
 	return p(ctx, r, m)
 }
 
+// withRef is an answer whose header names ref, not the booking asked.
+type withRef struct {
+	ref  string
+	body any
+}
+
 func shipperWith(t *testing.T, answer func(req envelope.Header) (string, any), opts ...func(*node.Config)) *Shipper {
 	t.Helper()
 	cyPub, cyPriv, _ := ed25519.GenerateKey(rand.Reader)
@@ -70,6 +77,9 @@ func shipperWith(t *testing.T, answer func(req envelope.Header) (string, any), o
 			}
 			req := u.ClaimedHeader()
 			intent, body := answer(req)
+			if intent == "" {
+				return nil, rest.ErrNoResponse // a push: accepted, no answer
+			}
 			h := req.Reply(intent, time.Now())
 			intents.SetDialect(&h)
 			if c, ok := body.(*intents.BookingConfirmationBody); ok {
@@ -86,6 +96,13 @@ func shipperWith(t *testing.T, answer func(req envelope.Header) (string, any), o
 			}
 			if c, ok := body.(*intents.ForwardingStatusResponseBody); ok && c.OrderRef != "" {
 				h.BookingRef = &c.OrderRef
+			}
+			if _, ok := body.(*intents.TnTSubscriptionConfirmationBody); ok {
+				h.BookingRef = req.BookingRef
+			}
+			if w, ok := body.(withRef); ok {
+				// The answer names another booking than asked.
+				body, h.BookingRef = w.body, &w.ref
 			}
 			b, _ := json.Marshal(body)
 			return envelope.Seal(&envelope.Envelope{Header: h, Body: b}, "ob-1", obSigner)

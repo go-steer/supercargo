@@ -47,6 +47,11 @@ func (s *Shipper) Status(ctx context.Context, operator, ref string) (*Status, er
 		// reports through its events.
 		return nil, fmt.Errorf("shipper: %s is a truck leg, which has no ocean status", ref)
 	}
+	if b.Delegated != nil {
+		// A status request names the eBL, which a grantee doesn't hold: it
+		// asks (an inquiry) and follows the pushed events instead.
+		return nil, fmt.Errorf("shipper: %s is followed by delegation: ask about it instead", ref)
+	}
 	tdr := b.Confirmation.TransportDocumentReference()
 	body := &intents.TnTStatusRequestBody{TnTRequest: intents.TnTRequest{TransportDocumentReference: tdr, CarrierBookingReference: ref}}
 	h := envelope.NewHeader(intents.OceanTnTRequest, s.Node.Domain(), operator, s.Now())

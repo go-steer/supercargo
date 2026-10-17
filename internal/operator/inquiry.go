@@ -36,6 +36,7 @@ import (
 	"github.com/go-steer/supercargo/internal/node"
 	"github.com/go-steer/supercargo/internal/skills"
 	"github.com/go-steer/supercargo/internal/store"
+	"github.com/go-steer/supercargo/pkg/delegation"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
 
@@ -139,16 +140,27 @@ const (
 var notAParty = node.Reject(intents.CodeForbidden, "The sender is not a party to this booking.", "")
 
 // Authorize implements node.Handler (docs/DESIGN.md, A.6): the sender must
-// be the booking's shipper. A receiver's delegated access is milestone 7;
-// until then a delegation is refused rather than ignored.
+// be the booking's shipper, or hold its delegation (tnt:read).
 func (s *InquiryService) Authorize(_ context.Context, req *node.Request) error {
+	return readAccess(s.Bookings, req)
+}
+
+// readAccess is the rule for asking about a booking: the booking exists,
+// and the sender is its shipper or shows the shipper's delegation to read
+// it. Every refusal is the one notAParty.
+func readAccess(bookings *store.Bookings, req *node.Request) error {
 	h := req.Envelope.Header
-	if len(req.Envelope.Attachments.Delegation) > 0 {
-		return node.Reject(intents.CodeForbidden, "Delegated access is not supported yet.", "inquiry carries a delegation")
-	}
-	b, err := s.Bookings.Get(h.Receiver, *h.BookingRef)
+	b, err := bookings.Get(h.Receiver, *h.BookingRef)
 	if err != nil {
 		return &node.Rejection{Code: notAParty.Code, Detail: notAParty.Detail, Reason: "no booking " + *h.BookingRef}
+	}
+	if req.Delegation != nil || len(req.Envelope.Attachments.Delegation) > 0 {
+		// An attachment the pipeline didn't verify grants nothing (Delegated
+		// fails without a verified one).
+		if err := req.Delegated(b.Shipper, delegation.ScopeRead); err != nil {
+			return &node.Rejection{Code: notAParty.Code, Detail: notAParty.Detail, Reason: err.Error()}
+		}
+		return nil
 	}
 	if b.Shipper != h.Sender {
 		return &node.Rejection{Code: notAParty.Code, Detail: notAParty.Detail, Reason: h.Sender + " is not the shipper of " + b.Ref}

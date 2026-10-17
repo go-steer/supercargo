@@ -49,7 +49,60 @@ type Booking struct {
 	// CancelledAt is when the booking was cancelled (its carrier answered
 	// a cancellation so), zero while it stands.
 	CancelledAt time.Time
+	// Delegates are the companies the booking's shipper granted its events
+	// and alerts, subscribed by their delegation (the carrier's record).
+	Delegates []Delegate `json:",omitempty"`
+	// Delegated marks a booking this node follows by another company's
+	// delegation, not as its shipper (a receiver's record).
+	Delegated *DelegatedBooking `json:",omitempty"`
+	// Grants are the delegations this node issued for its booking (the
+	// shipper's record).
+	Grants []IssuedGrant `json:",omitempty"`
 }
+
+// MaxGrants bounds the grants a booking keeps on record.
+const MaxGrants = 20
+
+// IssuedGrant is a delegation a booking's shipper issued and handed over.
+type IssuedGrant struct {
+	Grantee string    `json:"grantee"`
+	Scope   []string  `json:"scope"`
+	TokenID string    `json:"tokenId"`
+	Expires time.Time `json:"expires"`
+	Note    string    `json:"note,omitempty"`
+}
+
+// Delegate is a grantee's subscription to a booking's events and alerts,
+// by its delegation: until the grant expires.
+type Delegate struct {
+	Grantee        string               `json:"grantee"`
+	Subscription   intents.Subscription `json:"subscription"`
+	SubscriptionID string               `json:"subscriptionId"`
+	TokenID        string               `json:"tokenId"`
+	Expires        time.Time            `json:"expires"`
+}
+
+// Active reports whether d still holds at now.
+func (d Delegate) Active(now time.Time) bool { return now.Before(d.Expires) }
+
+// DelegatedBooking is how a receiver holds a booking another company
+// granted it: the grant (the token, as its issuer signed it, which goes
+// with every request about the booking), and the carrier's subscription
+// once confirmed.
+type DelegatedBooking struct {
+	Issuer         string          `json:"issuer"`
+	Token          json.RawMessage `json:"token"`
+	TokenID        string          `json:"tokenId"`
+	Scope          []string        `json:"scope"`
+	Expires        time.Time       `json:"expires"`
+	Note           string          `json:"note,omitempty"`
+	SubscriptionID string          `json:"subscriptionId,omitempty"`
+	// Subscribed is when the carrier confirmed the subscription.
+	Subscribed time.Time `json:"subscribed,omitempty"`
+}
+
+// Active reports whether the grant still holds at now.
+func (d *DelegatedBooking) Active(now time.Time) bool { return d != nil && now.Before(d.Expires) }
 
 // Cancelled reports whether the booking was cancelled.
 func (b *Booking) Cancelled() bool { return !b.CancelledAt.IsZero() }
@@ -333,6 +386,15 @@ func clone(b Booking) Booking {
 	}
 	if b.Order != nil {
 		b.Order = roundTrip(b.Order)
+	}
+	if b.Delegates != nil {
+		b.Delegates = *roundTrip(&b.Delegates)
+	}
+	if b.Delegated != nil {
+		b.Delegated = roundTrip(b.Delegated)
+	}
+	if b.Grants != nil {
+		b.Grants = *roundTrip(&b.Grants)
 	}
 	return b
 }

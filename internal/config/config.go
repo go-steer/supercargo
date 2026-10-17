@@ -90,6 +90,9 @@ type Config struct {
 	// Docks is the receiving site's dock schedule (shipper only, with a
 	// business file: its receiving slots are the appointments).
 	Docks *Docks `yaml:"docks"`
+	// Grants says whose delegations this node keeps (shipper or receiver
+	// role; milestone 7). Absent: none.
+	Grants *Grants `yaml:"grants"`
 	// AddressBook is the company's own list of the partners it knows
 	// (internal/directory); Directory is somewhere to search for new ones.
 	// Neither is trust: a partner's verified profile is.
@@ -603,6 +606,15 @@ type Business struct {
 	File string `yaml:"file"`
 }
 
+// Grants lists the companies whose delegations this node keeps: the ones
+// that ship to it. A grant from anyone else is refused.
+type Grants struct {
+	From []string `yaml:"from"`
+}
+
+// MaxGrantIssuers bounds grants.from.
+const MaxGrantIssuers = 100
+
 // Docks is a receiving site's dock schedule: for now the demo's mock,
 // named Mock where it's shown ("Agendamento (simulated)"), for Site's
 // Docks, in time zone Zone.
@@ -991,6 +1003,19 @@ func (c *Config) validate() error {
 	}
 	if c.Business != nil && (!c.Customer() || !filepath.IsAbs(c.Business.File)) {
 		return fmt.Errorf("business: for the shipper or receiver role only, with an absolute file path (got %q)", c.Business.File)
+	}
+	if g := c.Grants; g != nil {
+		if !c.Customer() {
+			return errors.New("grants: for the shipper or receiver role")
+		}
+		if len(g.From) == 0 || len(g.From) > MaxGrantIssuers {
+			return fmt.Errorf("grants: from lists 1-%d issuers", MaxGrantIssuers)
+		}
+		for _, d := range g.From {
+			if !envelope.ValidDomain(d) || d == c.Domain {
+				return fmt.Errorf("grants: from %q is not another party's lowercase domain", d)
+			}
+		}
 	}
 	if d := c.Docks; d != nil {
 		if c.Business == nil || !c.Has(RoleShipper) {

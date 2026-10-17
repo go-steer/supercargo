@@ -52,8 +52,13 @@ var ErrNotOurBooking = errors.New("shipper: no such booking with that operator")
 // verified answer. Unlike a booking it commits to nothing, so it needs no
 // confirmation; it still asks only about bookings this shipper holds.
 func (s *Shipper) Ask(ctx context.Context, operator, ref, question string) (*Answer, error) {
-	if _, err := s.Bookings.Get(operator, ref); err != nil {
+	b, err := s.Bookings.Get(operator, ref)
+	if err != nil {
 		return nil, fmt.Errorf("%w: %s with %s", ErrNotOurBooking, ref, operator)
+	}
+	// A booking we follow by delegation: the grant goes with the question.
+	if ctx, err = withGrant(ctx, b, s.Now()); err != nil {
+		return nil, err
 	}
 	body := &intents.TnTInquiryBody{Question: question}
 	if err := body.Validate(); err != nil {

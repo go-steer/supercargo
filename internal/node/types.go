@@ -17,10 +17,12 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/go-steer/supercargo/pkg/delegation"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
@@ -31,6 +33,57 @@ import (
 type Request struct {
 	Envelope *envelope.Envelope
 	Body     intents.Body
+	// Delegation is the attached delegation token, its signature verified
+	// with its issuer's published key (milestone 7), or nil. It grants
+	// nothing until the handler checks it against its own record:
+	// Delegated or GrantedHere.
+	Delegation *delegation.Verified
+
+	now  time.Time
+	skew time.Duration
+}
+
+// NewRequest is a request as the pipeline hands it to a handler: env
+// verified and admitted, body decoded, d its delegation verified (or nil),
+// at now with the node's clock skew. For handlers driven outside the
+// pipeline (their tests).
+func NewRequest(env *envelope.Envelope, body intents.Body, d *delegation.Verified, now time.Time, skew time.Duration) *Request {
+	return &Request{Envelope: env, Body: body, Delegation: d, now: now, skew: skew}
+}
+
+// ErrNoDelegation is a request without a delegation, asked to show one.
+var ErrNoDelegation = errors.New("node: no delegation attached")
+
+// Delegated checks the attached delegation for a request a grantee sends
+// the carrier: issued by issuer (the booking's shipper, from the carrier's
+// own record), to this node, granted to the sender, for the header's
+// booking, with scope, and valid now.
+func (r *Request) Delegated(issuer, scope string) error {
+	if r.Delegation == nil {
+		return ErrNoDelegation
+	}
+	h := r.Envelope.Header
+	ref := ""
+	if h.BookingRef != nil {
+		ref = *h.BookingRef
+	}
+	return r.Delegation.Check(issuer, h.Receiver, h.Sender, ref, scope, r.now, r.skew)
+}
+
+// GrantedHere checks the attached delegation for a grant its issuer hands
+// this node: issued by the sender, granted to this node, for the header's
+// booking, with scope, and valid now (its audience is the carrier's to
+// check).
+func (r *Request) GrantedHere(scope string) error {
+	if r.Delegation == nil {
+		return ErrNoDelegation
+	}
+	h := r.Envelope.Header
+	ref := ""
+	if h.BookingRef != nil {
+		ref = *h.BookingRef
+	}
+	return r.Delegation.Check(h.Sender, r.Delegation.Audience(), h.Receiver, ref, scope, r.now, r.skew)
 }
 
 // Reply is a handler's answer. A nil Body means no response (an accepted

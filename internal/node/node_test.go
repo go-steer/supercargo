@@ -106,7 +106,7 @@ func TestNewValidates(t *testing.T) {
 		"bad kid":                    func(c *node.Config) { c.KID = "ob 1" },
 		"retention not over 2× skew": func(c *node.Config) { c.Replay = store.NewReplay(store.ReplayOptions{Retention: 10 * time.Minute}) },
 		"handler for an undecodable intent": func(c *node.Config) {
-			c.Handlers = map[string]node.Handler{intents.DelegationGrant: h}
+			c.Handlers = map[string]node.Handler{"ulp.delegation.revoke": h}
 		},
 		"nil handler":            func(c *node.Config) { c.Handlers = map[string]node.Handler{intents.BookingRequest: nil} },
 		"JWK of another key":     func(c *node.Config) { c.PublicJWK = other.jwk },

@@ -36,7 +36,8 @@ func statusReq(sender, ref string, q intents.TnTRequest) *node.Request {
 }
 
 // TestStatusAuthorize: only the booking's shipper; the same refusal for
-// every reason; a delegation is refused until milestone 7.
+// every reason; an attached delegation nobody verified grants nothing,
+// even to the shipper.
 func TestStatusAuthorize(t *testing.T) {
 	f := newInquiryFixture(t, nil)
 	s := &StatusService{Bookings: f.svc.Bookings, Log: f.svc.Log}

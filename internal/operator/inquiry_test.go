@@ -121,7 +121,7 @@ func TestInquiryAuthorize(t *testing.T) {
 	delegated := inquiryReq("cymbal-footwear.example", "OB-BKG-1", "Where is it?")
 	delegated.Envelope.Attachments.Delegation = json.RawMessage(`{}`)
 	if err := f.svc.Authorize(context.Background(), delegated); err == nil {
-		t.Error("an inquiry with a delegation was authorized before delegation exists")
+		t.Error("an inquiry with an unverified delegation was authorized")
 	}
 	if len(f.svc.Model.(*fake.Model).Calls()) != 0 {
 		t.Error("authorization called the model")

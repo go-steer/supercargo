@@ -29,9 +29,9 @@ import (
 // the operator's own log. Deterministic: no model is involved. It lets a
 // subscriber catch up on pushes it missed.
 //
-// Authorization is the inquiry's: only the booking's shipper may ask (a
-// receiver's delegation is milestone 7, and refused until then), decided
-// from the booking's parties before anything else is loaded.
+// Authorization is the inquiry's: the booking's shipper may ask, or a
+// company it delegated tnt:read to, decided from the booking's parties
+// before anything else is loaded.
 type StatusService struct {
 	Bookings *store.Bookings
 	Log      *store.EventLog // the operator's published events and alerts
@@ -39,18 +39,7 @@ type StatusService struct {
 
 // Authorize implements node.Handler.
 func (s *StatusService) Authorize(_ context.Context, req *node.Request) error {
-	h := req.Envelope.Header
-	if len(req.Envelope.Attachments.Delegation) > 0 {
-		return node.Reject(intents.CodeForbidden, "Delegated access is not supported yet.", "status request carries a delegation")
-	}
-	b, err := s.Bookings.Get(h.Receiver, *h.BookingRef)
-	if err != nil {
-		return &node.Rejection{Code: notAParty.Code, Detail: notAParty.Detail, Reason: "no booking " + *h.BookingRef}
-	}
-	if b.Shipper != h.Sender {
-		return &node.Rejection{Code: notAParty.Code, Detail: notAParty.Detail, Reason: h.Sender + " is not the shipper of " + b.Ref}
-	}
-	return nil
+	return readAccess(s.Bookings, req)
 }
 
 // Handle implements node.Handler. The request's references must name the

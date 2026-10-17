@@ -15,13 +15,17 @@
 package shipper
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-steer/supercargo/internal/business"
 	"github.com/go-steer/supercargo/internal/control"
 	"github.com/go-steer/supercargo/internal/store"
+	"github.com/go-steer/supercargo/pkg/delegation"
 	"github.com/go-steer/supercargo/pkg/discovery"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/intents"
@@ -66,6 +70,31 @@ type OrderStatusResponse struct {
 // carrier's answer (cancelled, or refused with why), or why there is none.
 type CancelResponse struct {
 	Answer *intents.BookingCancellationResponseBody `json:"answer,omitempty"`
+	Error  string                                   `json:"error,omitempty"`
+}
+
+// GrantRequest is the body of POST /shipments/{operator}/{ref}/grant: who
+// may follow the booking, how (delegation scopes), for how many days.
+type GrantRequest struct {
+	Grantee string   `json:"grantee"`
+	Scope   []string `json:"scope"`
+	Days    int      `json:"days"`
+	Note    string   `json:"note,omitempty"`
+}
+
+// MaxGrantDays is a grant's longest life, in days (delegation.MaxTTL).
+const MaxGrantDays = 31
+
+// GrantResponse is its answer: the grant handed over, or why not.
+type GrantResponse struct {
+	Grant *store.IssuedGrant `json:"grant,omitempty"`
+	Error string             `json:"error,omitempty"`
+}
+
+// SubscribeResponse answers POST /shipments/{operator}/{ref}/subscribe:
+// the carrier's answer, or why there is none.
+type SubscribeResponse struct {
+	Answer *intents.TnTSubscriptionConfirmationBody `json:"answer,omitempty"`
 	Error  string                                   `json:"error,omitempty"`
 }
 
@@ -135,6 +164,46 @@ func RegisterControl(mux *http.ServeMux, s *Shipper, profiles rest.Profiles) {
 			control.Answer(w, http.StatusBadGateway, CancelResponse{Error: err.Error()})
 		default:
 			control.Answer(w, http.StatusOK, CancelResponse{Answer: a})
+		}
+	})
+	// A person at the shipper confirmed handing another company access to
+	// one of our bookings (milestone 7).
+	mux.HandleFunc("POST /shipments/{operator}/{ref}/grant", func(w http.ResponseWriter, r *http.Request) {
+		var req GrantRequest
+		if err := control.Decode(r, &req); err != nil {
+			control.Answer(w, http.StatusBadRequest, GrantResponse{Error: err.Error()})
+			return
+		}
+		if !envelope.ValidDomain(req.Grantee) || req.Days < 1 || req.Days > MaxGrantDays {
+			control.Answer(w, http.StatusBadRequest, GrantResponse{Error: fmt.Sprintf("grantee must be a lowercase domain, days 1-%d", MaxGrantDays)})
+			return
+		}
+		g, err := s.Grant(context.WithoutCancel(r.Context()), r.PathValue("operator"), r.PathValue("ref"), req.Grantee, req.Scope,
+			time.Duration(req.Days)*24*time.Hour, req.Note)
+		switch {
+		case errors.Is(err, ErrNotGrantable):
+			control.Answer(w, http.StatusNotFound, GrantResponse{Error: err.Error()})
+		case errors.Is(err, delegation.ErrMalformed):
+			control.Answer(w, http.StatusBadRequest, GrantResponse{Error: err.Error()})
+		case err != nil:
+			control.Answer(w, http.StatusBadGateway, GrantResponse{Error: err.Error()})
+		default:
+			control.Answer(w, http.StatusOK, GrantResponse{Grant: g})
+		}
+	})
+	// Subscribe again to a booking we follow by delegation (the first try
+	// runs when the grant arrives).
+	mux.HandleFunc("POST /shipments/{operator}/{ref}/subscribe", func(w http.ResponseWriter, r *http.Request) {
+		c, err := s.Subscribe(context.WithoutCancel(r.Context()), r.PathValue("operator"), r.PathValue("ref"), s.Endpoint)
+		switch {
+		case errors.Is(err, ErrNotOurBooking):
+			control.Answer(w, http.StatusNotFound, SubscribeResponse{Error: err.Error()})
+		case errors.Is(err, ErrGrantExpired):
+			control.Answer(w, http.StatusConflict, SubscribeResponse{Error: err.Error()})
+		case err != nil:
+			control.Answer(w, http.StatusBadGateway, SubscribeResponse{Error: err.Error()})
+		default:
+			control.Answer(w, http.StatusOK, SubscribeResponse{Answer: c})
 		}
 	})
 	mux.HandleFunc("GET /profile/{domain}", func(w http.ResponseWriter, r *http.Request) {
