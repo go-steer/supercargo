@@ -67,7 +67,8 @@ type plaza struct {
 }
 
 // places are the gazetteer, by normalized key: the city's name, "city,
-// uf", "city/uf", or its UN/LOCODE.
+// uf", "city/uf", or its UN/LOCODE. A location may also be a point,
+// "lat,lng" in decimal degrees (in Brazil), as QualP takes coordinates.
 var places = map[string]place{}
 
 func init() {
@@ -95,6 +96,12 @@ func init() {
 		{place{"Rio Grande", "RS", -32.0350, -52.0986}, "BRRIG"},
 		{place{"Vitória", "ES", -20.3155, -40.3128}, "BRVIX"},
 		{place{"Brasília", "DF", -15.7975, -47.8919}, "BRBSB"},
+		// Mato Grosso's grain and beef corridor (BR-163, BR-364).
+		{place{"Sinop", "MT", -11.8642, -55.5066}, ""},
+		{place{"Sorriso", "MT", -12.5425, -55.7211}, ""},
+		{place{"Cuiabá", "MT", -15.6014, -56.0979}, "BRCGB"},
+		{place{"Rondonópolis", "MT", -16.4673, -54.6372}, ""},
+		{place{"Campo Grande", "MS", -20.4697, -54.6201}, "BRCGR"},
 	} {
 		for _, k := range []string{p.name, p.name + "," + p.uf, p.name + "/" + p.uf, p.locode} {
 			if k != "" {
@@ -118,10 +125,28 @@ var plazas = []plaza{
 	{"1006", "Miracatu", "Arteris Régis Bittencourt", "SP", "Miracatu", "BR-116", "370.000", -24.0250, -47.3000, 3.10},
 	{"1007", "Registro", "Arteris Régis Bittencourt", "SP", "Registro", "BR-116", "426.000", -24.3800, -47.8000, 3.10},
 	{"1008", "São José dos Pinhais", "Ecovia Caminho do Mar", "PR", "São José dos Pinhais", "BR-277", "60.000", -25.4700, -48.9000, 26.40},
+	// BR-163 in Mato Grosso, on the same straight lines.
+	{"2001", "Sorriso", "Nova Rota do Oeste", "MT", "Sorriso", "BR-163", "742.000", -12.5370, -55.6130, 9.40},
+	{"2002", "Nova Mutum", "Nova Rota do Oeste", "MT", "Nova Mutum", "BR-163", "593.000", -13.9200, -55.8300, 9.40},
+	{"2003", "Jangada", "Nova Rota do Oeste", "MT", "Jangada", "BR-163", "460.000", -15.0400, -56.0100, 9.40},
+	{"2004", "Campo Verde", "Nova Rota do Oeste", "MT", "Campo Verde", "BR-163", "197.000", -16.0340, -55.3680, 8.70},
 }
 
-// detour is how much longer a road is than the straight line, here.
-const detour = 1.35
+// detour is how much longer a road is than the straight line, here: over
+// a segment's first 300 km, and beyond (long hauls run on trunk roads).
+const (
+	detour     = 1.35
+	detourLong = 1.15
+)
+
+// roadKm is a segment's road distance.
+func roadKm(a, b place) float64 {
+	d := haversine(a, b)
+	if d <= 300 {
+		return d * detour
+	}
+	return 300*detour + (d-300)*detourLong
+}
 
 // MaxBody bounds a request.
 const MaxBody = 64 << 10
@@ -155,13 +180,16 @@ func resolve(locations []string) ([]place, float64, error) {
 	for _, l := range locations {
 		p, ok := places[key(l)]
 		if !ok {
+			p, ok = point(l)
+		}
+		if !ok {
 			return nil, 0, fmt.Errorf("location %q not found", trim(l))
 		}
 		ps = append(ps, p)
 	}
 	km := 0.0
 	for i := 1; i < len(ps); i++ {
-		km += haversine(ps[i-1], ps[i]) * detour
+		km += roadKm(ps[i-1], ps[i])
 	}
 	return ps, math.Round(km*10) / 10, nil
 }
@@ -191,8 +219,8 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"distancia":            map[string]any{"texto": fmt.Sprintf("%.0f km", km), "valor": km},
 		"duracao":              map[string]any{"texto": fmt.Sprintf("%02d:%02d:%02d", secs/3600, secs%3600/60, secs%60), "valor": secs},
-		"endereco_inicio":      strings.ToLower(ps[0].name + "/" + ps[0].uf),
-		"endereco_fim":         strings.ToLower(ps[len(ps)-1].name + "/" + ps[len(ps)-1].uf),
+		"endereco_inicio":      strings.ToLower(ps[0].label()),
+		"endereco_fim":         strings.ToLower(ps[len(ps)-1].label()),
 		"coordenada_inicio":    fmt.Sprintf("%.5f,%.5f", ps[0].lat, ps[0].lng),
 		"coordenada_fim":       fmt.Sprintf("%.5f,%.5f", ps[len(ps)-1].lat, ps[len(ps)-1].lng),
 		"locais":               names(ps),
@@ -309,9 +337,33 @@ func answer(w http.ResponseWriter, status int, v any) {
 func names(ps []place) []string {
 	out := make([]string, len(ps))
 	for i, p := range ps {
-		out[i] = p.name + "/" + p.uf
+		out[i] = p.label()
 	}
 	return out
+}
+
+// label is "city/uf", or a point's coordinates.
+func (p place) label() string {
+	if p.uf == "" {
+		return p.name
+	}
+	return p.name + "/" + p.uf
+}
+
+var coordinates = regexp.MustCompile(`^(-?[0-9]{1,2}(?:\.[0-9]{1,8})?),\s?(-?[0-9]{1,2}(?:\.[0-9]{1,8})?)$`)
+
+// point is a location given as "lat,lng", if it's one in Brazil's box.
+func point(l string) (place, bool) {
+	m := coordinates.FindStringSubmatch(strings.TrimSpace(l))
+	if m == nil {
+		return place{}, false
+	}
+	lat, _ := strconv.ParseFloat(m[1], 64) // the pattern's digits parse
+	lng, _ := strconv.ParseFloat(m[2], 64)
+	if lat < -34 || lat > 6 || lng < -74 || lng > -34 {
+		return place{}, false
+	}
+	return place{name: fmt.Sprintf("%.5f,%.5f", lat, lng), lat: lat, lng: lng}, true
 }
 
 // key normalizes a place's name: no accents, lower case, single spaces,

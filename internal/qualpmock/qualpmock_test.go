@@ -63,6 +63,30 @@ func TestSantosToCajamar(t *testing.T) {
 	}
 }
 
+// TestFarmToGuarulhos: the FTL pilot's truckload, from a farm known only
+// by its point, up BR-163 and on to a DC in Guarulhos: Mato Grosso's toll
+// plazas in order, and the point named by its coordinates.
+func TestFarmToGuarulhos(t *testing.T) {
+	f, err := client(t, "t0ken").Floor(context.Background(), backend.FloorRequest{
+		Locations: []string{"-12.83419,-54.69094", "Sinop, MT", "Cuiabá/MT", "Rondonópolis", "Guarulhos, SP"}, Axles: 7, LoadType: "frigorificada", Table: "A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, p := range f.Tolls {
+		names = append(names, p.Name)
+	}
+	if f.DistanceKm < 2100 || f.DistanceKm > 2400 || strings.Join(names, ",") != "Sorriso,Nova Mutum,Jangada,Campo Verde,Valinhos,Campo Limpo" || f.Tolls[0].Amount != 65.8 {
+		t.Errorf("%.1f km, tolls %v: %+v", f.DistanceKm, names, f.Tolls)
+	}
+	for _, bad := range []string{"-12.8,-54.6,", "12.8;-54.6", "48.85,2.35", "-12.8,-154.6"} {
+		if _, err := client(t, "t0ken").Floor(context.Background(), backend.FloorRequest{
+			Locations: []string{bad, "Guarulhos"}, Axles: 7, LoadType: "frigorificada", Table: "A"}); err == nil {
+			t.Errorf("%q: a route", bad)
+		}
+	}
+}
+
 // TestRefusals: a token the mock doesn't take, a place it doesn't know,
 // and a combination the ANTT doesn't price fail.
 func TestRefusals(t *testing.T) {
