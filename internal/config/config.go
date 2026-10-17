@@ -35,6 +35,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata" // a curfew's or a dock's time zone, on any image
 	"unicode"
 	"unicode/utf8"
 
@@ -42,6 +43,7 @@ import (
 
 	"github.com/go-steer/supercargo/internal/antt"
 	"github.com/go-steer/supercargo/internal/control"
+	"github.com/go-steer/supercargo/internal/geo"
 	"github.com/go-steer/supercargo/internal/llm"
 	"github.com/go-steer/supercargo/pkg/envelope"
 	"github.com/go-steer/supercargo/pkg/sig"
@@ -473,6 +475,71 @@ func (f *LaneFreight) validate(mode string) error {
 	return nil
 }
 
+func (p *Planning) validate() error {
+	if p.Route == nil && p.Weather == nil {
+		return errors.New("needs a route, the weather, or both")
+	}
+	if r := p.Route; r != nil {
+		if r.QualP == nil {
+			return errors.New("route needs qualp")
+		}
+		if err := r.QualP.validate(); err != nil {
+			return fmt.Errorf("route: qualp: %w", err)
+		}
+		if _, _, err := antt.Floor(r.Table, r.LoadType, r.Axles, 0); err != nil {
+			return fmt.Errorf("route: the ANTT doesn't price %q on %d axles, table %q", r.LoadType, r.Axles, r.Table)
+		}
+	}
+	if len(p.Via) > MaxWaypoints {
+		return fmt.Errorf("via: at most %d points", MaxWaypoints)
+	}
+	for _, w := range p.Via {
+		if _, err := geo.Decode(w.PlusCode); !textOK(w.Name, 64) || err != nil || !plusCode.MatchString(w.PlusCode) {
+			return fmt.Errorf("via: %q needs a name (1-64 characters) and a full Plus Code (got %q)", w.Name, w.PlusCode)
+		}
+	}
+	if w := p.Weather; w != nil {
+		switch {
+		case (w.Google == nil) == (w.Mock == ""):
+			return errors.New("weather: google or mock, exactly one")
+		case w.Mock != "" && !textOK(w.Mock, 64):
+			return errors.New("weather: mock names the mock: 1-64 characters of plain text")
+		case w.Google != nil && !envName.MatchString(w.Google.APIKeyEnv):
+			return fmt.Errorf("weather: google: apiKeyEnv %q must name an environment variable", w.Google.APIKeyEnv)
+		case w.Google != nil && w.Google.Language != "" && !language.MatchString(w.Google.Language):
+			return fmt.Errorf("weather: google: language %q is not a BCP 47 tag", w.Google.Language)
+		}
+	}
+	return nil
+}
+
+func (c *Curfew) validate() error {
+	from, okF := clockMinutes(c.From)
+	to, okT := clockMinutes(c.To)
+	switch {
+	case !textOK(c.Zone, 64) || !textOK(c.Yard, 64) || !textOK(c.By, 64):
+		return errors.New("zone, yard and by are each 1-64 characters of plain text")
+	case !okF || !okT || from >= to:
+		return fmt.Errorf("from %q and to %q are HH:MM, from before to", c.From, c.To)
+	case c.YardToDelivery <= 0 || c.YardToDelivery > 12*time.Hour:
+		return fmt.Errorf("yardToDelivery %v: positive, at most 12h", c.YardToDelivery)
+	case time.Duration(to)*time.Minute+c.YardToDelivery >= time.Duration(from+24*60)*time.Minute:
+		// Staged, the truck would deliver inside the next day's window.
+		return fmt.Errorf("yardToDelivery %v: the window ends at %s, so a staged truck would deliver after %s the next day", c.YardToDelivery, c.To, c.From)
+	case len(c.LOCODEs) == 0 || len(c.LOCODEs) > 100:
+		return errors.New("locodes: 1 to 100 UN/LOCODEs")
+	}
+	if _, err := time.LoadLocation(c.TimeZone); err != nil || c.TimeZone == "" || c.TimeZone == "Local" {
+		return fmt.Errorf("timeZone %q is not an IANA time zone", c.TimeZone)
+	}
+	for _, l := range c.LOCODEs {
+		if !locode.MatchString(l) {
+			return fmt.Errorf("locodes: %q is not a UN/LOCODE", l)
+		}
+	}
+	return nil
+}
+
 func (q *QualPSource) validate() error {
 	u, err := url.Parse(q.URL)
 	switch {
@@ -530,6 +597,86 @@ type Road struct {
 	// is the demo's mock, named as shown.
 	Risk        *BackOfficeMock `yaml:"risk"`
 	TollVoucher *BackOfficeMock `yaml:"tollVoucher"`
+	// Planning plans each leg's journey when it's booked: the heavy-truck
+	// route and the weather along it (operator.Planning).
+	Planning *Planning `yaml:"planning"`
+	// Curfew is a city's truck restriction and the standing policy for
+	// it (operator.Curfew); DriverApp tells the driver of a re-planned
+	// leg (for now, the demo's mock, named as shown).
+	Curfew    *Curfew         `yaml:"curfew"`
+	DriverApp *BackOfficeMock `yaml:"driverApp"`
+}
+
+// Planning is a road carrier's journey planning: Route prices the route
+// (QualP) through Via, its corridor; Weather checks the corridor.
+type Planning struct {
+	Route   *RoutePlanning `yaml:"route"`
+	Via     []Waypoint     `yaml:"via"`
+	Weather *WeatherSource `yaml:"weather"`
+}
+
+// RoutePlanning is the route service and the vehicle it prices.
+type RoutePlanning struct {
+	QualP    *QualPSource `yaml:"qualp"`
+	Axles    int          `yaml:"axles"`
+	LoadType string       `yaml:"loadType"`
+	Table    string       `yaml:"table"`
+}
+
+// Waypoint is a named point on a corridor, by its full Plus Code.
+type Waypoint struct {
+	Name     string `yaml:"name"`
+	PlusCode string `yaml:"plusCode"`
+}
+
+// MaxWaypoints bounds a corridor.
+const MaxWaypoints = 20
+
+// WeatherSource is where the weather comes from: Google's Weather API,
+// its key from the environment variable APIKeyEnv names (never the
+// file), its descriptions in Language; or the demo's Mock, named as
+// shown. Exactly one.
+type WeatherSource struct {
+	Google *GoogleWeather `yaml:"google"`
+	Mock   string         `yaml:"mock"`
+}
+
+// GoogleWeather is Google's Weather API.
+type GoogleWeather struct {
+	APIKeyEnv string `yaml:"apiKeyEnv"`
+	Language  string `yaml:"language"`
+}
+
+// Curfew is a city's truck restriction: deliveries to LOCODEs, between
+// From and To ("05:00", "21:00") local time in TimeZone, wait at Yard and
+// deliver YardToDelivery after; By set the standing policy.
+type Curfew struct {
+	Zone           string        `yaml:"zone"`
+	LOCODEs        []string      `yaml:"locodes"`
+	From           string        `yaml:"from"`
+	To             string        `yaml:"to"`
+	TimeZone       string        `yaml:"timeZone"`
+	Yard           string        `yaml:"yard"`
+	YardToDelivery time.Duration `yaml:"yardToDelivery"`
+	By             string        `yaml:"by"`
+}
+
+// Window is the restriction's window, minutes after local midnight, and
+// its time zone. Valid once the config is.
+func (c *Curfew) Window() (from, to int, loc *time.Location) {
+	f, _ := clockMinutes(c.From)
+	t, _ := clockMinutes(c.To)
+	loc, _ = time.LoadLocation(c.TimeZone)
+	return f, t, loc
+}
+
+// clockMinutes is "HH:MM" as minutes after midnight.
+func clockMinutes(s string) (int, bool) {
+	t, err := time.Parse("15:04", s)
+	if err != nil || len(s) != 5 {
+		return 0, false
+	}
+	return t.Hour()*60 + t.Minute(), true
 }
 
 // BackOfficeMock is one of the demo's in-memory systems behind a node:
@@ -558,6 +705,10 @@ var (
 	voyageNumber = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 	modelName    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$`)
 	cnpj         = regexp.MustCompile(`^[0-9A-Z]{12}[0-9]{2}$`)
+	language     = regexp.MustCompile(`^[a-z]{2,3}(-[A-Za-z0-9]{2,8}){0,3}$`) // BCP 47's shape: pt-BR, zh-Hant, es-419
+	// plusCode is a full Plus Code of ten or eleven digits (a stop's
+	// plus_code, intents), not a padded or shorter one.
+	plusCode = regexp.MustCompile(`^[2-9C][2-9CFGHJMPQRV][2-9CFGHJMPQRVWX]{6}\+[2-9CFGHJMPQRVWX]{2,3}$`)
 )
 
 // LLM providers.
@@ -936,6 +1087,19 @@ func (c *Config) validate() error {
 			}
 			if r.TollVoucher != nil && !textOK(r.TollVoucher.Mock, 64) {
 				return errors.New("operator: road.tollVoucher.mock names the mock: 1-64 characters of plain text")
+			}
+			if r.DriverApp != nil && (!textOK(r.DriverApp.Mock, 64) || r.Curfew == nil) {
+				return errors.New("operator: road.driverApp.mock names the mock (1-64 characters of plain text), told of a curfew's re-plans: it needs road.curfew")
+			}
+			if p := r.Planning; p != nil {
+				if err := p.validate(); err != nil {
+					return fmt.Errorf("operator: road.planning: %w", err)
+				}
+			}
+			if cf := r.Curfew; cf != nil {
+				if err := cf.validate(); err != nil {
+					return fmt.Errorf("operator: road.curfew: %w", err)
+				}
 			}
 		}
 		for _, d := range o.Deny {

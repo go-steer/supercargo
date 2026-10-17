@@ -850,6 +850,19 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 		if r.TollVoucher != nil {
 			trucks.Vouchers = &operator.MockVouchers{Source: r.TollVoucher.Mock}
 		}
+		if r.Planning != nil {
+			p, err := planning(r.Planning)
+			if err != nil {
+				return err
+			}
+			// Why a service didn't answer, for the carrier's operators (the
+			// step says only "not available").
+			p.OnError = func(system string, err error) { a.Logger.Warn("journey planning", "system", system, "error", err) }
+			trucks.Planning = p
+		}
+		if r.Curfew != nil {
+			a.curfew(r.Curfew, r.DriverApp)
+		}
 		trucks.Resume(a.Carrier.Bookings.List()) // restored after a restart: number on from them
 		// Each leg plays out on the simulator, as a voyage does; an
 		// amendment re-plans it.

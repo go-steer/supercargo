@@ -73,8 +73,15 @@ type Simulator struct {
 	// together (a forwarder's legs, one after another). Without it, each
 	// voyage's clock starts just before its own first step.
 	Shared bool
-	Now    func() time.Time
-	anchor time.Time
+	// Restrict, if set, re-plans a truck leg whose delayed arrival falls
+	// in a city's truck restriction (Curfew.Restrict): the arrival it
+	// plans to instead, and a note for the alert. Optional.
+	Restrict func(b store.Booking, arrival time.Time) (time.Time, string, bool)
+	// OnRestricted learns of each leg Restrict re-planned, with its note.
+	// Optional; called with the simulator's lock held.
+	OnRestricted func(b store.Booking, note string, until time.Time)
+	Now          func() time.Time
+	anchor       time.Time
 
 	once    sync.Once
 	stop    chan struct{}
@@ -598,11 +605,31 @@ func (s *Simulator) disrupt(tl *timeline, delay time.Duration, reason string) (*
 		Kind: intents.AlertDelay, Severity: severity(delay), Summary: reason,
 		PreviousETA: stamp(previous), NewETA: stamp(previous.Add(delay)),
 	}
+	// A truck that would now arrive inside a city's truck restriction:
+	// the standing policy re-plans it, and the alert says so.
 	// Checked before anything changes: a reason that isn't valid alert
-	// text is refused, not half-applied.
+	// text is refused, not half-applied, whether or not a curfew applies.
 	alert.AlertID, alert.CauseEventIDs = "AL-0", []string{"EV-0"}
 	if err := alert.Validate(); err != nil {
 		return nil, fmt.Errorf("operator: %w", err)
+	}
+	var restricted string
+	if s.Restrict != nil && tl.booking.Road != nil {
+		if planned, note, ok := s.Restrict(tl.booking, previous.Add(delay)); ok && planned.After(previous.Add(delay)) {
+			delay = planned.Sub(previous)
+			if tl.delayed+delay > maxDisruptDelay {
+				return nil, fmt.Errorf("operator: staged, this leg would be more than %v late", maxDisruptDelay)
+			}
+			alert.Severity, alert.NewETA, restricted = severity(delay), stamp(planned), note
+			if summary := reason + " " + note; len([]rune(summary)) <= 280 {
+				alert.Summary = summary
+			} else {
+				alert.Summary = clip(note, 280)
+			}
+			if err := alert.Validate(); err != nil { // the note is the carrier's config: checked all the same
+				return nil, fmt.Errorf("operator: %w", err)
+			}
+		}
 	}
 	tl.shift(delay)
 	// A push recorded but not queued (ErrNotQueued) still happened: the
@@ -613,6 +640,9 @@ func (s *Simulator) disrupt(tl *timeline, delay time.Duration, reason string) (*
 		return nil, err
 	}
 	alert.AlertID, alert.CauseEventIDs = s.nextID("AL"), []string{estID}
+	if restricted != "" && s.OnRestricted != nil {
+		s.OnRestricted(tl.booking, restricted, tl.arrival)
+	}
 	if err := s.publish(tl, alert); err != nil && !errors.Is(err, ErrNotQueued) {
 		// The new estimate is out, so the delay stands; only the alert is
 		// missing. Retrying would delay the voyage again.

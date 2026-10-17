@@ -10,6 +10,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.78.0
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/google/open-location-code/go v0.0.0-20250620134813-83986da0156b
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.47.0

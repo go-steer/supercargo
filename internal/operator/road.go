@@ -220,12 +220,14 @@ func (s *RoadAmendmentService) Handle(ctx context.Context, req *node.Request) (*
 	if conf.SubscriptionID != b.Road.Confirmation.SubscriptionID {
 		return nil, fmt.Errorf("operator: the booking system changed %s's subscription in an amendment", a.BookingRef)
 	}
-	snapshot := b.Road
+	// The plan, not the back office: a step the carrier's systems add
+	// meanwhile (a curfew's) changes nothing the amendment was made from.
+	snapshot := planOf(b.Road)
 	stored, err := s.Bookings.Update(h.Receiver, a.BookingRef, func(b *store.Booking) error {
 		// Only over the leg this plan was made from: another amendment
 		// stored meanwhile would otherwise be lost, and its shipper told a
 		// plan that no longer holds.
-		if b.Road == nil || b.Shipper != h.Sender || b.Cancelled() || !reflect.DeepEqual(b.Road, snapshot) {
+		if b.Road == nil || b.Shipper != h.Sender || b.Cancelled() || !reflect.DeepEqual(planOf(b.Road), snapshot) {
 			return errLegChanged
 		}
 		b.Road.Request, b.Road.Confirmation = amended, *conf
@@ -286,6 +288,9 @@ type TruckBookings struct {
 	TMS      string
 	Risk     backend.RiskClearances
 	Vouchers backend.TollVouchers
+	// Planning, if set, plans each leg's journey: its route and the
+	// weather along it.
+	Planning *Planning
 
 	mu    sync.Mutex
 	next  int
@@ -322,6 +327,14 @@ func (t *TruckBookings) record(ref string, steps []store.BackOfficeStep) {
 		delete(t.steps, oldest)
 	}
 	t.steps[ref] = steps
+}
+
+// planOf is a leg's plan: what it was asked and confirmed.
+func planOf(r *store.RoadBooking) *store.RoadBooking {
+	if r == nil {
+		return nil
+	}
+	return &store.RoadBooking{Request: r.Request, Confirmation: r.Confirmation}
 }
 
 // Resume numbers on after the legs held (restored after a restart).
@@ -379,6 +392,11 @@ func (t *TruckBookings) Decide(ctx context.Context, r backend.RoadBookingRequest
 		vehicle = c.Vehicle
 		steps = append(steps, store.BackOfficeStep{System: "risk", Source: c.Source, Action: "Vehicle and driver cleared for the route",
 			Reference: c.Protocol, Detail: strings.TrimSpace(c.Vehicle + " · " + c.Driver), At: now})
+	}
+	if t.Planning != nil {
+		pickup, _ := parseTime(conf.PlannedPickup) // ours: plan wrote them
+		delivery, _ := parseTime(conf.PlannedDelivery)
+		steps = append(steps, t.Planning.steps(ctx, r.Body, pickup, delivery, now)...)
 	}
 	if t.CTe != nil {
 		key, err := t.CTe.accessKey(now, n, "57")

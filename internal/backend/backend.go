@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/go-steer/supercargo/internal/business"
+	"github.com/go-steer/supercargo/internal/geo"
 	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
@@ -173,6 +174,27 @@ type Toll struct {
 	Road     string  `json:"road"`
 	State    string  `json:"state"`
 	Amount   float64 `json:"amount"`
+}
+
+// Weather is the weather at a place: for a road carrier, along a leg's
+// corridor when it plans one (Google's Weather API, or the demo's mock).
+// What it answers is a third party's, checked before use.
+type Weather interface {
+	// At is the forecast for the hour at holds, or the current
+	// conditions when at is past or beyond the forecast.
+	At(ctx context.Context, p geo.Point, at time.Time) (*Conditions, error)
+}
+
+// Conditions are the weather at a place and hour: the description in the
+// language asked, the temperature, the chance of rain or snow, and who
+// answered ("Google Weather API").
+type Conditions struct {
+	Description string    `json:"description"`
+	TempC       float64   `json:"tempC"`
+	RainChance  int       `json:"rainChance"` // percent
+	At          time.Time `json:"at"`
+	Forecast    bool      `json:"forecast"` // false: the current conditions
+	Source      string    `json:"source"`
 }
 
 // DockAppointments is a receiving site's dock schedule (a yard or dock
