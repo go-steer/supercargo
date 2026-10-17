@@ -218,6 +218,20 @@ type Appointment struct {
 	Start      time.Time `json:"start"`
 	End        time.Time `json:"end"`
 	Source     string    `json:"source"`
+	// Policy says which standing policy last booked or moved it, and who
+	// set it; empty when a person did.
+	Policy string `json:"policy,omitempty"`
+}
+
+// DockBooker is a dock schedule a standing policy may act on (optional,
+// beside DockAppointments): book a new appointment, and move one, each
+// noting the policy; the free slots with an appointment's own counted
+// free; and release one.
+type DockBooker interface {
+	Book(ctx context.Context, shipperRef, note string, to DockSlot) (*Appointment, error)
+	MoveFor(ctx context.Context, id string, from time.Time, to DockSlot, note string) (*Appointment, error)
+	SlotsFor(ctx context.Context, from time.Time, days int, except string) ([]DockSlot, error)
+	Release(ctx context.Context, id string) error
 }
 
 // DockSlot is a free slot at a dock.

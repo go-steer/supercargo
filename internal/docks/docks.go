@@ -61,9 +61,41 @@ type Mock struct {
 	Docks  []string
 	Zone   *time.Location
 	Now    func() time.Time
+	// Hours are the slots' start hours each day (default Windows); a
+	// slot from 22:00 runs past midnight.
+	Hours []int
 
 	mu    sync.Mutex
 	appts map[string]*backend.Appointment // by ID
+	next  int
+}
+
+func (m *Mock) hours() []int {
+	if len(m.Hours) > 0 {
+		return m.Hours
+	}
+	return Windows
+}
+
+// Book implements backend.DockBooker: a new appointment for shipperRef,
+// in a free slot.
+func (m *Mock) Book(_ context.Context, shipperRef, note string, to backend.DockSlot) (*backend.Appointment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.appts == nil {
+		m.appts = map[string]*backend.Appointment{}
+	}
+	if !slices.ContainsFunc(m.free(to.Start.In(m.Zone), 1, ""), func(s backend.DockSlot) bool {
+		return s.Dock == to.Dock && s.Start.Equal(to.Start) && s.End.Equal(to.End)
+	}) {
+		return nil, fmt.Errorf("%w: %s %s", ErrSlotTaken, to.Dock, to.Start.Format(time.RFC3339))
+	}
+	m.next++
+	id := fmt.Sprintf("AG-%06d", 5000+m.next)
+	a := &backend.Appointment{ID: id, ShipperRef: shipperRef, Site: m.Site, Dock: to.Dock, Start: to.Start, End: to.End, Source: m.Source, Policy: note}
+	m.appts[id] = a
+	c := *a
+	return &c, nil
 }
 
 // Seed books the business context's receiving slots as appointments: a
@@ -133,14 +165,37 @@ func (m *Mock) Appointment(_ context.Context, ref string) (*backend.Appointment,
 
 // Slots implements backend.DockAppointments: the free slots from from's
 // calendar day, for days days, that start after now.
-func (m *Mock) Slots(_ context.Context, from time.Time, days int) ([]backend.DockSlot, error) {
+func (m *Mock) Slots(ctx context.Context, from time.Time, days int) ([]backend.DockSlot, error) {
+	return m.SlotsFor(ctx, from, days, "")
+}
+
+// SlotsFor implements backend.DockBooker: the free slots, appointment
+// except's own counted free.
+func (m *Mock) SlotsFor(_ context.Context, from time.Time, days int, except string) ([]backend.DockSlot, error) {
 	if days < 1 || days > MaxDays {
 		return nil, fmt.Errorf("docks: 1-%d days", MaxDays)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.free(from, days, ""), nil
+	return m.free(from, days, except), nil
 }
+
+// Release implements backend.DockBooker: appointment id is gone.
+func (m *Mock) Release(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.appts[id]; !ok {
+		return fmt.Errorf("%w: %s", ErrNoAppointment, id)
+	}
+	delete(m.appts, id)
+	return nil
+}
+
+// TruckKey is the schedule's reference for a truck the site follows by
+// delegation: its carrier and the carrier's booking reference. The "/"
+// keeps it apart from the company's own shipments' references (which
+// can't hold one), and from another carrier's same reference.
+func TruckKey(operator, ref string) string { return operator + "/" + ref }
 
 // free are the free slots from from's calendar day (in its own offset)
 // for days days, not counting appointment except's own.
@@ -150,7 +205,7 @@ func (m *Mock) free(from time.Time, days int, except string) []backend.DockSlot 
 	day := time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, m.Zone)
 	var out []backend.DockSlot
 	for d := range days {
-		for _, h := range Windows {
+		for _, h := range m.hours() {
 			start := time.Date(day.Year(), day.Month(), day.Day()+d, h, 0, 0, 0, m.Zone)
 			if !start.After(now) {
 				continue
@@ -180,8 +235,15 @@ func (m *Mock) taken(s backend.DockSlot, except string) bool {
 	return h.Sum32()%3 == 0
 }
 
-// Move implements backend.DockAppointments: to a free slot, its own.
-func (m *Mock) Move(_ context.Context, id string, from time.Time, to backend.DockSlot) (*backend.Appointment, error) {
+// Move implements backend.DockAppointments: to a free slot, its own (a
+// person's move: no policy's note).
+func (m *Mock) Move(ctx context.Context, id string, from time.Time, to backend.DockSlot) (*backend.Appointment, error) {
+	return m.MoveFor(ctx, id, from, to, "")
+}
+
+// MoveFor implements backend.DockBooker: a move with the note of the
+// policy that made it.
+func (m *Mock) MoveFor(_ context.Context, id string, from time.Time, to backend.DockSlot, note string) (*backend.Appointment, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.appts[id]
@@ -197,7 +259,7 @@ func (m *Mock) Move(_ context.Context, id string, from time.Time, to backend.Doc
 	}) {
 		return nil, fmt.Errorf("%w: %s %s", ErrSlotTaken, to.Dock, to.Start.Format(time.RFC3339))
 	}
-	a.Dock, a.Start, a.End = to.Dock, to.Start, to.End
+	a.Dock, a.Start, a.End, a.Policy = to.Dock, to.Start, to.End, note
 	c := *a
 	return &c, nil
 }
@@ -229,6 +291,15 @@ type MoveRequest struct {
 func RegisterControl(mux *http.ServeMux, d backend.DockAppointments) {
 	mux.HandleFunc("GET /docks/appointments/{ref}", func(w http.ResponseWriter, r *http.Request) {
 		a, err := d.Appointment(r.Context(), r.PathValue("ref"))
+		if err != nil {
+			control.Answer(w, status(err), AppointmentResponse{Error: err.Error()})
+			return
+		}
+		control.Answer(w, http.StatusOK, AppointmentResponse{Appointment: a})
+	})
+	// A truck the site follows by delegation, by its carrier and reference.
+	mux.HandleFunc("GET /docks/trucks/{operator}/{ref}", func(w http.ResponseWriter, r *http.Request) {
+		a, err := d.Appointment(r.Context(), TruckKey(r.PathValue("operator"), r.PathValue("ref")))
 		if err != nil {
 			control.Answer(w, status(err), AppointmentResponse{Error: err.Error()})
 			return

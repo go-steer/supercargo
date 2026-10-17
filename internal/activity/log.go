@@ -88,6 +88,21 @@ func SlogSink(l *slog.Logger) func(Entry) {
 				attrs = append(attrs, slog.String("caller", t.Caller))
 			}
 			l.LogAttrs(ctx, level, "tool call", attrs...)
+		case e.Dock != nil:
+			d := e.Dock
+			level := slog.LevelInfo
+			if d.Error != "" {
+				level = slog.LevelWarn
+			}
+			attrs := []slog.Attr{slog.String("booking", d.Booking), slog.String("action", d.Action), slog.String("arrival", d.Arrival),
+				slog.String("dock", d.Dock), slog.Time("start", d.Start), slog.String("policy", d.Policy)}
+			if d.FromDock != "" {
+				attrs = append(attrs, slog.String("fromDock", d.FromDock), slog.Time("fromStart", d.FromStart))
+			}
+			if d.Error != "" {
+				attrs = append(attrs, slog.String("err", d.Error))
+			}
+			l.LogAttrs(ctx, level, "dock policy", attrs...)
 		case e.Voyage != nil && e.Voyage.Started:
 			v := e.Voyage
 			l.LogAttrs(ctx, slog.LevelInfo, "voyage started", slog.String("booking", v.Booking),
