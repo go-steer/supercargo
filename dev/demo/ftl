@@ -61,7 +61,14 @@ ui() { printf '%s/ui/' "$(web_origin "$1")"; }
 
 ctl() { curl -fsS --max-time "${3:-60}" --unix-socket "$dir/$1.sock" "http://control$2" "${@:4}"; }
 post() { ctl "$1" "$2" 120 -X POST -H 'Content-Type: application/json' ${3:+--data "$3"}; }
-leg_ref() { cat "$dir/leg.ref" 2>/dev/null || { echo "ftl: no truckload yet (run: book)" >&2; exit 1; }; }
+# leg_ref is the truckload: the one book made, else Serra's newest for Vale Verde (one
+# Vale Verde's assistant booked).
+leg_ref() {
+  local ref
+  ref="$(cat "$dir/leg.ref" 2>/dev/null || ctl sr /bookings | grep -o "\"shipper\":\"$VALE\",\"bookingRef\":\"SR-BKG-[0-9]*\"" | head -1 | cut -d'"' -f8)"
+  [[ -n "$ref" ]] || { echo "ftl: no truckload yet (run: book)" >&2; exit 1; }
+  echo "$ref"
+}
 
 VALE=vale-verde.example SERRA=serra-transportes.example AURORA=mercado-aurora.example
 FARM=58V75885+8J DC=588MHG44+MR

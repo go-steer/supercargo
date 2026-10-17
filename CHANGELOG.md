@@ -160,6 +160,7 @@ in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ### Fixed
 
+- The assistant on a truck leg or a followed truck: `get_status` answers with what's held instead of failing, and the dock tools find a followed truck's appointment (by carrier and reference; an ambiguous one needs the carrier). The UI says "on the road" for a truck, and a receiver's assistant speaks as one.
 - The assistant's `get_status` on a door-to-door order asks its forwarder for the order's status (by our reference), instead of failing as an ocean status request: the order's status, its legs as planned and the estimated delivery, without the forwarder's or a carrier's own words.
 - An EDI interchange addressed to anyone else is refused: the forwarder takes an acknowledgement or status only if its UNB recipient is its own EDI identity, and the mock carrier an instruction only if it is addressed to it. Before, only the sender was checked.
 
