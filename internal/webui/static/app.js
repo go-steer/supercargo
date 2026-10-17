@@ -446,7 +446,7 @@ function renderStrip(box, j) {
     const atSea = j.position.between && j.position.between[0] === l.from.unLocode && j.position.between[1] === l.to.unLocode;
     if (atSea) {
       const ship = el('span', 'ship estimated');
-      ship.dataset.tip = 'At sea (estimated: no message says exactly where)';
+      ship.dataset.tip = (l.mode === 'road' ? 'On the road' : 'At sea') + ' (estimated: no message says exactly where)';
       if (j.position.since) { ship.dataset.src = j.position.since; ship.onclick = () => openMessageFor(j.position.since); }
       seg.appendChild(ship);
     }
@@ -456,7 +456,10 @@ function renderStrip(box, j) {
   const first = j.legs[0], last = j.legs[j.legs.length - 1];
   const labels = el('div', 'labels');
   const from = el('span', null, `${first.from.unLocode} ${momentText(first.departure)}`);
-  const mid = el('span', 'mid', j.position.at ? `at ${j.position.at.unLocode}` : 'at sea (estimated)');
+  // Between two places: on the leg between them (a truck's or a ship's).
+  const between = j.legs.find((l) => j.position.between && j.position.between[0] === l.from.unLocode && j.position.between[1] === l.to.unLocode);
+  const road = (between || first).mode === 'road';
+  const mid = el('span', 'mid', j.position.at ? `at ${j.position.at.unLocode}` : road ? 'on the road (estimated)' : 'at sea (estimated)');
   const to = el('span', 'end' + (last.status === 'delayed' ? ' late' : ''), `${last.to.unLocode} ${momentText(last.arrival)}` +
     (last.status === 'delayed' ? ' · delayed' : ''));
   labels.append(from, mid, to);
@@ -541,7 +544,7 @@ const loadLeft = latest(async () => {
     // whatever moved, draws the panel.
     if (gen !== state.gen || side !== state.activeSide || tab !== currentTab()) return;
     const bar = el('div', 'panel-bar');
-    bar.append(el('span', 'panel-title', title), el('span', 'hint', state.activeSide === 'operator' ? 'carrier role' : 'shipper role'));
+    bar.append(el('span', 'panel-title', title), el('span', 'hint', state.activeSide === 'operator' ? 'carrier role' : receiverOnly() ? 'receiver role' : 'shipper role'));
     const body = el('div', 'panel-body');
     // A forwarder's orders have their own tab.
     const list = (r[key] || []).filter((s) => !(state.me.orders && side === 'operator' && s.kind === 'order'));
@@ -1099,7 +1102,13 @@ const ASSISTANT = {
   // A forwarder's operator side is its desk.
   desk: { hint: 'forwarder’s desk · it drafts; you decide', empty: 'Ask about our orders, their legs and proposals: “what should we do about MF-0007?”',
     placeholder: 'Ask about orders, legs and proposals…' },
+  // A receiver (no shipper role) follows what others ship to it.
+  receiver: { hint: 'receiver role · it drafts; you decide', empty: 'Ask about the deliveries coming to you: “where is the truck from Vale Verde?”',
+    placeholder: 'Ask about a delivery coming to you…' },
 };
+// receiverOnly: the persona's customer side is a receiver's, without the
+// shipper role.
+const receiverOnly = () => !state.me.persona.roles.includes('shipper');
 // aq is an assistant route for side.
 const aq = (side, path = '') => 'assistant' + path + (side === 'operator' ? '?side=operator' : '');
 
@@ -1241,7 +1250,7 @@ function orderDraftDialog(d, via) {
 
 function renderChat() {
   if (currentTab() !== 'assistant') return;
-  const side = state.activeSide, chat = state.chats[side], words = ASSISTANT[side === 'operator' && state.me.orders ? 'desk' : side];
+  const side = state.activeSide, chat = state.chats[side], words = ASSISTANT[side === 'operator' && state.me.orders ? 'desk' : side === 'customer' && receiverOnly() ? 'receiver' : side];
   if (!chat || !words) return;
   // One turn at a time in this page: every side's composer waits, and the
   // turn's own side shows its progress.

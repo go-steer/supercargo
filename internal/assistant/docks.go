@@ -84,12 +84,12 @@ const maxSlots = 40
 
 // DockTools are the shipper's own assistant's, with a dock schedule.
 var DockTools = []llm.Tool{
-	{Name: ToolGetDock, Description: "Our receiving site's dock appointment for one of our shipments, by our reference (shipperRef): its ID, dock, start and end (local time with offset), and the scheduling system it's in. Ours: never sent to another company.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"shipperRef":{"type":"string","maxLength":64}},"required":["shipperRef"],"additionalProperties":false}`)},
+	{Name: ToolGetDock, Description: "Our receiving site's dock appointment for one of our shipments, by our reference (shipperRef), or for a truck we follow by delegation, by the carrier's booking reference: its ID, dock, start and end (local time with offset), and the scheduling system it's in. Ours: never sent to another company.",
+		Schema: json.RawMessage(`{"type":"object","properties":{"shipperRef":{"type":"string","maxLength":64},"operator":{"type":"string","maxLength":253,"description":"A followed truck's carrier: only needed if the reference is ambiguous"}},"required":["shipperRef"],"additionalProperties":false}`)},
 	{Name: ToolFindSlots, Description: "Free dock slots at our receiving site from a day (YYYY-MM-DD), for 1-7 days, earliest first: dock, start and end.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"from":{"type":"string","maxLength":10},"days":{"type":"integer","minimum":1,"maximum":7}},"required":["from","days"],"additionalProperties":false}`)},
 	{Name: ToolDraftDock, Description: "Prepare moving one of our shipments' dock appointment to a free slot (from find_dock_slots: its dock and start, as given). Nothing moves: the user reviews it and confirms it themselves; only then is the appointment moved.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"shipperRef":{"type":"string","maxLength":64},"dock":{"type":"string","maxLength":32},"start":{"type":"string","maxLength":40,"description":"The slot's start, as find_dock_slots gave it (RFC 3339)"}},"required":["shipperRef","dock","start"],"additionalProperties":false}`)},
+		Schema: json.RawMessage(`{"type":"object","properties":{"shipperRef":{"type":"string","maxLength":64},"operator":{"type":"string","maxLength":253,"description":"A followed truck's carrier: only needed if the reference is ambiguous"},"dock":{"type":"string","maxLength":32},"start":{"type":"string","maxLength":40,"description":"The slot's start, as find_dock_slots gave it (RFC 3339)"}},"required":["shipperRef","dock","start"],"additionalProperties":false}`)},
 }
 
 // DockDraft is a dock appointment's move, prepared: from where, to where.
@@ -106,12 +106,46 @@ type DockDraft struct {
 	End           time.Time `json:"end"`
 }
 
+// dockRef is the schedule's reference for ref: a truck we follow by
+// delegation goes by its carrier and reference (docks.TruckKey), one of
+// our own shipments by our reference. A reference that could be either,
+// or two carriers' trucks, needs the carrier (operator) named.
+func (a *Assistant) dockRef(ctx context.Context, ref, operator string) (string, error) {
+	all, err := a.Node.Shipments(ctx)
+	if err != nil {
+		return "", err
+	}
+	var trucks []string
+	own := false
+	for _, s := range all {
+		switch {
+		case s.DelegatedBy != "" && s.Ref == ref && (operator == "" || s.Operator == operator):
+			trucks = append(trucks, docks.TruckKey(s.Operator, s.Ref))
+		case s.DelegatedBy == "" && s.ShipperRef == ref:
+			own = true
+		}
+	}
+	switch {
+	case len(trucks) > 1:
+		return "", refuse("two carriers' trucks are %s: say which carrier (operator)", ref)
+	case len(trucks) == 1 && own && operator == "":
+		return "", refuse("%s is both one of our shipments and a truck we follow: for the truck, say its carrier (operator)", ref)
+	case len(trucks) == 1:
+		return trucks[0], nil
+	}
+	return ref, nil
+}
+
 func (a *Assistant) runDocks(ctx context.Context, call llm.ToolCall) (any, error) {
 	switch call.Name {
 	case ToolGetDock:
-		var in struct{ ShipperRef string }
+		var in struct{ ShipperRef, Operator string }
 		_ = json.Unmarshal(call.Input, &in)
-		appt, err := a.Docks.DockAppointment(ctx, in.ShipperRef)
+		key, err := a.dockRef(ctx, in.ShipperRef, in.Operator)
+		if err != nil {
+			return nil, err
+		}
+		appt, err := a.Docks.DockAppointment(ctx, key)
 		if err != nil {
 			return nil, err
 		}
@@ -143,7 +177,7 @@ func (a *Assistant) runDocks(ctx context.Context, call llm.ToolCall) (any, error
 }
 
 func (a *Assistant) draftDock(ctx context.Context, raw json.RawMessage) (any, error) {
-	var in struct{ ShipperRef, Dock, Start string }
+	var in struct{ ShipperRef, Operator, Dock, Start string }
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, refuse("%v", err)
 	}
@@ -151,7 +185,11 @@ func (a *Assistant) draftDock(ctx context.Context, raw json.RawMessage) (any, er
 	if err != nil {
 		return nil, refuse("start %q is not an RFC 3339 time from find_dock_slots", in.Start)
 	}
-	appt, err := a.Docks.DockAppointment(ctx, in.ShipperRef)
+	key, err := a.dockRef(ctx, in.ShipperRef, in.Operator)
+	if err != nil {
+		return nil, err
+	}
+	appt, err := a.Docks.DockAppointment(ctx, key)
 	if err != nil {
 		return nil, err
 	}

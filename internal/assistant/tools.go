@@ -82,7 +82,7 @@ var Tools = []llm.Tool{
 		Schema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
 	{Name: ToolGetEvents, Description: "Get one booking's signed track-and-trace events and alerts, oldest first.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"bookingRef":{"type":"string","maxLength":64},"operator":{"type":"string","maxLength":253,"description":"Only needed if two carriers use the same reference"}},"required":["bookingRef"],"additionalProperties":false}`)},
-	{Name: ToolStatus, Description: "Ask the carrier for one of our bookings' current DCSA status (structured, signed, no model involved): status, vessel, current location, ETA and all its events, including any we missed. For a door-to-door order, the forwarder's signed answer: the order's status, its legs as planned, and the estimated delivery.",
+	{Name: ToolStatus, Description: "Ask the carrier for one of our bookings' current DCSA status (structured, signed, no model involved): status, vessel, current location, ETA and all its events, including any we missed. For a door-to-door order, the forwarder's signed answer: the order's status, its legs as planned, and the estimated delivery. A truck leg, or a booking followed by delegation, has no status request: the result is what we hold, and says where to look.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"bookingRef":{"type":"string","maxLength":64}},"required":["bookingRef"],"additionalProperties":false}`)},
 	{Name: ToolAsk, Description: "Ask the carrier a question about one of our bookings. Our node sends it signed; the carrier's (or forwarder's) agent answers from that booking's records and cites them. The result says which cited records we hold signed copies of (held) and which of those came from a source nobody signed, a forwarder's re-issued EDI status (unsigned): tell the user which facts are unsigned.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"bookingRef":{"type":"string","maxLength":64},"question":{"type":"string","maxLength":1000}},"required":["bookingRef","question"],"additionalProperties":false}`)},
@@ -283,6 +283,12 @@ func (a *Assistant) run(ctx context.Context, c *Conversation, t *turnState, call
 		t.statused[in.BookingRef] = true
 		if held.Kind == store.KindOrder {
 			return a.orderStatus(ctx, held)
+		}
+		if held.Kind == store.KindRoad || held.DelegatedBy != "" {
+			// No DCSA status request for these: a truck leg reports
+			// through its events, and a grantee holds no eBL to name.
+			return map[string]any{"note": "No status request for this booking (a truck leg, or followed by delegation): its status is its signed events (get_events); to ask the carrier, use ask_operator.",
+				"booking": held}, nil
 		}
 		st, err := a.Node.Status(ctx, held.Operator, in.BookingRef)
 		if err != nil {
