@@ -306,6 +306,7 @@ const KIND_TIPS = {
   summary: "What an alert means for you, written by the assistant (or the template, if the model's answer failed validation).",
   voyage: "A simulated voyage starting (the demo's shipment simulator).",
   push: "A push to a customer the node gave up on, or couldn't publish.",
+  dock: "What your standing dock policy did for a truck you follow: booked, moved or kept its appointment, and who set the policy.",
   tool: 'A tool one of your own outside agents called over MCP (Gemini Enterprise, say), and how it went. Never its arguments or results.',
 };
 const SIDE_TIPS = {
@@ -361,7 +362,7 @@ function addEntry(e) {
   // A message in or out: the messages panel catches up.
   if (e.kind === 'envelope') loadMessages();
   if (e.kind === 'tool') loadInbox();
-  if ((e.kind === 'record' || e.kind === 'voyage') && currentTab() !== 'assistant') loadLeft();
+  if ((e.kind === 'record' || e.kind === 'voyage' || e.kind === 'dock') && currentTab() !== 'assistant') loadLeft();
   // An order, its answer, a leg's message: the desk catches up.
   if (e.kind === 'envelope' && currentTab() === 'orders') loadLeft();
 }
@@ -593,10 +594,22 @@ const loadLeft = latest(async () => {
       const counts = el('div', 'summary-line dim', `${s.events} events · ${s.alerts} alerts${s.lastEvent ? ' · last: ' + s.lastEvent : ''}`);
       if (s.alerts) counts.classList.add('has-alert');
       card.appendChild(counts);
+      if (state.activeSide === 'customer' && s.delegatedBy) {
+        // A truck the site follows by delegation: its own dock appointment.
+        const dock = el('div');
+        card.appendChild(dock);
+        api(`docks/trucks/${encodeURIComponent(s.operator)}/${encodeURIComponent(s.bookingRef)}`).then((r) => renderDock(dock, r.appointment)).catch(() => {});
+      }
       if (state.activeSide === 'operator' && s.kind === 'road') {
         const bo = el('div');
         card.appendChild(bo);
         api(base + '/backoffice').then((r) => renderBackOffice(bo, r.steps || [])).catch(() => {});
+        // The leg on a map, if the node draws one: gone if it doesn't.
+        const map = el('img', 'leg-map');
+        map.alt = 'The leg on a map: pickup (P), corridor, delivery (D)';
+        map.onerror = () => map.remove();
+        map.src = API + base + '/map';
+        card.appendChild(map);
       }
       if (state.activeSide === 'operator') {
         const act = el('div', 'actions');
@@ -878,6 +891,18 @@ function proposalCard(v, p) {
     box.appendChild(el('div', 'fineprint', p.outcome));
   }
   return box;
+}
+
+// renderDock is the site's own dock appointment for a shipment: where and
+// when, and the standing policy that last booked or moved it, if one did.
+function renderDock(box, a) {
+  if (!a) return;
+  const fmt = (t) => new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const row = el('div', 'summary-line dock-line');
+  row.append(el('span', 'mode', 'DOCK'), ' ', el('b', null, a.dock || ''), ` · ${fmt(a.start)} – ${fmt(a.end)} · ${a.source || ''}`);
+  if (a.policy) row.appendChild(el('span', 'sub', ' · by the ' + a.policy));
+  row.dataset.tip = "Your own dock schedule's appointment for this truck: never sent to anyone.";
+  box.replaceChildren(row);
 }
 
 // renderBackOffice is what the carrier's own systems behind its node did

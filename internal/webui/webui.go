@@ -208,8 +208,14 @@ func Handler(cfg Config) http.Handler {
 	mux.HandleFunc("GET /ui/api/bookings", s.authed(s.forward("/bookings", []string{RoleOperator})))
 	mux.HandleFunc("GET /ui/api/bookings/{ref}/events", s.authed(s.forward("/bookings/{ref}/events", []string{RoleOperator})))
 	mux.HandleFunc("GET /ui/api/shipments/{operator}/{ref}/journey", s.authed(s.forward("/shipments/{operator}/{ref}/journey", shipper)))
+	// The site's own dock appointment for a truck it follows by
+	// delegation, by its carrier and reference; a node without docks
+	// answers 404.
+	mux.HandleFunc("GET /ui/api/docks/trucks/{operator}/{ref}", s.authed(s.forward("/docks/trucks/{operator}/{ref}", []string{RoleReceiver, RoleShipper})))
 	mux.HandleFunc("GET /ui/api/bookings/{ref}/journey", s.authed(s.forward("/bookings/{ref}/journey", []string{RoleOperator})))
 	mux.HandleFunc("GET /ui/api/bookings/{ref}/backoffice", s.authed(s.forward("/bookings/{ref}/backoffice", []string{RoleOperator})))
+	// A truck leg's map (a PNG the node fetched; 404 without a map).
+	mux.HandleFunc("GET /ui/api/bookings/{ref}/map", s.authed(s.forward("/bookings/{ref}/map", []string{RoleOperator})))
 	// The assistant is the shipper role's (a receiver's comes later, #75).
 	// The assistant routes take ?side= (customer, the default, or
 	// operator): the side's role is required.

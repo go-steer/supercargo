@@ -338,6 +338,8 @@ dl.facts dd { margin: 0; }
 #brand { margin-left: 8px; font-size: 11px; font-weight: 600; letter-spacing: .04em; padding: 1px 8px; border-radius: 10px;
   color: var(--blue); border: 1px solid color-mix(in srgb, var(--blue) 50%, transparent); }
 .backoffice { margin: 8px 0 2px; border: 1px dashed var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; }
+.leg-map { display: block; width: 100%; max-width: 640px; margin: 8px 0 2px; border: 1px solid var(--border); border-radius: 6px; }
+.dock-line .mode { margin-right: 4px; }
 .backoffice-head { display: flex; gap: 10px; align-items: baseline; margin-bottom: 4px; }
 .backoffice-head b { white-space: nowrap; }
 .backoffice-head .dim { font-size: 11px; }

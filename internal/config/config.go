@@ -476,8 +476,8 @@ func (f *LaneFreight) validate(mode string) error {
 }
 
 func (p *Planning) validate() error {
-	if p.Route == nil && p.Weather == nil {
-		return errors.New("needs a route, the weather, or both")
+	if p.Route == nil && p.Weather == nil && p.Map == nil {
+		return errors.New("needs a route, the weather or a map")
 	}
 	if r := p.Route; r != nil {
 		if r.QualP == nil {
@@ -489,6 +489,9 @@ func (p *Planning) validate() error {
 		if _, _, err := antt.Floor(r.Table, r.LoadType, r.Axles, 0); err != nil {
 			return fmt.Errorf("route: the ANTT doesn't price %q on %d axles, table %q", r.LoadType, r.Axles, r.Table)
 		}
+	}
+	if m := p.Map; m != nil && (!envName.MatchString(m.APIKeyEnv) || (m.Language != "" && !language.MatchString(m.Language))) {
+		return fmt.Errorf("map: apiKeyEnv %q must name an environment variable, and language %q be a BCP 47 tag", m.APIKeyEnv, m.Language)
 	}
 	if len(p.Via) > MaxWaypoints {
 		return fmt.Errorf("via: at most %d points", MaxWaypoints)
@@ -613,6 +616,9 @@ type Planning struct {
 	Route   *RoutePlanning `yaml:"route"`
 	Via     []Waypoint     `yaml:"via"`
 	Weather *WeatherSource `yaml:"weather"`
+	// Map draws each leg for the carrier's people (Google's Maps Static
+	// API, fetched by the node: the key never reaches a browser).
+	Map *GoogleWeather `yaml:"map"`
 }
 
 // RoutePlanning is the route service and the vehicle it prices.
@@ -641,7 +647,9 @@ type WeatherSource struct {
 	Mock   string         `yaml:"mock"`
 }
 
-// GoogleWeather is Google's Weather API.
+// GoogleWeather is a Google Maps Platform API (the Weather API, the Maps
+// Static API): the environment variable holding its key, and the
+// language of what it answers.
 type GoogleWeather struct {
 	APIKeyEnv string `yaml:"apiKeyEnv"`
 	Language  string `yaml:"language"`
@@ -774,6 +782,21 @@ type Docks struct {
 	Site  string   `yaml:"site"`
 	Zone  string   `yaml:"zone"`
 	Docks []string `yaml:"docks"`
+	// Hours are the slots' start hours each day, local time (default 6,
+	// 10, 14, 18); each slot is four hours.
+	Hours []int `yaml:"hours"`
+	// Policy is the site's standing dock policy: it books and moves the
+	// appointments of the trucks the node follows (docks.Policy).
+	Policy *DockPolicy `yaml:"policy"`
+}
+
+// DockPolicy is a standing dock policy: who set it, how long a slot must
+// run after the arrival (default 1h), and how far past it a slot may
+// start (default 36h).
+type DockPolicy struct {
+	By     string        `yaml:"by"`
+	Unload time.Duration `yaml:"unload"`
+	Ahead  time.Duration `yaml:"ahead"`
 }
 
 // AddressBook points at the company's address book file.
@@ -1182,8 +1205,24 @@ func (c *Config) validate() error {
 		}
 	}
 	if d := c.Docks; d != nil {
-		if c.Business == nil || !c.Has(RoleShipper) {
-			return errors.New("docks: for the shipper role, with a business file (its receiving slots are the appointments)")
+		switch {
+		case c.Has(RoleShipper) && c.Business == nil:
+			return errors.New("docks: a shipper's needs a business file (its receiving slots are the appointments)")
+		case !c.Customer():
+			return errors.New("docks: for the shipper or receiver role")
+		case len(d.Hours) > 6:
+			return errors.New("docks: at most 6 hours a day")
+		}
+		for i, h := range d.Hours {
+			if h < 0 || h > 23 || (i > 0 && h < d.Hours[i-1]+4) {
+				return fmt.Errorf("docks: hours %v: 0-23, rising, at least 4 apart (a slot is four hours)", d.Hours)
+			}
+		}
+		if len(d.Hours) > 1 && d.Hours[len(d.Hours)-1]+4 > d.Hours[0]+24 {
+			return fmt.Errorf("docks: hours %v: the last slot runs into the next day's first", d.Hours)
+		}
+		if p := d.Policy; p != nil && (!textOK(p.By, 64) || p.Unload < 0 || p.Unload > 4*time.Hour || p.Ahead < 0 || p.Ahead > 7*24*time.Hour) {
+			return errors.New("docks: policy needs by (1-64 characters of plain text), an unload of at most 4h and an ahead of at most 7 days")
 		}
 		if !textOK(d.Mock, 64) || !textOK(d.Site, 64) || len(d.Docks) == 0 || len(d.Docks) > 8 {
 			return errors.New("docks: mock and site (1-64 characters of plain text) and 1-8 docks")

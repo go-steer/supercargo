@@ -102,6 +102,9 @@ type App struct {
 	Business *business.Context
 	// Docks is the receiving site's dock schedule (the shipper's own).
 	Docks backend.DockAppointments
+	// DockPolicy is the site's standing dock policy, if it set one: it
+	// keeps the delegated trucks' appointments.
+	DockPolicy *docks.Policy
 	// Activity is the node's activity stream: the log's source, served live
 	// on the control API at /events.
 	Activity *activity.Bus
@@ -131,6 +134,9 @@ type App struct {
 	Control   *http.Server
 	// grants takes the delegations other companies hand this node.
 	grants *shipper.Grants
+	// legMap draws a truck leg's map for the carrier's people
+	// (road.planning.map), or nil.
+	legMap *legMap
 	// Orders is a forwarder's order desk, and Orchestrator plans and books
 	// its orders' legs (nil unless configured).
 	Orders       *forwarder.Orders
@@ -261,11 +267,14 @@ func New(cfg *config.Config, logger *slog.Logger) (_ *App, failed error) {
 	}
 	if d := cfg.Docks; d != nil {
 		zone, _ := time.LoadLocation(d.Zone) // config checked it
-		m := &docks.Mock{Source: d.Mock, Site: d.Site, Docks: d.Docks, Zone: zone, Now: time.Now}
+		m := &docks.Mock{Source: d.Mock, Site: d.Site, Docks: d.Docks, Zone: zone, Hours: d.Hours, Now: time.Now}
 		if err := m.Seed(a.Business); err != nil {
 			return nil, err
 		}
 		a.Docks = m
+		if p := d.Policy; p != nil {
+			a.DockPolicy = &docks.Policy{Docks: m, By: p.By, Unload: p.Unload, Ahead: p.Ahead}
+		}
 	}
 	if cfg.Customer() {
 		role := map[string]node.Handler{}
@@ -377,6 +386,9 @@ func New(cfg *config.Config, logger *slog.Logger) (_ *App, failed error) {
 				// here, as the simulator does for the demo.
 				operator.RegisterBackend(m, a.Publisher, a.Carrier.Bookings, a.Carrier.Events,
 					func(ref string, body intents.Body) { a.record(activity.ActionPublished, ref, body) })
+				if a.legMap != nil {
+					m.HandleFunc("GET /bookings/{ref}/map", a.legMap.serve)
+				}
 			})
 		}
 		if a.Shipper != nil {
@@ -858,6 +870,9 @@ func (a *App) operatorRole(handlers map[string]node.Handler) error {
 			// Why a service didn't answer, for the carrier's operators (the
 			// step says only "not available").
 			p.OnError = func(system string, err error) { a.Logger.Warn("journey planning", "system", system, "error", err) }
+			if a.legMap, err = newLegMap(r.Planning.Map, p.Via, a.Carrier.Bookings); err != nil {
+				return err
+			}
 			trucks.Planning = p
 		}
 		if r.Curfew != nil {
@@ -932,6 +947,9 @@ func (a *App) shipperRole(handlers map[string]node.Handler) error {
 		},
 		OnAlert: func(b store.Booking, al *intents.TnTAlertBody) {
 			a.record(activity.ActionRecorded, b.Ref, al)
+			if b.Delegated != nil {
+				a.keepDock(b, al.NewETA, dockAlerted)
+			}
 			a.Summarizer.Enqueue(b, al)
 			a.relay(func(r *forwarder.Relay) error { return r.Alert(b, al) })
 		},
@@ -959,6 +977,11 @@ func (a *App) shipperRole(handlers map[string]node.Handler) error {
 				a.Logger.Warn("delegated subscription failed", "booking", b.Ref, "carrier", b.Operator, "error", err)
 			} else {
 				a.Logger.Info("delegated subscription", "booking", b.Ref, "carrier", b.Operator, "status", c.Status)
+				// The leg's planned arrival is known now: the dock policy
+				// reserves a slot for it (never moves one).
+				if sb, err := a.Customer.Bookings.Get(b.Operator, b.Ref); err == nil && c.Status == intents.StatusConfirmed {
+					a.keepDock(sb, plannedArrival(sb), dockGranted)
+				}
 			}
 		}()
 	}}

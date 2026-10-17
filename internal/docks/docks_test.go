@@ -134,6 +134,21 @@ func TestControl(t *testing.T) {
 	if code, _ := do("GET", "/docks/appointments/NOPE", ""); code != 404 {
 		t.Errorf("unknown: HTTP %d", code)
 	}
+	// A truck followed by delegation, by its carrier and reference: never
+	// the company's own shipment of the same reference.
+	free, _ := m.Slots(context.Background(), time.Date(2026, 11, 9, 0, 0, 0, 0, saoPaulo), 1)
+	if _, err := m.Book(context.Background(), TruckKey("serra.example", "CY-PO-55120"), "policy", free[0]); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := do("GET", "/docks/trucks/serra.example/CY-PO-55120", ""); code != 200 || !strings.Contains(body, `"shipperRef":"serra.example/CY-PO-55120"`) {
+		t.Errorf("a truck: HTTP %d %s", code, body)
+	}
+	if code, body := do("GET", "/docks/appointments/CY-PO-55120", ""); code != 200 || !strings.Contains(body, `"dock":"Dock 2"`) || strings.Contains(body, "policy") {
+		t.Errorf("the company's own, beside a truck of the same reference: HTTP %d %s", code, body)
+	}
+	if code, _ := do("GET", "/docks/trucks/other.example/CY-PO-55120", ""); code != 404 {
+		t.Errorf("another carrier's: HTTP %d", code)
+	}
 	code, body := do("GET", "/docks/slots?from=2026-11-11&days=1", "")
 	var s SlotsResponse
 	_ = json.Unmarshal([]byte(body), &s)

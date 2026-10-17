@@ -101,3 +101,4 @@ github.com/go-steer/supercargo/internal/qualp           94.0  # 95.5
 github.com/go-steer/supercargo/internal/qualpmock       94.0  # 95.1
 github.com/go-steer/supercargo/internal/geo             88.0  # 88.9 (Decode after CheckFull never fails)
 github.com/go-steer/supercargo/internal/weather         92.0  # 93.3
+github.com/go-steer/supercargo/internal/staticmap       92.0  # 93.6

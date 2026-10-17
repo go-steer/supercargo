@@ -35,6 +35,7 @@ func TestPlanning(t *testing.T) {
       route: { qualp: { url: "http://127.0.0.1:8470", tokenEnv: QUALP_TOKEN, label: "QualP (simulated)" }, axles: 7, loadType: frigorificada, table: A }
       via: [{ name: Sinop, plusCode: "58W64FPV+89" }]
       weather: { google: { apiKeyEnv: MAPS_API_KEY, language: pt-BR } }
+      map: { apiKeyEnv: MAPS_API_KEY, language: pt-BR }
     curfew: { zone: "São Paulo truck restriction", locodes: [BRSAO, BRGRU], from: "05:00", to: "21:00", timeZone: America/Sao_Paulo, yard: "Guarulhos yard", yardToDelivery: 90m, by: "Dispatch lead" }
     driverApp: { mock: "Trizy (simulated)" }
 `
@@ -66,6 +67,8 @@ func TestPlanning(t *testing.T) {
 		"a bidi mock":           {"weather: { google: { apiKeyEnv: MAPS_API_KEY, language: pt-BR } }", "weather: { mock: \"a\u202eb\" }"},
 		"a bad key variable":    {"apiKeyEnv: MAPS_API_KEY", "apiKeyEnv: 9X"},
 		"a bad language":        {"language: pt-BR", "language: portuguese"},
+		"a bad map key":         {"map: { apiKeyEnv: MAPS_API_KEY", "map: { apiKeyEnv: 9X"},
+		"a bad map language":    {"map: { apiKeyEnv: MAPS_API_KEY, language: pt-BR }", "map: { apiKeyEnv: MAPS_API_KEY, language: x }"},
 		"a bidi driver app":     {`mock: "Trizy (simulated)"`, "mock: \"a\u202eb\""},
 		"no zone":               {`zone: "São Paulo truck restriction"`, `zone: ""`},
 		"a backwards window":    {`from: "05:00", to: "21:00"`, `from: "21:00", to: "05:00"`},
@@ -98,7 +101,8 @@ func TestPlanning(t *testing.T) {
 	}
 	nothing := strings.Replace(strings.Replace(in, "      route: { qualp: { url: \"http://127.0.0.1:8470\", tokenEnv: QUALP_TOKEN, label: \"QualP (simulated)\" }, axles: 7, loadType: frigorificada, table: A }\n", "", 1),
 		"      weather: { google: { apiKeyEnv: MAPS_API_KEY, language: pt-BR } }\n", "", 1)
-	if _, err := Parse([]byte(nothing)); err == nil || !strings.Contains(err.Error(), "needs a route") {
+	nothing = strings.Replace(nothing, "      map: { apiKeyEnv: MAPS_API_KEY, language: pt-BR }\n", "", 1)
+	if _, err := Parse([]byte(nothing)); err == nil || !strings.Contains(err.Error(), "needs a route, the weather or a map") {
 		t.Errorf("nothing to plan: %v", err)
 	}
 	many := strings.Replace(in, `via: [{ name: Sinop, plusCode: "58W64FPV+89" }]`, "via: ["+strings.Repeat(`{ name: Sinop, plusCode: "58W64FPV+89" }, `, MaxWaypoints+1)+"]", 1)

@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Smoke: the FTL journey (dev/demo/ftl) as real processes over real
+# sockets. Vale Verde books a truckload from a farm by its Plus Code with
+# Serra, which plans the route (the QualP mock) and the weather (the mock);
+# Vale Verde shares it with Mercado Aurora's DC, whose dock policy books a
+# slot; rain makes the truck late into São Paulo's restriction, Serra's
+# policy stages it and says so in a signed alert, and the DC's policy moves
+# its slot.
+set -euo pipefail
+. "$(dirname "$0")/lib.sh"
+
+work="$(mktemp -d)"
+demo="$(dirname "$0")/../demo/ftl"
+export FTL_PORT=$((10000 + RANDOM % 10000)) ULP_LLM=fake
+unset MAPS_API_KEY FTL_CUSTOMIZE
+trap '"$demo" down "$work" >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
+
+ctl() { curl -fsS --max-time 30 --unix-socket "$work/$1.sock" "http://control$2"; }
+fail() { smoke_fail "$work" "$@"; }
+# until_ok WHAT CMD...: wait up to 10s for CMD to succeed, or fail.
+until_ok() {
+  local what=$1 i
+  shift
+  for ((i = 0; i < 100; i++)); do "$@" >/dev/null 2>&1 && return 0; sleep 0.1; done
+  fail "timed out waiting for $what"
+}
+
+"$demo" up "$work" >/dev/null
+"$demo" book "$work" >/dev/null
+ref="$(cat "$work/leg.ref")"
+truck="/docks/trucks/serra-transportes.example/$ref"
+
+steps="$(ctl sr "/bookings/$ref/backoffice")"
+grep -q '"action":"Heavy-truck route planned"' <<<"$steps" || fail "no route planned: $steps"
+grep -q '"detail":"via Sinop, Cuiabá, Rondonópolis"' <<<"$steps" || fail "the route's corridor: $steps"
+grep -q '"action":"Weather checked: rain likely near pickup, Sinop"' <<<"$steps" || fail "no weather: $steps"
+
+"$demo" share "$work" >/dev/null
+until_ok "the DC's appointment" ctl au "$truck"
+first="$(ctl au "$truck")"
+grep -q '"start":"[0-9-]*T22:00:00-03:00"' <<<"$first" || fail "the DC's first slot: $first"
+grep -q '"policy":"standing dock policy, set by Receiving manager"' <<<"$first" || fail "the policy: $first"
+
+"$demo" rain "$work" >/dev/null
+staged() { ctl "$1" "/shipments/serra-transportes.example/$ref/events" | grep -q 'waits at Guarulhos staging yard until 21:00'; }
+until_ok "the staged alert at the DC" staged au
+staged vv || fail "the shipper has no staged alert"
+moved="$(ctl au "$truck")"
+if [[ "$moved" == "$first" ]] || ! grep -q '"start":"[0-9-]*T22:00:00-03:00"' <<<"$moved"; then
+  fail "the DC's slot didn't move to the next night: $moved"
+fi
+ctl sr "/bookings/$ref/backoffice" | grep -q '"action":"Driver told: go to Guarulhos staging yard, leave at 21:00"' || fail "the driver wasn't told"
+
+echo "✓ smoke/ftl: a farm by its Plus Code to a DC in Guarulhos; route and weather planned, rain staged the truck by policy, the DC's dock moved by its own"

@@ -214,7 +214,15 @@ are in:
   On Cloud Run each node runs under Litestream, copying its file to the
   company's bucket (`deploy/cloudrun`).
 
-Next: phase 3, the receiver (delegation, milestone 7).
+- Delegation (milestone 7): `pkg/delegation`, delegated access to a
+  booking (`ulp.delegation.grant`, the subscription, inquiries by the
+  token), and the FTL pilot on top of it: Plus Code stops, a road
+  carrier's journey planning (QualP route, Google weather, a map) and
+  truck restrictions with a standing staging policy, and a receiving
+  DC's docks with a standing dock policy (`dev/demo/ftl`,
+  `dev/smoke/ftl`).
+
+Next: the rest of phase 3 (revocation, more receivers).
 Cited cause IDs in alerts are always checked against the shipper's log
 before a model. `derived_from`'s text never reaches one: an inquiry
 model learns only whether a re-issued record's source was signed, as the

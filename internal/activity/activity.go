@@ -37,6 +37,7 @@ const (
 	KindPush     = "push"
 	KindSummary  = "summary"
 	KindTool     = "tool"
+	KindDock     = "dock"
 )
 
 // Entry is one thing the node did. Exactly one of the kind-specific fields
@@ -55,6 +56,23 @@ type Entry struct {
 	Push     *Push     `json:"push,omitempty"`
 	Summary  *Summary  `json:"summary,omitempty"`
 	Tool     *Tool     `json:"tool,omitempty"`
+	Dock     *Dock     `json:"dock,omitempty"`
+}
+
+// Dock is what a standing dock policy did for a truck (docks.Policy):
+// booked, moved or kept its appointment, or couldn't (Error), the policy
+// and who set it saying so.
+type Dock struct {
+	Booking   string    `json:"booking"`
+	Action    string    `json:"action"`
+	Dock      string    `json:"dock,omitempty"`
+	Start     time.Time `json:"start,omitzero"`
+	End       time.Time `json:"end,omitzero"`
+	FromDock  string    `json:"fromDock,omitempty"`
+	FromStart time.Time `json:"fromStart,omitzero"`
+	Arrival   string    `json:"arrival"`
+	Policy    string    `json:"policy"`
+	Error     string    `json:"error,omitempty"`
 }
 
 // Tool is a tool call an outside agent made on this node (over MCP): which

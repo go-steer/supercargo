@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The FTL demo, on localhost: Vale Verde, a beef packer in Mato Grosso,
+# books a chilled truckload from a farm with no street address (its Plus
+# Code) straight with Serra Transportes, to Mercado Aurora's DC in
+# Guarulhos, and shares the booking with the DC by delegation. Serra plans
+# the journey (the heavy-truck route from the QualP mock, the weather along
+# BR-163); rain makes the truck late enough to reach São Paulo inside its
+# truck restriction, so Serra's standing policy stages it until the window
+# ends and says so in a signed alert; the DC's standing dock policy moves
+# its appointment.
+#
+#   dev/demo/ftl up [DIR]       build, start the three nodes and the QualP mock, print the UIs
+#   dev/demo/ftl book [DIR]     Vale Verde books the truckload (POST /book/road)
+#   dev/demo/ftl share [DIR]    Vale Verde shares it with the DC for a week (a delegation)
+#   dev/demo/ftl rain [DIR]     rain on BR-163: the truck would reach São Paulo at 06:30 (ulpctl disrupt)
+#   dev/demo/ftl status [DIR]   the leg as the DC holds it, and its dock appointment
+#   dev/demo/ftl down [DIR]     stop everything
+#
+# DIR defaults to $TMPDIR/supercargo-ftl; keys are kept between runs, the
+# companies' state isn't. dev/smoke/ftl runs the same journey, scripted.
+# Needs curl, python3 and GNU date (Linux).
+#
+# Environment: FTL_PORT (8461: Vale Verde; Serra, Aurora and the QualP mock
+# take the next three), HOURS_PER_SECOND (0.5), ULP_LLM and ULP_LLM_MODEL
+# (as for hello-ulp: fake by default). MAPS_API_KEY, if set, is a Google
+# Maps Platform key: Serra checks the weather with Google's Weather API and
+# draws each leg with the Maps Static API (otherwise the weather is the
+# mock's, and there's no map). FTL_CUSTOMIZE, if set, is a program run with
+# DIR after the configs are written and before anything starts.
+set -euo pipefail
+. "$(dirname "$0")/../smoke/lib.sh"
+
+cmd="${1:-}"
+case "$cmd" in
+  up | down | book | share | rain | status) ;;
+  *) sed -n '/^# The FTL demo/,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 2 ;;
+esac
+dir="${2:-${TMPDIR:-/tmp}/supercargo-ftl}"
+mkdir -p "$dir"
+dir="$(cd "$dir" && pwd)"
+chmod 700 "$dir" # the signing keys and the control sockets live here
+
+base="${FTL_PORT:-8461}"
+VV=$base SR=$((base + 1)) AU=$((base + 2)) QP=$((base + 3))
+hps="${HOURS_PER_SECOND:-0.5}"
+ui() { printf '%s/ui/' "$(web_origin "$1")"; }
+
+ctl() { curl -fsS --max-time "${3:-60}" --unix-socket "$dir/$1.sock" "http://control$2" "${@:4}"; }
+post() { ctl "$1" "$2" 120 -X POST -H 'Content-Type: application/json' ${3:+--data "$3"}; }
+leg_ref() { cat "$dir/leg.ref" 2>/dev/null || { echo "ftl: no truckload yet (run: book)" >&2; exit 1; }; }
+
+VALE=vale-verde.example SERRA=serra-transportes.example AURORA=mercado-aurora.example
+FARM=58V75885+8J DC=588MHG44+MR
+
+setup() {
+  local llm k weather map
+  case "${ULP_LLM:-fake}" in
+    fake) llm="{ provider: fake }" ;;
+    anthropic) llm="{ provider: anthropic${ULP_LLM_MODEL:+, model: $ULP_LLM_MODEL} }" ;;
+    gemini) llm="{ provider: gemini, model: ${ULP_LLM_MODEL:-gemini-3.8-flash} }" ;;
+    vertex-claude) llm="{ provider: anthropic, backend: vertex${ULP_LLM_MODEL:+, model: $ULP_LLM_MODEL} }" ;;
+    vertex-gemini) llm="{ provider: gemini, backend: vertex, model: ${ULP_LLM_MODEL:-gemini-3.8-flash} }" ;;
+    *) echo "ftl: ULP_LLM must be fake, anthropic, gemini, vertex-claude or vertex-gemini" >&2; exit 1 ;;
+  esac
+  if [[ -n "${MAPS_API_KEY:-}" ]]; then
+    weather="{ google: { apiKeyEnv: MAPS_API_KEY } }"
+    map="
+      map: { apiKeyEnv: MAPS_API_KEY }"
+  else
+    weather="{ mock: \"Weather (simulated)\" }"
+    map=""
+  fi
+  for k in vv sr au; do
+    [[ -f "$dir/$k.pem" ]] || "$dir/bin/ulpnode" keygen --kid "$k-1" --out "$dir/$k.pem" >/dev/null
+  done
+  local all="$VALE $SERRA $AURORA"
+  local peers="peers:
+  $VALE: 127.0.0.1:$VV
+  $SERRA: 127.0.0.1:$SR
+  $AURORA: 127.0.0.1:$AU"
+  # node FILE DOMAIN NAME PORT KID PERSONA BODY
+  node() {
+    local others d
+    others="$(for d in $all; do [[ $d == "$2" ]] || printf '%s, ' "$d"; done)"
+    cat >"$dir/$1.yaml" <<EOF
+domain: $2
+name: $3
+listen: 127.0.0.1:$4
+tls: { mode: insecure-dev }
+keys: [{ kid: $5-1, privateKeyFile: $dir/$5.pem }]
+$peers
+partners: [${others%, }]
+control: { socket: $dir/$5.sock }
+llm: $llm
+web:
+  auth: demo             # no password: local demos only
+  personas:
+    - $6$(web_hosts "$4")
+  frameAncestors: ["$(web_origin "$SR")"]   # Serra's presenter page
+$7
+EOF
+  }
+  # Vale Verde's address book: its carrier, its customer's DC, and its
+  # places (the farm by its Plus Code: it has no street address).
+  cat >"$dir/address-book.yaml" <<EOF
+entries:
+  - domain: $SERRA
+    name: Serra Transportes
+    roles: [carrier]
+    description: Our road carrier for chilled truckloads to São Paulo.
+  - domain: $AURORA
+    name: Mercado Aurora
+    roles: [consignee]
+    description: Our customer; its DC in Guarulhos receives the beef.
+places:
+  - id: fazenda-boa-safra
+    name: Fazenda Boa Safra
+    party: { name: Vale Verde Carnes Ltda, domain: $VALE }
+    place: { type: door, facility: "Fazenda Boa Safra, loading bay", un_location_code: BRCGB, plus_code: "$FARM",
+      address: { street: "Estrada vicinal, zona rural", locality: Feliz Natal, region: MT, country: BR } }   # vague: the Plus Code pins it
+  - id: aurora-dc
+    name: Mercado Aurora DC
+    party: { name: Mercado Aurora S.A., domain: $AURORA }
+    place: { type: door, facility: "Mercado Aurora DC", un_location_code: BRGRU, plus_code: "$DC",
+      address: { street: "Rodovia Presidente Dutra, km 225", locality: Guarulhos, region: SP, country: BR } }
+EOF
+  node vale vale-verde.example "Vale Verde" "$VV" vv '{ id: logistics, name: "Logistics", title: "Vale Verde", roles: [shipper] }' "role: shipper
+addressBook: { file: $dir/address-book.yaml }"
+  node serra serra-transportes.example "Serra Transportes" "$SR" sr '{ id: dispatch, name: "Dispatch", title: "Serra Transportes", roles: [operator] }' "  presenter:
+    panels:
+      - { name: \"Vale Verde · shipper\", url: \"$(ui "$VV")\" }
+      - { name: \"Serra · road carrier\", url: \"$(ui "$SR")\" }
+      - { name: \"Mercado Aurora · DC\", url: \"$(ui "$AU")\" }
+role: operator
+operator:
+  refPrefix: SR-BKG
+  road:
+    transit: 48h                 # Feliz Natal to Guarulhos: two drivers (a team), with stops
+    cte: { cnpj: \"12345678000190\", state: 51, mdfe: true }
+    tms: \"TMS (simulated)\"       # the systems behind Serra's node: mocks
+    risk: { mock: \"Risk manager (simulated)\" }
+    tollVoucher: { mock: \"Vale-Pedágio (simulated)\" }
+    planning:
+      route: { qualp: { url: \"http://127.0.0.1:$QP\", tokenEnv: QUALP_TOKEN, label: \"QualP (simulated)\" }, axles: 6, loadType: frigorificada, table: A }
+      via: [{ name: Sinop, plusCode: \"58W64FPV+89\" }, { name: Cuiabá, plusCode: \"58P59WX2+FV\" }, { name: Rondonópolis, plusCode: \"58M7G9M7+44\" }]
+      weather: $weather$map
+    curfew:                      # simplified: one window, weekdays and weekends alike
+      zone: \"São Paulo truck restriction (simplified)\"
+      locodes: [BRSAO, BRGRU]
+      from: \"05:00\"
+      to: \"21:00\"
+      timeZone: America/Sao_Paulo
+      yard: \"Guarulhos staging yard\"
+      yardToDelivery: 90m
+      by: \"Dispatch lead\"
+    driverApp: { mock: \"Driver app (simulated)\" }
+simulator: { hoursPerSecond: $hps }"
+  node aurora mercado-aurora.example "Mercado Aurora" "$AU" au '{ id: receiving, name: "Receiving", title: "Mercado Aurora DC", roles: [receiver] }' "roles: [receiver]
+grants: { from: [$VALE] }
+docks:
+  mock: \"Dock scheduling (simulated)\"
+  site: Guarulhos DC
+  zone: America/Sao_Paulo
+  docks: [Dock 1, Dock 2, Dock 3]
+  hours: [6, 10, 14, 18, 22]     # a night window, for trucks after the restriction
+  policy: { by: \"Receiving manager\" }"
+}
+
+up() {
+  down quiet
+  echo "Building..."
+  demo_build "$dir"
+  setup
+  if [[ -n "${FTL_CUSTOMIZE:-}" ]]; then "$FTL_CUSTOMIZE" "$dir"; fi
+  : >"$dir/pids"
+  export QUALP_TOKEN="${QUALP_TOKEN:-demo}" # the mock's; a real QualP token stays in the environment
+  nohup "$dir/bin/ulpmock" qualp --listen "127.0.0.1:$QP" --token-env QUALP_TOKEN >/dev/null 2>"$dir/qualp.log" &
+  echo $! >>"$dir/pids"
+  local n p up
+  for n in vale serra aurora; do
+    nohup "$dir/bin/ulpnode" serve --config "$dir/$n.yaml" --log-format json >/dev/null 2>"$dir/$n.log" &
+    echo $! >>"$dir/pids"
+  done
+  for p in "$VV" "$SR" "$AU"; do
+    up=false
+    for _ in $(seq 1 100); do curl -fsS "http://127.0.0.1:$p/.well-known/ulp" >/dev/null 2>&1 && { up=true; break; }; sleep 0.1; done
+    $up || { echo "ftl: the node on port $p didn't come up (port taken? see $dir/*.log)" >&2; down quiet; exit 1; }
+  done
+  rm -f "$dir/leg.ref"
+  cat <<EOF
+
+The FTL demo is running ($dir; logs in *.log).
+
+  Browser UIs (sign in as the persona):
+    Vale Verde          $(ui "$VV")   (Logistics)
+    Serra Transportes   $(ui "$SR")   (Dispatch)
+    Mercado Aurora DC   $(ui "$AU")   (Receiving)
+    All three:          $(web_origin "$SR")/ui/presenter
+
+  Then, step by step:
+    $0 book     Vale Verde books the truckload from the farm (or ask its assistant)
+    $0 share    Vale Verde shares it with Aurora's DC
+    $0 rain     rain on BR-163: the truck is late into São Paulo's restriction
+    $0 status   the leg and the DC's dock appointment
+    $0 down     stop
+EOF
+}
+
+down() {
+  [[ -f "$dir/pids" ]] || return 0
+  local p pids
+  pids="$(cat "$dir/pids")"
+  for p in $pids; do kill "$p" 2>/dev/null || true; done
+  for p in $pids; do
+    for _ in $(seq 1 50); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
+  done
+  rm -f "$dir/pids"
+  [[ "${1:-}" == quiet ]] || echo "Stopped."
+}
+
+book() {
+  local pickup latest out ref
+  # Picked up at 22:00 in Mato Grosso's time
+  # (02:00 UTC), delivered 48 hours later: 23:00 in São Paulo, after the
+  # restriction's window.
+  pickup="$(date -u -d '+2 days' +%Y-%m-%dT02:00:00Z)"
+  latest="$(date -u -d '+5 days' +%Y-%m-%dT12:00:00Z)"
+  out="$(post vv /book/road '{"carrier": "'"$SERRA"'", "request": {
+    "shipper_reference": "VV-FTL-0042",
+    "shipper": {"name": "Vale Verde Carnes Ltda", "domain": "'"$VALE"'"},
+    "consignee": {"name": "Mercado Aurora S.A.", "domain": "'"$AURORA"'"},
+    "pickup": {"facility": "Fazenda Boa Safra, loading bay", "un_location_code": "BRCGB", "plus_code": "'"$FARM"'", "earliest": "'"$pickup"'"},
+    "delivery": {"facility": "Mercado Aurora DC", "un_location_code": "BRGRU", "plus_code": "'"$DC"'", "latest": "'"$latest"'",
+      "address": {"street": "Rodovia Presidente Dutra, km 225", "locality": "Guarulhos", "region": "SP", "country": "BR"}},
+    "containers": [{"equipment_size_type": "45R1", "count": 1, "gross_weight_kg": 26000}],
+    "cargo": {"description": "Chilled beef, boxed", "hs_code": "0201"},
+    "subscription": {"endpoint": "http://'"$VALE"'/ulp", "intents": ["ulp.tnt.event", "ulp.tnt.alert"]}}}')"
+  ref="$(sed -n 's/.*"carrier_booking_reference":"\([^"]*\)".*/\1/p' <<<"$out")"
+  [[ -n "$ref" ]] || { echo "ftl: no booking reference in $out" >&2; exit 1; }
+  echo "$ref" >"$dir/leg.ref"
+  echo "Serra confirmed $ref: $(sed -n 's/.*"planned_pickup":"\([^"]*\)".*/pickup \1/p' <<<"$out"), $(sed -n 's/.*"planned_delivery":"\([^"]*\)".*/delivery \1/p' <<<"$out")."
+}
+
+share() {
+  local ref out
+  ref="$(leg_ref)"
+  out="$(post vv "/shipments/$SERRA/$ref/grant" '{"grantee": "'"$AURORA"'", "scope": ["tnt:read", "tnt:subscribe"], "days": 7, "note": "Your chilled beef, farm to DC"}')"
+  grep -q '"tokenId"' <<<"$out" || { echo "ftl: not shared: $out" >&2; exit 1; }
+  echo "Vale Verde shared $ref with Mercado Aurora for 7 days; its DC subscribes with Serra."
+}
+
+rain() {
+  local ref planned delay
+  ref="$(leg_ref)"
+  planned="$(ctl sr "/bookings/$ref/events" | python3 -c 'import json, sys
+s = json.load(sys.stdin)["summary"]
+print(s.get("eta") or s.get("plannedArrival") or "")')"
+  [[ -n "$planned" ]] || { echo "ftl: no arrival for $ref" >&2; exit 1; }
+  # Late enough to reach São Paulo at 06:30, inside the restriction.
+  delay="$(python3 -c 'import sys, datetime as d
+eta = d.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+sp = d.timezone(d.timedelta(hours=-3))
+local = eta.astimezone(sp)
+target = local.replace(hour=6, minute=30, second=0)
+if target <= local: target += d.timedelta(days=1)
+print(f"{int((target - local).total_seconds() // 60)}m")' "$planned")"
+  "$dir/bin/ulpctl" disrupt --config "$dir/serra.yaml" --booking "$ref" --delay "$delay" --reason "Heavy rain on BR-163 near Sinop." >/dev/null
+  echo "Rain on BR-163: $ref is $delay late, into São Paulo's restriction. Watch the alert, the staging yard and the DC's dock."
+}
+
+status() {
+  local ref
+  ref="$(leg_ref)"
+  echo "Mercado Aurora's view:"; ctl au /shipments | tr '{' '\n' | grep "\"bookingRef\":\"$ref\"" || true
+  echo "Its dock appointment:"; ctl au "/docks/trucks/$SERRA/$ref" || true
+  echo
+}
+
+"$cmd"
