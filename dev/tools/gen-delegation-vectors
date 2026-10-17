@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Generate testdata/golden/delegation.json with an independent JOSE
+implementation, and check Go-made delegation tokens with it.
+
+A ULP delegation token is a JWS (RFC 7515, flattened JSON serialization)
+with typ "ulp-delegation+jws", signed with Ed25519 by the booking's shipper
+(docs/DESIGN.md, A.4 "Delegation"). joserfc makes the vectors, so they show
+what any conforming implementation produces and accepts.
+
+  uv run --no-project --with joserfc dev/tools/gen-delegation-vectors
+  uv run --no-project --with joserfc dev/tools/gen-delegation-vectors verify-go F
+
+F is written by the Go test TestGoSealedTokensForPython when
+SUPERCARGO_GO_SIGNED_OUT=F is set. Neither mode runs in dev/tools/ci.
+Regenerating makes fresh keys, so every vector changes: deliberately, never
+to make a test pass. Private keys live only in this process.
+"""
+
+import base64
+import json
+import sys
+from pathlib import Path
+
+try:
+    from joserfc import jws
+    from joserfc.jwk import OctKey, OKPKey
+except ImportError:
+    sys.exit("gen-delegation-vectors: needs joserfc; run\n"
+             "  uv run --no-project --with joserfc dev/tools/gen-delegation-vectors")
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+OUT = REPO_ROOT / "testdata" / "golden" / "delegation.json"
+TYP, ALG = "ulp-delegation+jws", "Ed25519"
+KID, OTHER_KID = "vv-2026-1", "vv-2026-2"
+GRANT = {
+    "tokenId": "7c1e4b2a-9d3f-4e8a-b6c5-2f0a1d9e8b7c",
+    "issuer": "vale-verde.example",
+    "audience": "serra-transportes.example",
+    "grantee": "mercado-aurora.example",
+    "scope": ["tnt:read", "tnt:subscribe"],
+    "bookingRef": "SR-BKG-0913",
+    "issuedAt": "2026-10-20T12:00:00Z",
+    "expiresAt": "2026-11-19T12:00:00Z",
+}
+
+
+def b64(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+
+def b64json(obj) -> str:
+    return b64(json.dumps(obj, separators=(",", ":")).encode("utf-8"))
+
+
+def public_jwk(key, kid):
+    d = key.as_dict(private=False)
+    d.update({"kid": kid, "alg": ALG, "use": "sig"})
+    return d
+
+
+def seal(payload: bytes, key, alg=ALG, kid=KID, typ=TYP, extra=None):
+    protected = {"alg": alg, "kid": kid, "typ": typ}
+    protected.update(extra or {})
+    return jws.serialize_json({"protected": protected}, payload, key, algorithms=[alg])
+
+
+def vectors(key, other):
+    """Each vector: the wire, the grant it carries if valid, else the error
+    class (malformed or signature) and a substring of the reason."""
+    out = []
+
+    def add(name, wire, grant, error=None, reason=None):
+        out.append({"name": name, "wire": wire if isinstance(wire, str) else json.dumps(wire),
+                    "grant": grant, "error": error, "reason": reason})
+
+    def text(g, **kw):
+        return json.dumps(g, **kw)
+
+    # Valid, as the signer chose to write the payload.
+    add("compact", seal(text(GRANT, separators=(",", ":")).encode(), key), GRANT)
+    add("indented", seal(text(GRANT, indent=2).encode(), key), GRANT)
+    read_only = dict(GRANT, scope=["tnt:read"])
+    add("read_only", seal(text(read_only).encode(), key), read_only)
+    longest = dict(GRANT, expiresAt="2026-11-20T12:00:00Z")  # exactly 31 days
+    add("longest_life", seal(text(longest).encode(), key), longest)
+
+    good = seal(text(GRANT, separators=(",", ":")).encode(), key)
+    # Signature failures: well formed, not signed by the issuer's key.
+    widened = dict(GRANT, grantee="someone-else.example")
+    add("tampered_grantee", dict(good, payload=b64json(widened)), None, "signature", "verification failed")
+    add("tampered_kid", dict(good, protected=b64json({"alg": ALG, "kid": OTHER_KID, "typ": TYP})), None, "signature", "verification failed")
+    add("signed_by_other_key", seal(text(GRANT).encode(), other), None, "signature", "verification failed")
+    add("alg_eddsa_deprecated_name", seal(text(GRANT).encode(), key, alg="EdDSA"), None, "signature", "names alg")
+    hmac = OctKey.import_key(key.as_dict(private=False)["x"].encode("ascii"))
+    add("alg_hs256_keyed_with_public_key", seal(text(GRANT).encode(), hmac, alg="HS256"), None, "signature", "names alg")
+    add("unknown_kid", seal(text(GRANT).encode(), key, kid="vv-2025-9"), None, "signature", "the issuer's key")
+
+    # Malformed: refused before any key is looked up.
+    add("typ_envelope", seal(text(GRANT).encode(), key, typ="ulp-envelope+jws"), None, "malformed", "typ")
+    add("typ_jwt", seal(text(GRANT).encode(), key, typ="JWT"), None, "malformed", "typ")
+    add("alg_none", {"protected": b64json({"alg": "none", "kid": KID, "typ": TYP}), "payload": good["payload"], "signature": "AA"},
+        None, "malformed", "alg")
+    add("empty_kid", {"protected": b64json({"alg": ALG, "kid": "", "typ": TYP}), "payload": good["payload"],
+                      "signature": good["signature"]}, None, "malformed", "kid")
+    for name, extra in [("protected_crit", {"crit": ["exp"]}), ("protected_b64_false", {"b64": False}),
+                        ("protected_jwk", {"jwk": public_jwk(key, KID)})]:
+        add(name, {"protected": b64json(dict({"alg": ALG, "kid": KID, "typ": TYP}, **extra)), "payload": good["payload"],
+                   "signature": good["signature"]}, None, "malformed", "unknown member")
+    add("compact_serialization", jws.serialize_compact({"alg": ALG, "kid": KID, "typ": TYP}, text(GRANT).encode(), key,
+                                                       algorithms=[ALG]), None, "malformed", "JSON")
+    add("unprotected_header", dict(good, header={"kid": OTHER_KID}), None, "malformed", "unknown member")
+    add("padded_payload", dict(good, payload=good["payload"] + "=" * (-len(good["payload"]) % 4 or 2)), None, "malformed", "payload")
+    add("padded_signature", dict(good, signature=good["signature"] + "=="), None, "malformed", "signature")
+    add("newline_in_payload", dict(good, payload=good["payload"][:10] + "\n" + good["payload"][10:]), None, "malformed", "payload")
+    for name, g, reason in [
+        ("unknown_member", dict(GRANT, role="admin"), "unknown member"),
+        ("case_variant_member", dict({k: v for k, v in GRANT.items() if k != "issuer"}, Issuer=GRANT["issuer"]), "issuer"),
+        ("null_member", dict(GRANT, grantee=None), "grantee"),
+        ("missing_expiry", {k: v for k, v in GRANT.items() if k != "expiresAt"}, "expiresAt"),
+        ("missing_token_id", {k: v for k, v in GRANT.items() if k != "tokenId"}, "tokenId"),
+        ("uppercase_token_id", dict(GRANT, tokenId=GRANT["tokenId"].upper()), "tokenId"),
+        ("unknown_scope", dict(GRANT, scope=["tnt:read", "booking:write"]), "scope"),
+        ("scope_twice", dict(GRANT, scope=["tnt:read", "tnt:read"]), "scope"),
+        ("scope_out_of_order", dict(GRANT, scope=["tnt:subscribe", "tnt:read"]), "scope"),
+        ("empty_scope", dict(GRANT, scope=[]), "scope"),
+        ("grantee_is_issuer", dict(GRANT, grantee=GRANT["issuer"]), "three different"),
+        ("audience_is_issuer", dict(GRANT, audience=GRANT["issuer"]), "three different"),
+        ("grantee_is_audience", dict(GRANT, grantee=GRANT["audience"]), "three different"),
+        ("bad_booking_ref", dict(GRANT, bookingRef="SR.BKG.0913"), "bookingRef"),
+        ("too_long", dict(GRANT, expiresAt="2026-11-20T12:00:01Z"), "at most"),
+        ("expires_before_issued", dict(GRANT, expiresAt="2026-10-19T12:00:00Z"), "after issuedAt"),
+        ("fractional_seconds", dict(GRANT, issuedAt="2026-10-20T12:00:00.5Z"), "issuedAt"),
+        ("offset_time", dict(GRANT, issuedAt="2026-10-20T12:00:00+00:00"), "issuedAt"),
+        ("hour_24", dict(GRANT, expiresAt="2026-11-18T24:00:00Z"), "expiresAt"),
+        ("uppercase_domain", dict(GRANT, audience="Serra-Transportes.example"), "audience"),
+    ]:
+        add(name, seal(text(g).encode(), key), None, "malformed", reason)
+    dup = text(GRANT, separators=(",", ":")).replace('"bookingRef":', '"grantee":"x.example","bookingRef":', 1)
+    add("duplicate_member", seal(dup.encode(), key), None, "malformed", "duplicate")
+    envelope_like = {"header": {"intent": "ulp.tnt.inquiry"}, "body": {}, "attachments": {"delegation": None}}
+    add("an_envelope", seal(text(envelope_like).encode(), key, typ="ulp-envelope+jws"), None, "malformed", "typ")
+    return out
+
+
+def generate():
+    key, other = OKPKey.generate_key("Ed25519"), OKPKey.generate_key("Ed25519")
+    doc = {"note": "Generated by dev/tools/gen-delegation-vectors with joserfc. Regenerate, never edit.",
+           "keys": [public_jwk(key, KID), public_jwk(other, OTHER_KID)], "vectors": vectors(key, other)}
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"wrote {OUT.relative_to(REPO_ROOT)} ({len(doc['vectors'])} vectors)")
+
+
+def verify_go(path):
+    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    key = OKPKey.import_key(doc["jwk"])
+    failures = 0
+    for t in doc["tokens"]:
+        try:
+            obj = jws.deserialize_json(json.loads(t["wire"]), key, algorithms=[ALG])
+            assert obj.headers() == {"alg": ALG, "kid": doc["jwk"]["kid"], "typ": TYP}, obj.headers()
+            assert json.loads(obj.payload) == t["grant"], "payload differs from what Go signed"
+            print(f"ok   {t['name']}")
+        except Exception as e:
+            failures += 1
+            print(f"FAIL {t['name']}: {type(e).__name__}: {e}")
+    if failures:
+        sys.exit(f"{failures} Go-sealed token(s) failed in joserfc")
+    print(f"all {len(doc['tokens'])} Go-sealed tokens verify in joserfc")
+
+
+def main(argv):
+    if len(argv) == 1:
+        generate()
+    elif len(argv) == 3 and argv[1] == "verify-go":
+        verify_go(argv[2])
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main(sys.argv)
