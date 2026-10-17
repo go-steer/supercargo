@@ -55,7 +55,11 @@ type Draft struct {
 	Rate *RateDraft
 	// Dock, if set, makes this a move of one of our dock appointments
 	// (done on our own schedule, sent to no one).
-	Dock    *DockDraft
+	Dock *DockDraft
+	// Road, if set, makes this a truckload booked with a road carrier.
+	Road *RoadDraft
+	// Grant, if set, makes this a delegation of one of our bookings.
+	Grant   *GrantDraft
 	Created time.Time
 }
 
@@ -104,6 +108,19 @@ func (d *Drafts) add(dr Draft) (Draft, error) {
 	}
 	if dr.Dock != nil {
 		dr.ID = fmt.Sprintf("AD-%04d", d.next)
+		d.drafts[dr.ID] = dr
+		return dr, nil
+	}
+	if dr.Road != nil {
+		dr.ID = fmt.Sprintf("TD-%04d", d.next)
+		if dr.Road.Request.ShipperRef == "" {
+			dr.Road.Request.ShipperRef = dr.ID
+		}
+		d.drafts[dr.ID] = dr
+		return dr, nil
+	}
+	if dr.Grant != nil {
+		dr.ID = fmt.Sprintf("GD-%04d", d.next)
 		d.drafts[dr.ID] = dr
 		return dr, nil
 	}

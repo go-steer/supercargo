@@ -30,7 +30,12 @@ import (
 var (
 	// refPattern: no dots, so every reference a body carries can also be
 	// asked about in a status request (statusRefPattern, the DCSA query's).
-	refPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+	refPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+	// plusCodePattern is a full Open Location Code of ten or eleven
+	// digits: latitude and longitude digit pairs from the code's alphabet
+	// (the first latitude digit 0-8, the first longitude 0-17), the "+"
+	// after eight, and two or three after it.
+	plusCodePattern  = regexp.MustCompile(`^[2-9C][2-9CFGHJMPQRV][2-9CFGHJMPQRVWX]{6}\+[2-9CFGHJMPQRVWX]{2,3}$`)
 	unLocodePattern  = regexp.MustCompile(`^[A-Z]{2}[A-Z2-9]{3}$`)
 	isoTypePattern   = regexp.MustCompile(`^[0-9A-Z]{4}$`)
 	hsCodePattern    = regexp.MustCompile(`^[0-9]{4,10}$`)

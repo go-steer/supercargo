@@ -232,6 +232,14 @@ func (a *Assistant) run(ctx context.Context, c *Conversation, t *turnState, call
 		return a.draftQuestion(ctx, call.Input)
 	case ToolBusiness:
 		return a.businessContext()
+	case ToolDraftRoad:
+		if len(a.Places) > 0 {
+			return a.draftRoad(ctx, c, call.Input)
+		}
+	case ToolDraftGrant:
+		if a.Own {
+			return a.draftGrant(ctx, c, call.Input)
+		}
 	case ToolGetDock, ToolFindSlots, ToolDraftDock:
 		if a.Docks != nil {
 			return a.runDocks(ctx, call)
@@ -462,6 +470,10 @@ type DraftResult struct {
 	Rate *RateDraft `json:"rate,omitempty"`
 	// Dock is a move of one of our dock appointments.
 	Dock *DockDraft `json:"dock,omitempty"`
+	// Road is a truckload, to the road carrier To.
+	Road *intents.RoadBookingRequestBody `json:"road,omitempty"`
+	// Grant is a delegation of one of our bookings.
+	Grant *GrantDraft `json:"grant,omitempty"`
 	// Disruption is a carrier's drafted delay, instead of a booking.
 	Disruption *Disruption `json:"disruption,omitempty"`
 	// NotSent is the private part of the draft, which stays here.
@@ -554,6 +566,16 @@ func (d Draft) Result() DraftResult {
 		qd := *q
 		return DraftResult{DraftID: d.ID, To: q.Operator, Question: &qd,
 			Next: "Nothing has been sent. Tell the user the question is ready for them to read and send; only they can send it."}
+	}
+	if r := d.Road; r != nil {
+		req := r.Request
+		return DraftResult{DraftID: d.ID, To: r.Carrier, Road: &req, NotSent: maps.Clone(r.NotSent), NewPartner: d.NewPartner,
+			Next: "Nothing has been sent. Tell the user the truckload is ready for them to review and confirm; only they can send it. Say which private dates stay with us."}
+	}
+	if g := d.Grant; g != nil {
+		gd := *g
+		return DraftResult{DraftID: d.ID, To: g.Grantee, Grant: &gd, NewPartner: d.NewPartner,
+			Next: "Nothing has been granted. Tell the user the sharing is ready for them to review and confirm; only they can grant it."}
 	}
 	if k := d.Dock; k != nil {
 		kd := *k

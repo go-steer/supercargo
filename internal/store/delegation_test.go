@@ -51,3 +51,17 @@ func TestDelegationRecords(t *testing.T) {
 		t.Errorf("copies share: %+v", b)
 	}
 }
+
+// TestSummaryDelegation: a delegated booking says by whom and until when
+// (no kind before its leg is known); a shared one, with whom.
+func TestSummaryDelegation(t *testing.T) {
+	end := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	s := Summarize(Booking{Ref: "R-1", Operator: "c.example", Shipper: "i.example", Delegated: &DelegatedBooking{Issuer: "i.example", Expires: end}}, nil)
+	if s.DelegatedBy != "i.example" || s.DelegatedUntil != "2026-11-01T00:00:00Z" || s.Kind != "" {
+		t.Errorf("%+v", s)
+	}
+	s = Summarize(Booking{Ref: "R-2", Operator: "c.example", Grants: []IssuedGrant{{Grantee: "g.example"}, {Grantee: "g.example"}, {Grantee: "h.example"}}}, nil)
+	if len(s.SharedWith) != 2 || s.SharedWith[0] != "g.example" {
+		t.Errorf("%+v", s.SharedWith)
+	}
+}

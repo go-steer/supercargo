@@ -482,7 +482,9 @@ func (a *App) publicHandler(n *node.Node) http.Handler {
 	var assistantSides []string
 	if a.Config.LLM != nil {
 		client := control.InProcess(a.controlAPI, 2*time.Minute)
-		if a.Config.Has(config.RoleShipper) {
+		if a.Config.Customer() {
+			// A receiver's too: it follows bookings it's granted and asks
+			// about them (its node refuses a booking).
 			assistantSides = append(assistantSides, activity.SideCustomer)
 		}
 		if a.Config.Has(config.RoleOperator) {

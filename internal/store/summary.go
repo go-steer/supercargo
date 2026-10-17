@@ -16,6 +16,7 @@ package store
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,6 +53,12 @@ type Summary struct {
 	Alerts     int      `json:"alerts"`
 	Containers []string `json:"containers"`
 	CreatedAt  string   `json:"createdAt"`
+	// DelegatedBy is the issuer of the grant this booking is followed by
+	// (a grantee's), until DelegatedUntil.
+	DelegatedBy    string `json:"delegatedBy,omitempty"`
+	DelegatedUntil string `json:"delegatedUntil,omitempty"`
+	// SharedWith are the companies the shipper granted the booking to.
+	SharedWith []string `json:"sharedWith,omitempty"`
 }
 
 // What a booking is.
@@ -150,6 +157,17 @@ func Summarize(b Booking, recs []Record) Summary {
 	}
 	if s.Containers == nil {
 		s.Containers = []string{}
+	}
+	if d := b.Delegated; d != nil {
+		s.DelegatedBy, s.DelegatedUntil = d.Issuer, d.Expires.UTC().Format(time.RFC3339)
+		if b.Road == nil && b.Request.PortOfLoading == "" {
+			s.Kind = "" // its leg not known yet (not subscribed): neither a ship's nor a truck's
+		}
+	}
+	for _, g := range b.Grants {
+		if !slices.Contains(s.SharedWith, g.Grantee) {
+			s.SharedWith = append(s.SharedWith, g.Grantee)
+		}
 	}
 	arrived := false
 	var moved *intents.TnTAlertBody // an order's latest delay or early alert

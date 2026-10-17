@@ -32,6 +32,7 @@ import (
 	"github.com/go-steer/supercargo/internal/forwarder"
 	"github.com/go-steer/supercargo/internal/operator"
 	"github.com/go-steer/supercargo/internal/shipper"
+	"github.com/go-steer/supercargo/internal/store"
 	"github.com/go-steer/supercargo/pkg/intents"
 )
 
@@ -55,6 +56,10 @@ type Sent struct {
 	Rated string
 	// Docked is a moved dock appointment, as the schedule holds it now.
 	Docked *backend.Appointment
+	// Trucked is a truckload's confirmation by its carrier.
+	Trucked *intents.RoadBookingConfirmationBody
+	// Granted is a delegation handed over.
+	Granted *store.IssuedGrant
 }
 
 // ErrOutcomeUnknown reports a send that may or may not have reached the
@@ -101,6 +106,12 @@ func (a *Assistant) Send(ctx context.Context, id string) (sent *Sent, err error)
 	}
 	if d.Dock != nil {
 		return a.sendDock(ctx, d)
+	}
+	if d.Road != nil {
+		return a.sendRoad(ctx, d)
+	}
+	if d.Grant != nil {
+		return a.sendGrant(ctx, d)
 	}
 	if a.Node == nil {
 		a.Drafts.Put(d)
@@ -173,6 +184,15 @@ func (a *Assistant) Report(ctx context.Context, c *Conversation, s *Sent) (Reply
 		note = notePrefix + "The user confirmed delay " + s.Draft.ID + " in the dialog, and our node published it. " +
 			"The outcome is below: tell the user which bookings got their signed alert and the new ETAs, in a sentence or two. " +
 			"Name any booking that got no alert; one marked applied was delayed anyway, so say not to publish the delay again.\n"
+	} else if c := s.Trucked; c != nil {
+		result, err = json.Marshal(map[string]any{"draftId": s.Draft.ID, "carrier": s.Draft.Road.Carrier, "confirmation": map[string]string{
+			"booking_reference": c.BookingRef, "status": c.Status, "planned_pickup": c.PlannedPickup, "planned_delivery": c.PlannedDelivery}})
+		note = notePrefix + "The user confirmed truckload " + s.Draft.ID + " in the dialog, and our node sent it, signed. " +
+			"The carrier's answer is below: tell the user its reference, status and planned times in a sentence or two.\n"
+	} else if g := s.Granted; g != nil {
+		result, err = json.Marshal(map[string]any{"draftId": s.Draft.ID, "booking": s.Draft.Grant.BookingRef, "grantee": g.Grantee, "scope": g.Scope, "expires": g.Expires})
+		note = notePrefix + "The user confirmed sharing " + s.Draft.ID + " in the dialog, and our node signed the delegation and handed it over. " +
+			"The outcome is below: tell the user in a sentence who can now follow which booking, until when.\n"
 	} else if k := s.Docked; k != nil {
 		result, err = json.Marshal(map[string]any{"draftId": s.Draft.ID, "appointment": k})
 		note = notePrefix + "The user confirmed moving the dock appointment " + s.Draft.ID + " in the dialog, and it was moved in our dock schedule (nothing was sent to anyone). " +
